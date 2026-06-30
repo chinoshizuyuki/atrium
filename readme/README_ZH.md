@@ -4,7 +4,7 @@
 [![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Tests](https://img.shields.io/badge/tests-1125%20passed-brightgreen.svg)]()
-[![Version](https://img.shields.io/badge/version-0.9.0-blue.svg)]()
+[![Version](https://img.shields.io/badge/version-0.2.0-blue.svg)]()
 
 [English](../README.md)
 
