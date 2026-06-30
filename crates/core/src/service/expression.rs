@@ -1,0 +1,354 @@
+// SPDX-License-Identifier: MIT
+//! 表达与关系模块 — 数字生命的表达方式与人际联结
+//! Expression & Relationship Module — How digital life expresses and connects
+//!
+//! 包含表达风格、成熟度阶段、关系深度、后续追踪、
+//! 用户建模、反馈回路与感知偏好，构成数字生命
+//! "如何表达自己"与"如何理解他人"的双向闭环。
+//!
+//! Contains expression style, maturity stage, relationship depth,
+//! follow-up tracking, user modeling, feedback loop, and perception
+//! preferences — forming the "how to express" and "how to understand
+//! others" bidirectional closed loop of digital life.
+
+use super::*;
+
+impl CoreService {
+    pub fn maturity_prompt_fragment(&self) -> String {
+        self.maturity.lock().to_prompt_fragment()
+    }
+
+    pub fn expression_prompt_fragment(
+        &self,
+        user_msg: &str,
+        emo_state: &EmotionEngineState,
+    ) -> String {
+        pub(crate) use crate::expression_orchestrator::ExpressionOrchestrator;
+        pub(crate) use atrium_memory::style_modulator::ExpressionContext;
+
+        let pad = [emo_state.pleasure, emo_state.arousal, emo_state.dominance];
+        let stage = self.relationship.lock().current_stage().clone();
+        let direction = atrium_emotion::infer_direction(user_msg);
+        let user_valence = self.user_model.lock().emotion_modulation().engagement_boost;
+        let topic_gravity = 0.5; // default
+
+        let ctx = ExpressionContext::from_modules(
+            emo_state,
+            None,
+            direction,
+            &stage,
+            user_valence,
+            topic_gravity,
+        );
+        let expr = ExpressionOrchestrator::orchestrate(&ctx, user_msg, pad, 100);
+        ExpressionOrchestrator::build_system_prompt_injection(&expr)
+    }
+
+    pub fn expression_post_process(&self, text: &str) -> String {
+        pub(crate) use atrium_memory::style_modulator::LinguisticProfile;
+
+        // 轻量后处理：标点/语气词/省略号修饰
+        LinguisticProfile::neutral().post_process(text)
+    }
+
+    pub fn tick_style_memory(&self) {
+        // 风格记忆周期学习：当前为占位实现
+        // 完整实现需要从反馈回路收集用户偏好信号，调用 StyleMemoryStore::apply_positive/negative_feedback_and_save
+        // 此方法由 scheduler.rs 每 style_memory_interval_ticks tick 调用一次
+        tracing::debug!("[Expression] StyleMemory tick (placeholder)");
+    }
+
+    pub fn expression_timing_urgency(&self) -> f32 {
+        if !self.expression_enabled {
+            return 0.2;
+        }
+        pub(crate) use atrium_memory::style_modulator::LinguisticProfile;
+        pub(crate) use atrium_memory::timing_mapper::TimingMapper;
+
+        let (arousal, pleasure) = self.current_emotion_state();
+        // current_emotion_state() 返回 (arousal, pleasure)；dominance 用 0.0 近似
+        let pad = [pleasure, arousal, 0.0];
+
+        let lp = LinguisticProfile::neutral();
+        let stage = self.relationship.lock().current_stage().clone();
+        let timing = TimingMapper::map(pad, &lp, &stage);
+        timing.urgency
+    }
+
+    pub fn expression_metadata(
+        &self,
+        emo_state: &EmotionEngineState,
+        reply_length: usize,
+    ) -> Option<atrium_bridge::protocol::ExpressionMetadata> {
+        if !self.expression_enabled {
+            return None;
+        }
+        pub(crate) use atrium_bridge::protocol::{
+            ExpressionMetadata, KinesicsMeta, ProsodyMeta, TimingMeta,
+        };
+        pub(crate) use atrium_memory::kinesics_mapper::KinesicsMapper;
+        pub(crate) use atrium_memory::prosody_mapper::ProsodyMapper;
+        pub(crate) use atrium_memory::style_modulator::LinguisticProfile;
+        pub(crate) use atrium_memory::timing_mapper::TimingMapper;
+
+        let pad = [emo_state.pleasure, emo_state.arousal, emo_state.dominance];
+        let lp = LinguisticProfile::neutral();
+        let stage = self.relationship.lock().current_stage().clone();
+
+        // 韵律 / Prosody
+        let prosody = ProsodyMapper::map(pad, &lp);
+        let prosody_meta = ProsodyMeta {
+            pitch_offset: prosody.pitch_offset,
+            rate: prosody.rate,
+            energy: prosody.energy,
+            pause_duration_ms: prosody.pause_duration_ms,
+            warmth: prosody.warmth,
+            ssml_attrs: prosody.to_ssml_attrs(),
+        };
+
+        // 体态 / Kinesics
+        let kinesics_out = KinesicsMapper::map(pad, reply_length);
+        let kinesics_meta = KinesicsMeta {
+            head_tilt: kinesics_out.posture.head_tilt,
+            shoulder_openness: kinesics_out.posture.shoulder_openness,
+            lean: kinesics_out.posture.lean,
+            eye_contact: kinesics_out.posture.eye_contact,
+            gesture_activity: kinesics_out.posture.gesture_activity,
+            breath_rate: kinesics_out.posture.breath_rate,
+            animation_commands: KinesicsMapper::to_animation_commands(&kinesics_out),
+        };
+
+        // 节奏 / Timing
+        let timing = TimingMapper::map(pad, &lp, &stage);
+        let timing_meta = TimingMeta {
+            typing_delay_factor: timing.typing_delay_factor,
+            inter_sentence_pause_ms: timing.inter_sentence_pause_ms,
+            hesitation_prob: timing.hesitation_prob,
+            segmented_send_prob: timing.segmented_send_prob,
+            urgency: timing.urgency,
+        };
+
+        Some(ExpressionMetadata {
+            prosody: prosody_meta,
+            kinesics: kinesics_meta,
+            timing: timing_meta,
+        })
+    }
+
+    pub fn followup_prompt_fragment(
+        &self,
+        relationship_stage_name: &str,
+        current_pleasure: f32,
+    ) -> String {
+        let now_ts = chrono::Utc::now().timestamp();
+        let candidates = self.followup.lock().check_for_follow_up(
+            now_ts,
+            relationship_stage_name,
+            0, // today_count 由 scheduler 维护
+            0, // last_follow_up_secs 由 scheduler 维护
+            current_pleasure,
+        );
+        if candidates.is_empty() {
+            return String::new();
+        }
+        // 只取权重最高的一个
+        let (item, verdict) = &candidates[0];
+        if verdict.should_trigger {
+            self.followup.lock().generate_prompt(item, verdict)
+        } else {
+            String::new()
+        }
+    }
+
+    pub fn followup_analyze_reaction(&self, user_reply: &str, item_id: u64) {
+        if self.followup_enabled {
+            let reaction = self.followup.lock().analyze_reaction(user_reply, item_id);
+            tracing::debug!(
+                "[FollowUp] 用户反应: engaged={}, deflected={}",
+                reaction.engaged,
+                reaction.deflected
+            );
+        }
+    }
+
+    pub fn tick_followup(
+        &self,
+        relationship_stage_name: &str,
+        today_count: u32,
+        last_follow_up_secs: i64,
+        current_pleasure: f32,
+    ) -> Option<String> {
+        if !self.followup_enabled {
+            return None;
+        }
+        let now_ts = chrono::Utc::now().timestamp();
+        let candidates = self.followup.lock().check_for_follow_up(
+            now_ts,
+            relationship_stage_name,
+            today_count,
+            last_follow_up_secs,
+            current_pleasure,
+        );
+        if let Some((item, verdict)) = candidates.first() {
+            if verdict.should_trigger {
+                let prompt = self.followup.lock().generate_prompt(item, verdict);
+                // 标记已追问
+                self.followup.lock().mark_asked(
+                    item.id,
+                    verdict.suggested_depth,
+                    verdict.suggested_style,
+                    now_ts,
+                );
+                return Some(prompt);
+            }
+        }
+        None
+    }
+
+    pub fn maturity_guard_strictness(&self) -> f32 {
+        self.maturity.lock().guard_strictness()
+    }
+
+    pub fn maturity_reflection_interval(&self) -> u8 {
+        self.maturity.lock().reflection_interval()
+    }
+
+    pub fn maturity_stage_name(&self) -> String {
+        self.maturity.lock().stage().stage_name().to_string()
+    }
+
+    pub fn take_maturity_transition_notice(&self) -> Option<String> {
+        self.maturity.lock().take_transition_notice()
+    }
+
+    pub fn maturity_record_self_correction(&self) {
+        self.maturity.lock().record_self_correction();
+    }
+
+    pub fn maturity_record_inner_thought(&self) {
+        self.maturity.lock().record_inner_thought();
+    }
+
+    pub fn relationship_stage(&self) -> String {
+        self.relationship
+            .lock()
+            .current_stage()
+            .stage_name()
+            .to_string()
+    }
+
+    pub fn relationship_prompt_fragment(&self) -> String {
+        self.relationship.lock().to_prompt_fragment()
+    }
+
+    pub fn relationship_affect_multiplier(&self) -> f32 {
+        self.relationship.lock().affect_multiplier()
+    }
+
+    pub fn take_relationship_transition_notice(&self) -> Option<String> {
+        self.relationship.lock().take_transition_notice()
+    }
+
+    pub fn user_model_prompt_fragment(&self) -> String {
+        self.user_model.lock().prompt_fragment()
+    }
+
+    pub fn feedback_prompt_fragment(&self) -> String {
+        self.feedback.lock().prompt_fragment()
+    }
+
+    pub fn feedback_satisfaction(&self) -> f32 {
+        self.feedback.lock().satisfaction()
+    }
+
+    pub fn associative_prompt_fragment(&self) -> String {
+        let graph = self.graph.lock();
+        let stats = graph.stats();
+        if stats.node_count == 0 {
+            return String::new();
+        }
+
+        // 收集权重最高的边（最多 5 条）
+        let mut edges: Vec<_> = graph.edges().to_vec();
+        edges.sort_by(|a, b| {
+            b.weight
+                .partial_cmp(&a.weight)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        let mut lines: Vec<String> = Vec::new();
+        for e in edges.iter().take(5) {
+            let from_content = graph
+                .get_node(&e.from)
+                .map(|n| n.content.as_str())
+                .unwrap_or("?");
+            let to_content = graph
+                .get_node(&e.to)
+                .map(|n| n.content.as_str())
+                .unwrap_or("?");
+            lines.push(format!(
+                "- {} → {} ({:?}, w={:.2})",
+                from_content, to_content, e.relation, e.weight
+            ));
+        }
+
+        if lines.is_empty() {
+            return String::new();
+        }
+
+        format!(
+            "# 关联记忆 (nodes={}, edges={})\n{}",
+            stats.node_count,
+            stats.edge_count,
+            lines.join("\n")
+        )
+    }
+
+    pub fn relationship_proactive_bonus(&self) -> f32 {
+        self.relationship.lock().proactive_bonus()
+    }
+
+    pub fn user_model_signals(&self) -> (Option<f32>, Option<f32>, Option<f32>) {
+        let um = self.user_model.lock();
+        (
+            Some(um.mood.valence),
+            Some(um.engagement.engagement_score),
+            Some(um.style.avg_message_length),
+        )
+    }
+
+    pub fn perception_prompt_fragment(&self) -> String {
+        let rhythm = self.typing_analyzer.lock().current_rhythm().clone();
+        compile_rhythm_hint(&rhythm)
+    }
+
+    pub fn perception_health(&self) -> String {
+        let analyzer = self.typing_analyzer.lock();
+        let baseline = &analyzer.baseline;
+        format!(
+            "perception: enabled={}, samples={}, baseline_gap={:.1}s, baseline_len={:.0}, rhythm={:?}",
+            self.perception_enabled,
+            baseline.sample_count,
+            baseline.avg_gap_seconds,
+            baseline.avg_message_length,
+            analyzer.current_rhythm().pattern,
+        )
+    }
+
+    pub fn preference_prompt_fragment(&self) -> String {
+        self.preferences.lock().build_prompt_context(0.15, 8)
+    }
+
+    pub fn preference_health(&self) -> String {
+        let prefs = self.preferences.lock();
+        let active = prefs.active(0.15).len();
+        format!("preferences: total={}, active={}", prefs.count(), active)
+    }
+
+    pub fn prune_preferences(&self) {
+        let removed = self.preferences.lock().prune(0.05, 30);
+        if removed > 0 {
+            tracing::info!("偏好衰减: 清理了 {} 条过期偏好", removed);
+        }
+    }
+} // impl CoreService

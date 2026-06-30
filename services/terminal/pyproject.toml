@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "atrium-terminal"
+version = "1.0.0"
+description = "Atrium Terminal UI — OpenClaw-style TUI for chatting with Atrium AI"
+requires-python = ">=3.10"
+dependencies = [
+    "textual>=0.52.0",
+    "httpx>=0.26.0",
+    "pydantic>=2.5.0",
+]
+
+[project.scripts]
+atrium = "atrium_terminal.main:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["atrium_terminal*"]

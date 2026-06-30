@@ -1,0 +1,30 @@
+[package]
+name = "atrium-memory"
+version = "0.2.0"
+edition = "2021"
+
+[features]
+default = []
+embedding = ["fastembed"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+bincode = "1"
+chrono.workspace = true
+sled = "0.34"
+fastembed = { version = "4", optional = true }
+rusqlite = { version = "0.31", features = ["bundled"] }
+serde_yaml = "0.9"
+tracing.workspace = true
+atrium-emotion = { path = "../atrium-emotion" }
+rand = { version = "0.8", features = ["small_rng"] }
+tempfile = "3"
+parking_lot = "0.12"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+sha2 = "0.10"
+hex = "0.4"
+flume.workspace = true

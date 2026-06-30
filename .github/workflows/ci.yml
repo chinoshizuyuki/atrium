@@ -1,0 +1,100 @@
+# Atrium CI — Rust + Python
+# Runs on every push/PR to main.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ─── Rust ─────────────────────────────────────────────────────
+  rust:
+    name: Rust (fmt + clippy + test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system deps
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libsqlite3-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: atrium-stable
+
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        run: cargo clippy --workspace -- -D warnings
+
+      - name: cargo check
+        run: cargo check --workspace
+
+      - name: Security audit
+        run: |
+          cargo install cargo-audit@0.22.2 --locked
+          cargo audit
+
+      - name: cargo test
+        run: cargo test --workspace -- --test-threads=1
+
+  # ─── Python ───────────────────────────────────────────────────
+  python:
+    name: Python (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [gateway, llm-orchestrator, terminal]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install system deps (for asyncpg + protoc)
+        run: sudo apt-get update && sudo apt-get install -y libpq-dev protobuf-compiler
+
+      - name: Install dependencies
+        run: |
+          # gateway depends on llm-orchestrator (atrium_llm)
+          if [ "${{ matrix.service }}" = "gateway" ]; then
+            pip install services/llm-orchestrator/
+          fi
+          pip install services/${{ matrix.service }}/
+          pip install pytest pytest-asyncio ruff
+
+      # 生成 gRPC stubs（atrium_pb2.py 等在 .gitignore 中，CI 需重新生成）
+      # Generate gRPC stubs (atrium_pb2.py etc. are gitignored, CI must regenerate)
+      - name: Generate gRPC stubs (gateway only)
+        if: matrix.service == 'gateway'
+        run: python services/gateway/gen_proto.py
+
+      - name: Lint (ruff)
+        run: ruff check services/${{ matrix.service }}/
+
+      - name: Run tests
+        run: cd services/${{ matrix.service }} && python -m pytest tests/ -v

@@ -1,0 +1,108 @@
+# Atrium Docker — Build and push multi-platform images to GHCR
+# Only runs on non-zero major version tags (v1.0.0+, not v0.x.x).
+
+name: Docker
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  build:
+    if: ${{ !startsWith(github.ref_name, 'v0.') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            platform: linux/amd64
+            suffix: amd64
+          - runner: ubuntu-24.04-arm
+            platform: linux/arm64
+            suffix: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract version from tag
+        id: meta
+        run: |
+          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          echo "owner=$(echo ${{ github.repository_owner }} | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      # ─── Rust Core Image (single platform, native) ──────
+      - name: Build & Push atrium-core (${{ matrix.suffix }})
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: ${{ matrix.platform }}
+          push: true
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ steps.meta.outputs.owner }}/atrium-core:${{ steps.meta.outputs.version }}-${{ matrix.suffix }}
+
+      # ─── Python Gateway Image (single platform, native) ──
+      - name: Build & Push atrium-gateway (${{ matrix.suffix }})
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./services/gateway/Dockerfile.gateway
+          platforms: ${{ matrix.platform }}
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ steps.meta.outputs.owner }}/atrium-gateway:${{ steps.meta.outputs.version }}-${{ matrix.suffix }}
+
+  merge:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract version from tag
+        id: meta
+        run: |
+          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          echo "owner=$(echo ${{ github.repository_owner }} | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Merge atrium-core multi-platform manifest
+        run: |
+          docker buildx imagetools create \
+            -t ${{ env.REGISTRY }}/${{ steps.meta.outputs.owner }}/atrium-core:${{ steps.meta.outputs.version }} \
+            -t ${{ env.REGISTRY }}/${{ steps.meta.outputs.owner }}/atrium-core:latest \
+            ${{ env.REGISTRY }}/${{ steps.meta.outputs.owner }}/atrium-core:${{ steps.meta.outputs.version }}-amd64 \
+            ${{ env.REGISTRY }}/${{ steps.meta.outputs.owner }}/atrium-core:${{ steps.meta.outputs.version }}-arm64
+
+      - name: Merge atrium-gateway multi-platform manifest
+        run: |
+          docker buildx imagetools create \
+            -t ${{ env.REGISTRY }}/${{ steps.meta.outputs.owner }}/atrium-gateway:${{ steps.meta.outputs.version }} \
+            -t ${{ env.REGISTRY }}/${{ steps.meta.outputs.owner }}/atrium-gateway:latest \
+            ${{ env.REGISTRY }}/${{ steps.meta.outputs.owner }}/atrium-gateway:${{ steps.meta.outputs.version }}-amd64 \
+            ${{ env.REGISTRY }}/${{ steps.meta.outputs.owner }}/atrium-gateway:${{ steps.meta.outputs.version }}-arm64

@@ -1,0 +1,8 @@
+[target.aarch64-unknown-linux-gnu]
+pre-build = [
+    "apt-get update && apt-get install -y wget unzip && rm -rf /var/lib/apt/lists/*",
+    "PROTOC_VERSION=28.3",
+    "wget -q https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip",
+    "unzip -o protoc-${PROTOC_VERSION}-linux-x86_64.zip -d /usr/local",
+    "rm protoc-${PROTOC_VERSION}-linux-x86_64.zip"
+]

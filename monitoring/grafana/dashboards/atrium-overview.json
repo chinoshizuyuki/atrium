@@ -1,0 +1,254 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "title": "Message Processing Latency",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "id": 1,
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, rate(atrium_message_duration_seconds_bucket[5m]))",
+          "legendFormat": "P50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, rate(atrium_message_duration_seconds_bucket[5m]))",
+          "legendFormat": "P95",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, rate(atrium_message_duration_seconds_bucket[5m]))",
+          "legendFormat": "P99",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": { "mode": "palette-classic" }
+        }
+      }
+    },
+    {
+      "title": "LLM API Calls",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "id": 2,
+      "targets": [
+        {
+          "expr": "rate(atrium_llm_requests_total[5m])",
+          "legendFormat": "Requests/s",
+          "refId": "A"
+        },
+        {
+          "expr": "rate(atrium_llm_errors_total[5m])",
+          "legendFormat": "Errors/s",
+          "refId": "B"
+        },
+        {
+          "expr": "rate(atrium_llm_tokens_total[5m])",
+          "legendFormat": "Tokens/s",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" }
+        }
+      }
+    },
+    {
+      "title": "Emotion State (PAD)",
+      "type": "gauge",
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 8 },
+      "id": 3,
+      "targets": [
+        {
+          "expr": "atrium_emotion_pleasure",
+          "legendFormat": "Pleasure",
+          "refId": "A"
+        },
+        {
+          "expr": "atrium_emotion_arousal",
+          "legendFormat": "Arousal",
+          "refId": "B"
+        },
+        {
+          "expr": "atrium_emotion_dominance",
+          "legendFormat": "Dominance",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": -1,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": -1 },
+              { "color": "yellow", "value": -0.3 },
+              { "color": "green", "value": 0.3 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "title": "Emotion Timeline",
+      "type": "timeseries",
+      "gridPos": { "h": 4, "w": 8, "x": 4, "y": 8 },
+      "id": 5,
+      "targets": [
+        {
+          "expr": "atrium_emotion_pleasure",
+          "legendFormat": "Pleasure",
+          "refId": "A"
+        },
+        {
+          "expr": "atrium_emotion_arousal",
+          "legendFormat": "Arousal",
+          "refId": "B"
+        },
+        {
+          "expr": "atrium_emotion_dominance",
+          "legendFormat": "Dominance",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": -1,
+          "max": 1,
+          "color": { "mode": "palette-classic" }
+        }
+      }
+    },
+    {
+      "title": "Knowledge Base Size",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 8 },
+      "id": 4,
+      "targets": [
+        {
+          "expr": "atrium_fact_store_size",
+          "legendFormat": "Facts",
+          "refId": "A"
+        },
+        {
+          "expr": "atrium_memory_stm_count",
+          "legendFormat": "STM",
+          "refId": "B"
+        },
+        {
+          "expr": "atrium_graph_node_count",
+          "legendFormat": "Graph Nodes",
+          "refId": "C"
+        },
+        {
+          "expr": "atrium_canned_count",
+          "legendFormat": "ACK Capsules",
+          "refId": "D"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1000 },
+              { "color": "red", "value": 50000 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "title": "Proactive Decisions",
+      "type": "timeseries",
+      "gridPos": { "h": 4, "w": 6, "x": 16, "y": 8 },
+      "id": 6,
+      "targets": [
+        {
+          "expr": "rate(atrium_proactive_decisions_total[5m])",
+          "legendFormat": "{{decision}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" }
+        }
+      }
+    },
+    {
+      "title": "gRPC Health",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 12 },
+      "id": 7,
+      "targets": [
+        {
+          "expr": "up{job=\"atrium-core\"}",
+          "legendFormat": "Core",
+          "refId": "A"
+        },
+        {
+          "expr": "up{job=\"atrium-gateway\"}",
+          "legendFormat": "Gateway",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "title": "Memory Search Latency",
+      "type": "timeseries",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 12 },
+      "id": 8,
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, rate(atrium_memory_search_duration_seconds_bucket[5m]))",
+          "legendFormat": "P95",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "color": { "mode": "palette-classic" }
+        }
+      }
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": ["atrium", "emotion-ai"],
+  "templating": { "list": [] },
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "timezone": "Asia/Shanghai",
+  "title": "Atrium Overview",
+  "uid": "atrium-overview",
+  "version": 1
+}

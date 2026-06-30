@@ -1,0 +1,12 @@
+[package]
+name = "atrium-echo-plugin"
+version = "0.2.0"
+edition = "2021"
+description = "Atrium 示例插件 — Echo 插件（动态库）"
+
+[lib]
+name = "atrium_echo_plugin"
+crate-type = ["cdylib"]
+
+[dependencies]
+atrium-plugin = { path = "../../crates/atrium-plugin" }

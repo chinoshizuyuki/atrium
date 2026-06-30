@@ -1,0 +1,44 @@
+# Rust build artifacts
+target/
+.cargo/
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Dev/test
+.cached/
+*.pdb
+*.d
+*.o
+*.tmp
+
+# Python
+services/*/__pycache__/
+services/*/*.pyc
+services/*/.venv/
+services/*/.pytest_cache/
+
+# Node
+node_modules/
+
+# WorkBuddy
+.codeartsdoer/
+.workbuddy/
+
+# Docs (root level only — preserve .md in subdirectories)
+readme/
+docs/
+/*.md
+LICENSE

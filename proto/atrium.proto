@@ -1,0 +1,138 @@
+// Atrium gRPC 协议定义 / Atrium gRPC Protocol Definition
+// 定义 Rust 核心与 Python Gateway / 外部客户端之间的通信契约。
+// Defines the communication contract between Rust core and Python Gateway / external clients.
+
+syntax = "proto3";
+package atrium;
+
+// ========== 核心服务 / Core Service ==========
+service AtriumCore {
+  // 处理用户消息 / Process a user message
+  rpc ProcessMessage(ProcessMessageRequest) returns (ProcessMessageResponse);
+  // 获取当前情绪状态 / Get current emotion state
+  rpc GetEmotion(GetEmotionRequest) returns (EmotionState);
+  // 搜索记忆 / Search memory
+  rpc SearchMemory(SearchMemoryRequest) returns (SearchMemoryResponse);
+  // 搜索罐装知识 / Search canned knowledge
+  rpc SearchCanned(SearchCannedRequest) returns (SearchCannedResponse);
+  // 导入罐装知识 / Import canned knowledge
+  rpc ImportCanned(ImportCannedRequest) returns (ImportCannedResponse);
+  // 健康检查 / Health check
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+  // 流式处理用户消息 / Stream-process a user message（Rust 核心直接流式输出）
+  rpc ProcessMessageStream(ProcessMessageRequest) returns (stream ProcessMessageChunk);
+}
+
+// ========== ProcessMessage / 处理消息 ==========
+message ProcessMessageRequest {
+  string message = 1;    // 用户消息文本 / User message text
+  string channel = 2;    // 渠道标识 / Channel identifier
+  string user_id = 3;    // 用户 ID / User identifier
+  string session_id = 4; // 会话 ID / Session identifier
+}
+message ProcessMessageResponse {
+  string reply = 1;            // AI 回复 / AI reply text
+  string emotion = 2;          // 情绪标签 / Emotion label
+  repeated string actions = 3; // 触发动作 / Triggered actions
+  ExpressionMetadata expression = 5; // 表达元数据 / Expression metadata (kinesics + prosody + self-care)
+}
+
+// ========== ProcessMessageStream（Rust-native streaming） ==========
+message ProcessMessageChunk {
+  string token = 1;              // 流式 Token（空=元数据/结束帧） / Stream token (empty=metadata/end)
+  string emotion = 2;            // 当前情感标签 / Current emotion label
+  bool done = 3;                 // 流结束标记 / End-of-stream marker
+  map<string, string> meta = 4;  // 元数据 / Metadata (model, context_tokens, etc.)
+  ExpressionMetadata expression = 5; // 表达元数据 / Expression metadata (kinesics + prosody + self-care)
+}
+
+// ========== GetEmotion / 获取情绪状态 ==========
+message GetEmotionRequest {}      // 空，可扩展 / Empty, extensible
+
+message EmotionState {
+  float pleasure = 1;   // 愉悦度 [-1, 1] / Pleasure
+  float arousal = 2;    // 唤醒度 [-1, 1] / Arousal
+  float dominance = 3;  // 支配度 [-1, 1] / Dominance
+}
+
+// ========== SearchMemory / 搜索记忆 ==========
+message SearchMemoryRequest {
+  string query = 1;  // 搜索关键词 / Search query
+  uint32 limit = 2;  // 结果数量限制 / Max results
+}
+message SearchMemoryResult {
+  string id = 1;
+  string content = 2;
+  int64 timestamp_ms = 3;
+  EmotionState emotion = 4;
+  float importance = 5;
+  string kind = 6;
+}
+message SearchMemoryResponse {
+  repeated SearchMemoryResult results = 1;
+}
+
+// ========== SearchCanned / 搜索罐装知识 ==========
+message SearchCannedRequest {
+  string query = 1;
+  repeated string tags = 2;
+  uint32 limit = 3;
+}
+message CannedResult {
+  string name = 1;
+  string title = 2;
+  string kind = 3;
+  repeated string tags = 4;
+  string summary = 5;
+  string body = 6;
+  string version = 7;
+  string trigger_type = 8;
+}
+message SearchCannedResponse {
+  repeated CannedResult results = 1;
+  uint32 total = 2;
+}
+
+// ========== ImportCanned / 导入罐装知识 ==========
+message ImportCannedRequest {
+  string text = 1;  // 跨 AI 传输文本 / Cross-AI transfer text
+}
+message ImportCannedResponse {
+  uint32 imported = 1;
+  repeated string names = 2;
+  string error = 3;
+}
+
+// ========== ExpressionMetadata / 表达元数据 ==========
+// D1-D3 Mapper 输出的统一协议结构 / Unified protocol structure for D1-D3 Mapper outputs
+message ExpressionMetadata {
+  // ── 体态（KinesicsMapper D1.1）──
+  float shoulder_openness = 1;   // 肩膀展开度 [0,1] / Shoulder openness
+  float body_lean = 2;           // 身体前倾/后仰 [-0.5,0.5] / Body lean
+  float gesture_activity = 3;    // 手势活跃度 [0,1] / Gesture activity
+  float breath_rate = 4;         // 呼吸频率因子 / Breath rate factor
+
+  // ── 韵律（ProsodyMapper D1.2）──
+  float pitch_offset = 5;        // 基频偏移（半音）/ Pitch offset (semitones)
+  float speech_rate = 6;         // 语速因子 / Speech rate factor
+  float warmth = 7;              // 音色温暖度 [0,1] / Vocal warmth
+
+  // ── 自我关怀（SelfCareBoundary D3.3）──
+  int32 self_care_level = 8;     // 自我关怀等级 0=Normal 1=Cautious 2=Protective 3=Recovery
+  float proactivity_factor = 9;  // 主动性衰减系数 [0,1] / Proactivity decay factor
+  float reply_length_factor = 10;// 回复长度系数 [0,1] / Reply length factor
+  float depth_factor = 11;       // 深度探索系数 [0,1] / Depth exploration factor
+}
+
+// ========== HealthCheck / 健康检查 ==========
+message HealthCheckRequest {
+  uint64 event_count = 1;
+  // 房间消息（JSON 数组，Python 网关推送） / Room messages (JSON array, pushed by Python gateway)
+  string room_incoming_json = 2;
+}
+message HealthCheckResponse {
+  bool ok = 1;
+  uint64 event_count = 2;
+  uint64 uptime_seconds = 3;
+  map<string, string> module_states = 4; // 各模块状态 / Per-module status
+}

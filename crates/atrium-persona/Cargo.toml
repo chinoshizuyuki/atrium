@@ -1,0 +1,16 @@
+[package]
+name = "atrium-persona"
+version = "0.2.0"
+edition = "2021"
+description = "Atrium 人格核心 — 角色卡定义、加载、运行时人格"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml = "0.9"
+toml.workspace = true
+bincode = "1"
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+memmap2 = "0.9"

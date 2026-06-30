@@ -1,0 +1,8 @@
+[plugin]
+name = "echo"
+version = "1.0.0"
+description = "Echo plugin example - prefixes messages with [echo]"
+author = "Atrium"
+
+[plugin.config]
+prefix = "[echo]"

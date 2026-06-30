@@ -1,0 +1,277 @@
+# Atrium 全局配置 / Atrium Global Configuration
+
+name = "atrium"
+version = "1.0.0"
+log_level = "info"
+
+# ── 罐装知识 / Canned Knowledge ──
+[canned]
+scan_dir = "~/.atrium/canned"
+hot_reload = true
+
+# ── 记忆 / Memory ──
+[memory]
+# 模型上下文窗口限制（token 数） / Model context window limit (tokens). DeepSeek v4 ≈ 1M
+context_limit = 1_048_576
+
+# ── 通信桥 / Bridge ──
+[bridge]
+grpc_addr = "127.0.0.1:50051"
+shm_path = "/dev/shm/atrium_render"
+
+# ── LLM 配置 / LLM Configuration ──
+[llm]
+# OpenAI 兼容 API（Self-Play 直接调用，不经过 Python）
+# OpenAI-compatible API (Self-Play calls directly, bypassing Python)
+# 设置 OPENAI_API_KEY 环境变量或直接填写 api_key
+# Set OPENAI_API_KEY env var or fill api_key directly
+# 兼容 DeepSeek/OpenAI/任何 OpenAI 兼容 API
+api_key = ""  # Set via OPENAI_API_KEY or ATRIUM_LLM_API_KEY env var
+base_url = "https://api.deepseek.com/"
+model = "deepseek-v4-flash"
+max_tokens = 1024
+timeout_secs = 30
+
+# ── 群聊房间 / Room (Group Chat) ──
+[room]
+# 多个 Atrium AI 通过 Gateway 互相聊天 / Multiple Atrium AIs chat via Gateway
+enabled = true
+room_id = "atrium-general"
+instance_id = ""
+gateway_url = "ws://127.0.0.1:8080/ws/room"
+ack_share_enabled = true
+idle_threshold_secs = 30
+speak_interval_secs = 5
+
+# ── 情绪引擎 / Emotion Engine ──
+[emotion]
+# 自主情感循环 — OU 漂移 + 昼夜节律 + 情感惯性
+# Autonomous emotion loop — OU drift + circadian rhythm + emotional inertia
+enabled = true
+decay_rate = 0.1
+
+[emotion.drift]
+# Ornstein-Uhlenbeck 随机漂移：空闲时围绕基线自然波动
+# Ornstein-Uhlenbeck stochastic drift: natural fluctuation around baseline when idle
+enabled = true
+volatility = 0.002
+mean_reversion = 0.001
+baseline = [0.0, 0.0, 0.0]
+
+[emotion.circadian]
+# 双峰高斯昼夜节律：上午 10 点 + 傍晚 18 点高峰
+# Bimodal Gaussian circadian rhythm: peaks at 10 AM + 6 PM
+enabled = true
+morning_peak = 10.0
+evening_peak = 18.0
+morning_sigma = 2.0
+evening_sigma = 2.5
+intensity = 0.8
+timezone_offset = 8
+active_hours = [7, 23]
+
+[emotion.inertia]
+# 情感惯性：长期同一情绪后敏感度升高、衰减变慢
+# Emotional inertia: increased sensitivity and slower decay after prolonged emotion
+enabled = true
+
+# ── 关系阶段 / Relationship Stages ──
+[relationship]
+# 初识 → 熟悉 → 信任 → 深度，四阶段自然演进
+# Acquaintance → Familiar → Trusted → Intimate, 4-stage natural progression
+enabled = true
+
+# ── 用户心智模型 / User Mental Model ──
+[user_model]
+# 动态追踪用户情绪、沟通风格和兴趣
+# Dynamic tracking of user mood, communication style, and interests
+enabled = true
+mood_ema_alpha = 0.3
+style_ema_alpha = 0.2
+topic_decay_hours = 48.0
+
+# ── 实时反馈闭环 / Feedback Loop ──
+[feedback]
+# 检测用户反馈信号并自适应调节行为
+# Detect user feedback signals and adaptively adjust behavior
+enabled = true
+satisfaction_ema_alpha = 0.15
+signal_window = 50
+
+# ── 主动决策 / Proactive Decision ──
+[proactive]
+# 多信号综合判断代替纯定时器触发
+# Multi-signal composite decision instead of pure timer-based triggering
+# 让 AI 在对的时机说对的话 / Let AI say the right thing at the right time
+enabled = true
+check_interval_ticks = 100
+silence_meaningful_threshold = 300
+silence_care_threshold = 1800
+cooldown_min_seconds = 600
+cooldown_backoff = 2.0
+max_proactive_per_day = 12
+
+# ── 非语言感知 / Non-verbal Perception ──
+[perception.typing]
+# 从打字节奏中提取情感信号
+# Extract emotional signals from typing rhythm
+enabled = true
+baseline_learning_rate = 0.05
+min_samples_for_baseline = 50
+rhythm_analysis_window = 8
+
+# ── 共情推理 / Empathy Engine ──
+[empathy]
+# 认知共情替代简单 15% 情绪传染
+# Cognitive empathy replaces simple 15% sentiment contagion
+# 纯规则实现，零 LLM 调用 / Rule-based, zero LLM calls
+enabled = true
+empathy_weight = 0.6
+cooldown_messages = 3
+
+# ── ACK 自学习 / ACK Self-Learning ──
+[ack_learning]
+# 三路径自主学习：用户教授 / 回放模式 / 反思洞察
+# 3-path self-learning: user teaching / replay / reflection insights
+# 纯规则实现，零 LLM 依赖 / Rule-based, zero LLM dependency
+enabled = true
+user_teach_enabled = true
+replay_learning_enabled = true
+insight_learning_enabled = true
+min_pattern_confidence = 0.6
+min_insight_confidence = 0.7
+min_supporting_facts = 3
+max_self_learned_ack = 50
+synthesis_interval_ticks = 18000
+
+# ── 可观测性 / Observability ──
+[observability]
+# tracing subscriber + Prometheus exporter
+# Prometheus 直接访问 :9090/metrics / Direct access at :9090/metrics
+enabled = true
+prometheus_port = 9090
+metrics_prefix = "atrium_"
+log_format = "json"    # json | pretty
+
+# ── 表达系统 / Expression System ──
+[expression]
+# 风格调制 + 情绪轨迹 + 潜台词 + 韵律/体态/节奏映射 + 风格记忆
+# Style modulation + emotional arc + subtext + prosody/kinesics/timing + style memory
+# 6 模块协调编排，零 LLM 依赖 / 6-module coordinated orchestration, zero LLM dependency
+enabled = true
+style_memory_interval_ticks = 6000   # 约 60s（tick 10ms）
+coherence_strict = false             # 一致性校验不通过时仅警告，不重试
+
+# ── 追问引擎 / Follow-Up Engine ──
+[irrationality]
+enabled = true
+pulse_min_pad_change = 0.15
+pulse_max_active = 10
+pulse_uncaused_prob = 0.0
+residue_max_active = 20
+contagion_cooldown_secs = 300
+chaos_max_trajectory = 200
+chaos_emergence_threshold = 0.4
+prompt_budget = 200
+tick_interval_ticks = 100
+
+# ── 共享仪式 / Shared Ritual ──
+[ritual]
+enabled = true
+tick_interval_ticks = 600
+anniversary_remind_days = 3
+prompt_budget = 300
+
+# ── 脆弱与不完美 / Vulnerability & Imperfection ──
+[vulnerability]
+enabled = true
+max_per_n_conversations = 50
+tick_interval_ticks = 1000
+prompt_budget = 200
+
+[narrative]
+enabled = true
+tick_interval = 1000
+self_description_rewrite_days = 30
+arc_dormancy_days = 14
+arc_closure_days = 60
+emotion_change_threshold = 0.4
+min_interval_secs = 3600
+prompt_budget = 800
+
+
+# ── 冲突与和解 / Conflict & Reconciliation ──
+[conflict]
+# 分歧检测 + 过度索取检测 + 升级控制 + 和解工艺 + 道歉引擎
+# Disagreement detection + over-demand detection + escalation control + reconciliation craft + apology engine
+# 零 LLM 依赖（检测+升级+和解+道歉全规则实现）/ Zero LLM dependency (rule-based)
+enabled = true
+disagreement_sensitivity = 0.7          # 分歧检测灵敏度 / Disagreement detection sensitivity
+over_demand_window = 10                 # 过度索取窗口 / Over-demand window size
+over_demand_threshold = 0.6             # 过度索取高频阈值 / Over-demand frequency threshold
+escalation_cooldown_turns = 3           # 升级冷却轮次 / Escalation cooldown turns
+consecutive_threshold = 3               # 连续冲突升级阈值 / Consecutive conflict threshold
+de_escalation_turns = 2                 # 自动降级轮次 / Auto de-escalation turns
+tick_interval = 3000                    # 周期评估间隔 tick / Periodic evaluation interval
+
+[followup]
+# 好奇心与追问：从对话提取待跟进事项，适时主动追问
+# Curiosity & follow-up: extract follow-up items from conversation, proactively ask at right moments
+# 零 LLM 依赖（提取+判决+表达全规则实现）/ Zero LLM dependency (rule-based)
+enabled = true
+check_interval_ticks = 6000           # 约 60s（tick 10ms）
+max_per_day = 5                       # 每日追问上限 / Max follow-ups per day
+min_interval_secs = 3600              # 最小追问间隔 1h / Min interval
+trigger_threshold = 0.3               # 触发阈值 / Trigger threshold
+min_weight_threshold = 0.1            # 最小有效权重 / Min effective weight
+time_weight = 0.4                     # 时间信号权重 / Time signal weight
+topic_weight = 0.3                    # 话题信号权重 / Topic signal weight
+emotion_weight = 0.3                  # 情感信号权重 / Emotion signal weight
+expire_after_days = 90                # 过期清理天数 / Expire after days
+
+# ── 想念引擎 / Longing Engine ──
+[longing]
+# 用户离开时 PAD 漂移基线从中性渐变到想念基线
+# PAD drift baseline interpolates from neutral to longing when user is away
+enabled = true
+onset_threshold_secs = 600           # 10 分钟后开始想念 / Onset after 10 min
+saturation_threshold_secs = 7200     # 2 小时达到饱和 / Saturation after 2 hours
+volatility = 0.001                    # OU 波动率 / OU volatility
+mean_reversion = 0.0005              # 均值回归率 / Mean reversion rate
+baseline = [-0.25, 0.05, -0.15]      # 想念基线 PAD / Longing baseline PAD
+
+[longing.reunion]
+# 重逢爆发 — 用户回来时按离开时长比例表达喜悦
+# Reunion burst — proportional joy when user returns
+joy_boost = 0.4                       # 愉悦增益 / Pleasure boost
+arousal_boost = 0.3                   # 唤醒增益 / Arousal boost
+dominance_boost = 0.1                # 掌控感增益 / Dominance boost
+max_per_day = 3                      # 每日最大爆发次数 / Max bursts per day
+generate_message = true              # 生成重逢消息 / Generate reunion message via LLM
+
+[longing.anticipation]
+# 期待事件 — "明天再来" 等承诺触发期待
+# Anticipation events — promises like "see you tomorrow" trigger anticipation
+enabled = true
+preload_secs = 1800                  # 预加载时间 30min / Pre-load duration
+disappointment_intensity = 0.15      # 过期失落强度 / Disappointment intensity
+
+# ── 成长管理器 / Maturity Manager ──
+[maturity]
+# AI 自身成熟度追踪：4 阶段（幼稚→成长→成熟→智慧），行为调制 + 里程碑记录
+# AI self-maturity tracking: 4 stages (Naive→Growing→Mature→Wise), behavior modulation + milestones
+enabled = true
+
+# ── 内在独白 / Inner Monologue ──
+[inner_monologue]
+# AI 独处时的自主思考：图漫游/日记/自主学习/白日梦/巩固反思
+# Autonomous thinking when idle: graph wander / diary / learning / daydream / reflection
+enabled = true
+max_thoughts = 200                    # 环形缓冲区容量 / Ring buffer capacity
+max_per_day = 30                      # 每日思考总上限 / Total thoughts per day
+graph_wander_interval_secs = 300      # 图漫游最小间隔 5min / Min wander interval
+graph_wander_max_per_day = 20         # 图漫游每日上限 / Max wanders per day
+learning_interval_secs = 1800         # 学习最小间隔 30min / Min learning interval
+learning_max_per_day = 5              # 学习每日上限 / Max learning per day
+daydream_interval_secs = 1800         # 白日梦最小间隔 30min / Min daydream interval
+daydream_confidence = 0.3             # 白日梦置信度 / Daydream confidence

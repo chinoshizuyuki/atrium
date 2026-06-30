@@ -1,0 +1,26 @@
+# Atrium — Prometheus Scrape Config
+# Scrape metrics from Rust core (:9090) and Gateway (:8080)
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  scrape_timeout: 10s
+
+scrape_configs:
+  # Rust Core — metrics endpoint exposed by atrium-metrics crate
+  - job_name: 'atrium-core'
+    static_configs:
+      - targets: ['atrium-core:9090']
+    metrics_path: /metrics
+    scrape_interval: 10s
+
+  # Python Gateway — /health endpoint (basic up/down)
+  - job_name: 'atrium-gateway'
+    static_configs:
+      - targets: ['atrium-gateway:8080']
+    metrics_path: /health
+    scrape_interval: 30s
+
+# Alert rules (optional, can be expanded later)
+rule_files:
+  - 'alerts.yml'

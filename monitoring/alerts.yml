@@ -1,0 +1,49 @@
+# Atrium — Prometheus Alert Rules
+
+groups:
+  - name: atrium_core
+    rules:
+      - alert: AtriumCoreDown
+        expr: up{job="atrium-core"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Atrium Core is down"
+          description: "Rust core has been unreachable for 2 minutes."
+
+      - alert: AtriumGatewayDown
+        expr: up{job="atrium-gateway"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Atrium Gateway is down"
+          description: "Python gateway has been unreachable for 2 minutes."
+
+      - alert: HighMessageLatency
+        expr: histogram_quantile(0.95, rate(atrium_message_duration_seconds_bucket[5m])) > 2.0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High message latency (P95 > 2s)"
+          description: "95th percentile message processing latency exceeds 2 seconds."
+
+      - alert: LLMErrorRateHigh
+        expr: rate(atrium_llm_errors_total[5m]) / rate(atrium_llm_requests_total[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "LLM error rate > 10%"
+          description: "More than 10% of LLM requests are failing."
+
+      - alert: FactStoreSizeLarge
+        expr: atrium_fact_store_size > 100000
+        for: 10m
+        labels:
+          severity: info
+        annotations:
+          summary: "FactStore size exceeds 100K"
+          description: "Consider running memory consolidation."

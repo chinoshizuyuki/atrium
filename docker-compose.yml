@@ -1,0 +1,204 @@
+# Atrium — Production Stack
+# 启动: docker compose up -d
+# 更新: docker compose build --no-cache && docker compose up -d
+# 日志: docker compose logs -f atrium-core
+# 监控: http://localhost:3000 (Grafana) / http://localhost:9090 (Prometheus)
+
+services:
+  # ─── Rust Core Engine ───────────────────────────────────────
+  atrium-core:
+    build: .
+    image: atrium-core:latest
+    container_name: atrium-core
+    restart: unless-stopped
+    ports:
+      - "50051:50051"   # gRPC
+      - "9090:9090"     # Prometheus metrics
+    volumes:
+      - atrium_data:/data/atrium
+      - ./atrium.toml:/etc/atrium/atrium.toml:ro
+    environment:
+      - RUST_LOG=info
+      - ATRIUM_DATA_DIR=/data/atrium
+      - TZ=${TZ:-Asia/Shanghai}
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '2.0'
+        reservations:
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "atrium-core", "/etc/atrium/atrium.toml", "--health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  # ─── Python Gateway (Control Plane) ─────────────────────────
+  atrium-gateway:
+    build:
+      context: .
+      dockerfile: services/gateway/Dockerfile.gateway
+    image: atrium-gateway:latest
+    container_name: atrium-gateway
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    depends_on:
+      atrium-core:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      - ATRIUM_GRPC_ADDR=atrium-core:50051
+      - ATRIUM_LLM_MODEL=${ATRIUM_LLM_MODEL:-deepseek-chat}
+      - ATRIUM_LLM_BASE_URL=${ATRIUM_LLM_BASE_URL:-https://api.deepseek.com/v1}
+      - ATRIUM_LLM_API_KEY=${ATRIUM_LLM_API_KEY:-}
+      - ATRIUM_LLM_TEMPERATURE=${ATRIUM_LLM_TEMPERATURE:-0.7}
+      - ATRIUM_LLM_MAX_TOKENS=${ATRIUM_LLM_MAX_TOKENS:-1024}
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-atrium}:${POSTGRES_PASSWORD:-atrium}@postgres:5432/${POSTGRES_DB:-atrium}
+      - REDIS_URL=redis://${REDIS_PASSWORD:-}@redis:6379/0
+      - TZ=${TZ:-Asia/Shanghai}
+    volumes:
+      - gateway_data:/app/data
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.0'
+        reservations:
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; r=httpx.get('http://localhost:8080/health', timeout=5); r.raise_for_status()"]
+      interval: 30s
+      timeout: 10s
+      start_period: 15s
+      retries: 3
+
+  # ─── PostgreSQL ─────────────────────────────────────────────
+  postgres:
+    image: postgres:15-alpine
+    container_name: atrium-postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-atrium}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-atrium}
+      - POSTGRES_DB=${POSTGRES_DB:-atrium}
+      - TZ=${TZ:-Asia/Shanghai}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '1.0'
+        reservations:
+          memory: 128M
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U atrium"]
+      interval: 10s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  # ─── Redis ──────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: atrium-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru ${REDIS_PASSWORD:+--requirepass $REDIS_PASSWORD}
+    volumes:
+      - redis_data:/data
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 64M
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ${REDIS_PASSWORD:+-a \"$REDIS_PASSWORD\"} ping"]
+      interval: 10s
+      timeout: 5s
+      start_period: 5s
+      retries: 3
+
+  # ─── Prometheus ─────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.52.0
+    container_name: atrium-prometheus
+    restart: unless-stopped
+    ports:
+      - "9091:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=30d'
+      - '--storage.tsdb.retention.size=512MB'
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 128M
+    depends_on:
+      atrium-core:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9090/-/healthy || exit 1"]
+      interval: 30s
+      timeout: 10s
+      start_period: 15s
+      retries: 3
+
+  # ─── Grafana ────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:11.0.0
+    container_name: atrium-grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-atrium}
+      - GF_AUTH_ANONYMOUS_ENABLED=false
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - TZ=${TZ:-Asia/Shanghai}
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.5'
+        reservations:
+          memory: 64M
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 3
+
+volumes:
+  atrium_data:
+  gateway_data:
+  pg_data:
+  redis_data:
+  prometheus_data:
+  grafana_data:

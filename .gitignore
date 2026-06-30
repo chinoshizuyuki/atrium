@@ -1,0 +1,47 @@
+# ======= Rust =======
+/target/
+# ======= Python =======
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+# ======= IDE =======
+.vscode/
+.idea/
+.arts/
+.codeartsdoer
+*.swp
+*.swo
+# ======= OS =======
+.DS_Store
+Thumbs.db
+# ======= Atrium 项目 =======
+data/
+*.db
+.atrium/
+.pytest_cache/
+*.egg-info/
+services/terminal/atrium_terminal.egg-info/
+# 运行时生成的罐装知识目录（builtin_canned/ 是源码内嵌的，需提交）
+canned/
+# crate 级编译产物
+crates/*/target/
+# Windows 上 ~ 不展开产生的字面目录
+crates/*/~/
+# ======= 生成的 gRPC stubs =======
+services/gateway/atrium/proto/atrium_pb2.py
+services/gateway/atrium/proto/atrium_pb2_grpc.py
+services/gateway/atrium/proto/atrium_pb2.pyi
+# ======= AI =======
+.workbuddy/
