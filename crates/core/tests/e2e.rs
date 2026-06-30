@@ -544,7 +544,9 @@ mod real_api {
             emo.pleasure, emo.arousal, um_fragment, stage
         );
 
-        let result = client.generate(LlmCallKind::StreamChat, None, &prompt, 0.75).await;
+        let result = client
+            .generate(LlmCallKind::StreamChat, None, &prompt, 0.75)
+            .await;
         assert!(result.is_ok(), "LLM 调用应成功");
         let result = result.unwrap();
         println!(
@@ -589,7 +591,9 @@ mod real_api {
  请生成一个简短的主动话题来重新开启对话（1-2句话，友好自然）："
             .to_string();
 
-        let result = client.generate(LlmCallKind::StreamChat, None, &prompt, 0.8).await;
+        let result = client
+            .generate(LlmCallKind::StreamChat, None, &prompt, 0.8)
+            .await;
         assert!(result.is_ok(), "LLM 调用应成功");
         let result = result.unwrap();
         println!("主动话题 ({}ms): {}", result.latency_ms, result.content);
@@ -668,7 +672,9 @@ mod real_api {
             stats.node_count, stats.edge_count
         );
 
-        let result = client.generate(LlmCallKind::StreamChat, None, &prompt, 0.75).await;
+        let result = client
+            .generate(LlmCallKind::StreamChat, None, &prompt, 0.75)
+            .await;
         assert!(result.is_ok(), "LLM 调用应成功");
         let result = result.unwrap();
         println!("LLM 回复 ({}ms): {}", result.latency_ms, result.content);
@@ -743,7 +749,9 @@ mod real_api {
                 "你是一个情感AI助手。{}\n用户说：'我最近压力好大，什么都不想做'。请用1-2句话回应。",
                 injection
             );
-            let result = client.generate(LlmCallKind::StreamChat, None, &prompt, 0.7).await;
+            let result = client
+                .generate(LlmCallKind::StreamChat, None, &prompt, 0.7)
+                .await;
             assert!(result.is_ok(), "LLM调用应成功");
             let result = result.unwrap();
             println!("悲伤LLM回复({}ms): {}", result.latency_ms, result.content);
@@ -814,7 +822,9 @@ mod real_api {
                 "你是一个情感AI助手。{}\n用户说：'太棒了！我终于搞定了那个bug！'。请用1-2句话回应。",
                 injection
             );
-            let result = client.generate(LlmCallKind::StreamChat, None, &prompt, 0.7).await;
+            let result = client
+                .generate(LlmCallKind::StreamChat, None, &prompt, 0.7)
+                .await;
             assert!(result.is_ok(), "LLM调用应成功");
             let result = result.unwrap();
             println!("喜悦LLM回复({}ms): {}", result.latency_ms, result.content);
@@ -973,7 +983,9 @@ mod real_api {
                 "你是一个情感AI助手。{}\n用户说：'我没事'。请用1-2句话回应。",
                 injection
             );
-            let result = client.generate(LlmCallKind::StreamChat, None, &prompt, 0.7).await;
+            let result = client
+                .generate(LlmCallKind::StreamChat, None, &prompt, 0.7)
+                .await;
             assert!(result.is_ok(), "LLM调用应成功");
             let result = result.unwrap();
             println!("潜台词LLM回复({}ms): {}", result.latency_ms, result.content);
@@ -1092,7 +1104,9 @@ mod real_api {
                 "你是一个情感AI助手。{}\n用户说：'今天天气真好'。请用1-2句话回应。",
                 injection
             );
-            let result = client.generate(LlmCallKind::StreamChat, None, &prompt, 0.7).await;
+            let result = client
+                .generate(LlmCallKind::StreamChat, None, &prompt, 0.7)
+                .await;
             assert!(result.is_ok(), "LLM调用应成功");
             let result = result.unwrap();
             println!(

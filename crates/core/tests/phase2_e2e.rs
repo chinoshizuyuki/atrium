@@ -363,7 +363,9 @@ mod real_api {
             pref_ctx, user_model
         );
 
-        let result = client.generate(LlmCallKind::StreamChat, None, &prompt, 0.75).await;
+        let result = client
+            .generate(LlmCallKind::StreamChat, None, &prompt, 0.75)
+            .await;
         assert!(result.is_ok(), "LLM 调用应成功");
         let result = result.unwrap();
         println!(
@@ -420,7 +422,9 @@ mod real_api {
             rule_hint
         );
 
-        let result = client.generate(LlmCallKind::StreamChat, None, &prompt, 0.8).await;
+        let result = client
+            .generate(LlmCallKind::StreamChat, None, &prompt, 0.8)
+            .await;
         assert!(result.is_ok(), "LLM 调用应成功");
         let result = result.unwrap();
         println!("LLM 鼓励回复 ({}ms): {}", result.latency_ms, result.content);
@@ -459,7 +463,9 @@ mod real_api {
         let client = Arc::new(HttpLlmClient::new(cfg));
         let prompt = "你是一个名叫小星的情感AI助手。请用1句话友好地回应用户的问候「你好啊，今天天气真好」。注意：在回复中请用「小星」自称，不要说「作为一个AI」之类的话。";
 
-        let result = client.generate(LlmCallKind::StreamChat, None, prompt, 0.75).await;
+        let result = client
+            .generate(LlmCallKind::StreamChat, None, prompt, 0.75)
+            .await;
         assert!(result.is_ok(), "LLM 调用应成功");
         let result = result.unwrap();
         println!("LLM 回复 ({}ms): {}", result.latency_ms, result.content);
@@ -608,7 +614,9 @@ mod real_api {
             emo.pleasure, emo.arousal, emo.dominance, stage, mult, user_model, feedback, pref_ctx,
         );
 
-        let result = client.generate(LlmCallKind::StreamChat, None, &prompt, 0.75).await;
+        let result = client
+            .generate(LlmCallKind::StreamChat, None, &prompt, 0.75)
+            .await;
         assert!(result.is_ok(), "LLM 调用应成功");
         let result = result.unwrap();
         println!(
@@ -662,7 +670,9 @@ mod real_api {
             budget
         );
 
-        let result = client.generate(LlmCallKind::StreamChat, None, &prompt, 0.7).await;
+        let result = client
+            .generate(LlmCallKind::StreamChat, None, &prompt, 0.7)
+            .await;
         assert!(result.is_ok(), "LLM 调用应成功");
         let result = result.unwrap();
         println!(

@@ -47,8 +47,6 @@ Env vars:
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import hmac
 import json
 import logging
 import os
@@ -58,6 +56,7 @@ from typing import Optional
 from urllib.parse import urlencode
 
 import aiohttp
+from aiohttp import web
 
 # ═══════════════════════════════════════════════════
 # Config
@@ -406,7 +405,6 @@ class TencentBotHandler(QQHandlerBase):
 
     async def _main_loop(self, ws: aiohttp.ClientWebSocketResponse):
         """Process messages: Hello → Identify → Dispatch/Heartbeat."""
-        identified = False
         async for msg in ws:
             if msg.type == aiohttp.WSMsgType.TEXT:
                 data = json.loads(msg.data)
@@ -417,7 +415,6 @@ class TencentBotHandler(QQHandlerBase):
 
                 if op == OP_HELLO:
                     await self._send_identify(ws)
-                    identified = True
                     log.info("Identified to Tencent Gateway")
                 elif op == OP_DISPATCH:
                     await self._on_dispatch(data)
@@ -429,7 +426,6 @@ class TencentBotHandler(QQHandlerBase):
                 elif op == 9:  # INVALID_SESSION
                     log.warning("Invalid session, re-identifying...")
                     await self._send_identify(ws)
-                    identified = True
             elif msg.type == aiohttp.WSMsgType.CLOSED:
                 return
             elif msg.type == aiohttp.WSMsgType.ERROR:
@@ -489,8 +485,6 @@ class TencentBotHandler(QQHandlerBase):
         author = d.get("author", {})
         user_id = author.get("member_openid", author.get("id", "unknown"))
         content = d.get("content", "").strip()
-        msg_id = d.get("id", "")
-        timestamp = d.get("timestamp", "")
 
         if not group_id or not content:
             return
@@ -563,9 +557,6 @@ class TencentBotHandler(QQHandlerBase):
 # OneBot WebSocket Server (aiohttp)
 # ═══════════════════════════════════════════════════
 
-from aiohttp import web
-
-
 async def onebot_endpoint(request: web.Request) -> web.WebSocketResponse:
     """Handle OneBot reverse-WS connection."""
     ws = web.WebSocketResponse()
@@ -608,7 +599,7 @@ async def main():
     if QQ_BOT_MODE == "tencent":
         # ═══ Mode B: Tencent Official Bot ═══
         _validate_tencent_config()
-        log.info(f"=== Tencent Official Bot mode ===")
+        log.info("=== Tencent Official Bot mode ===")
         log.info(f"API: {TENCENT_API}")
         log.info(f"AppID: {TENCENT_APP_ID}")
         log.info(f"Sandbox: {TENCENT_SANDBOX}")
@@ -637,11 +628,11 @@ async def main():
         site = web.TCPSite(runner, ONEBOT_HOST, ONEBOT_PORT)
         await site.start()
 
-        log.info(f"=== OneBot v11 mode ===")
+        log.info("=== OneBot v11 mode ===")
         log.info(f"Listening: {ONEBOT_HOST}:{ONEBOT_PORT}")
         log.info(f"Atrium: {ATRIUM_HTTP}")
         log.info(f"Room: groups → {ROOM_PREFIX}-<gid>")
-        log.info(f"Private: → /v1/chat (per-user session)")
+        log.info("Private: → /v1/chat (per-user session)")
         log.info(f"Respond @only: {RESPOND_AT_ONLY}")
 
         try:
