@@ -305,7 +305,8 @@ async fn test_phase2_full_pipeline_multisource_injection() {
 mod real_api {
     use super::*;
     use atrium_core::config::LlmCfg;
-    use atrium_core::llm_client::{LlmCallKind, LlmClient};
+    use atrium_core::llm_client::{HttpLlmClient, LlmCallKind};
+    use atrium_memory::llm_client::LlmClient; // trait for .generate() dispatch
 
     fn make_llm_cfg() -> LlmCfg {
         let api_key =
@@ -352,7 +353,7 @@ mod real_api {
         println!("用户心智模型:\n{}", user_model);
 
         // 用 LLM 生成包含偏好上下文的回复
-        let client = Arc::new(LlmClient::new(cfg));
+        let client = Arc::new(HttpLlmClient::new(cfg));
         let prompt = format!(
             "你是一个情感AI助手。以下是你了解到的用户信息:\n\
  {}\n\
@@ -362,7 +363,7 @@ mod real_api {
             pref_ctx, user_model
         );
 
-        let result = client.chat(LlmCallKind::StreamChat, &prompt, 0.75).await;
+        let result = client.generate(LlmCallKind::StreamChat, None, &prompt, 0.75).await;
         assert!(result.is_ok(), "LLM 调用应成功");
         let result = result.unwrap();
         println!(
@@ -404,7 +405,7 @@ mod real_api {
         println!("规则提示注入到回复: {}", has_rule_hint);
 
         // 用 LLM 生成带规则上下文的回复
-        let client = Arc::new(LlmClient::new(cfg));
+        let client = Arc::new(HttpLlmClient::new(cfg));
         let rule_hint = if has_rule_hint {
             "[规则提示] 主人加油！考试一定没问题的！💪"
         } else {
@@ -419,7 +420,7 @@ mod real_api {
             rule_hint
         );
 
-        let result = client.chat(LlmCallKind::StreamChat, &prompt, 0.8).await;
+        let result = client.generate(LlmCallKind::StreamChat, None, &prompt, 0.8).await;
         assert!(result.is_ok(), "LLM 调用应成功");
         let result = result.unwrap();
         println!("LLM 鼓励回复 ({}ms): {}", result.latency_ms, result.content);
@@ -455,10 +456,10 @@ mod real_api {
         assert!(!resp.reply.is_empty(), "回复不应为空");
 
         // 用 LLM 生成回复，测试 enforce_identity 替换
-        let client = Arc::new(LlmClient::new(cfg));
+        let client = Arc::new(HttpLlmClient::new(cfg));
         let prompt = "你是一个名叫小星的情感AI助手。请用1句话友好地回应用户的问候「你好啊，今天天气真好」。注意：在回复中请用「小星」自称，不要说「作为一个AI」之类的话。";
 
-        let result = client.chat(LlmCallKind::StreamChat, prompt, 0.75).await;
+        let result = client.generate(LlmCallKind::StreamChat, None, prompt, 0.75).await;
         assert!(result.is_ok(), "LLM 调用应成功");
         let result = result.unwrap();
         println!("LLM 回复 ({}ms): {}", result.latency_ms, result.content);
@@ -487,7 +488,7 @@ mod real_api {
         }
 
         let svc = make_service();
-        let client = Arc::new(LlmClient::new(cfg));
+        let client = Arc::new(HttpLlmClient::new(cfg));
 
         println!("═══════════════════════════════════════");
         println!(" 全流程实机测试");
@@ -607,7 +608,7 @@ mod real_api {
             emo.pleasure, emo.arousal, emo.dominance, stage, mult, user_model, feedback, pref_ctx,
         );
 
-        let result = client.chat(LlmCallKind::StreamChat, &prompt, 0.75).await;
+        let result = client.generate(LlmCallKind::StreamChat, None, &prompt, 0.75).await;
         assert!(result.is_ok(), "LLM 调用应成功");
         let result = result.unwrap();
         println!(
@@ -654,14 +655,14 @@ mod real_api {
         println!("摘要数: {}", summary_count);
 
         // 用 LLM 生成一条回复，包含当前上下文信息
-        let client = Arc::new(LlmClient::new(cfg));
+        let client = Arc::new(HttpLlmClient::new(cfg));
         let prompt = format!(
             "你是一个情感AI助手。当前 token 使用情况: {}。\n\
  用户最近讨论了很多话题。请用1-2句话总结你对用户兴趣的理解。",
             budget
         );
 
-        let result = client.chat(LlmCallKind::StreamChat, &prompt, 0.7).await;
+        let result = client.generate(LlmCallKind::StreamChat, None, &prompt, 0.7).await;
         assert!(result.is_ok(), "LLM 调用应成功");
         let result = result.unwrap();
         println!(

@@ -5,7 +5,8 @@
 //! 使用真实 DeepSeek API。
 
 use atrium_core::config::{LlmCfg, RoomCfg};
-use atrium_core::llm_client::{LlmCallKind, LlmClient};
+use atrium_core::llm_client::{HttpLlmClient, LlmCallKind};
+use atrium_memory::llm_client::LlmClient; // trait for .generate() dispatch
 use atrium_core::room::{RoomEngine, RoomMessage, RoomMsgType, SpeakDecision};
 use atrium_memory::canned::CannedManager;
 
@@ -109,7 +110,7 @@ mod real_api {
             eprintln!("跳过：未设置有效 OPENAI_API_KEY");
             return;
         }
-        let _client = Arc::new(LlmClient::new(llm_cfg));
+        let _client = Arc::new(HttpLlmClient::new(llm_cfg));
 
         // ── AI-A: 不知道飞书 ──
         let mut room_a = RoomEngine::new(make_room_cfg("ai-a"));
@@ -191,19 +192,19 @@ mod real_api {
             eprintln!("跳过：未设置有效 OPENAI_API_KEY");
             return;
         }
-        let client = LlmClient::new(llm_cfg.clone());
+        let client = HttpLlmClient::new(llm_cfg.clone());
 
         // 模拟两个 AI 角色对话
         let prompt_a = "你是小明，一个乐观的程序员。在群聊中有人说「有人知道怎么连接飞书吗？」，\
  你确实知道飞书的连接方式。请从你的角度回应，1-3句话。";
-        let result_a = client.chat(LlmCallKind::StreamChat, prompt_a, 0.75).await;
+        let result_a = client.generate(LlmCallKind::StreamChat, None, prompt_a, 0.75).await;
         assert!(result_a.is_ok());
         let result_a = result_a.unwrap();
         println!("小明回应 ({}ms): {}", result_a.latency_ms, result_a.content);
 
         let prompt_b = "你是小红，一个知识丰富的AI助手。\
  有人问「AI的未来发展方向是什么」。请提出一个有趣的讨论角度，一句话即可。";
-        let result_b = client.chat(LlmCallKind::StreamChat, prompt_b, 0.8).await;
+        let result_b = client.generate(LlmCallKind::StreamChat, None, prompt_b, 0.8).await;
         assert!(result_b.is_ok());
         let result_b = result_b.unwrap();
         println!("小红话题 ({}ms): {}", result_b.latency_ms, result_b.content);

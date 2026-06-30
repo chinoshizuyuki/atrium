@@ -9,8 +9,8 @@
 //! 5. CoreService::process_message_stream 端到端
 
 use atrium_core::config::LlmCfg;
-use atrium_core::llm_client::LlmCallKind;
-use atrium_core::llm_client::{LlmClient, StreamEvent};
+use atrium_core::llm_client::{HttpLlmClient, LlmCallKind, StreamEvent};
+use atrium_memory::llm_client::LlmClient; // trait for .generate_stream() dispatch
 
 /// 从 atrium.toml 读取 LLM 配置，若无有效 key 则返回 None
 fn load_llm_config() -> LlmCfg {
@@ -91,12 +91,12 @@ async fn test_real_deepseek_chat_stream() {
         !api_key.is_empty()
     );
 
-    let client = LlmClient::new(cfg);
+    let client = HttpLlmClient::new(cfg);
 
     // ── 测试 1: 基础流式调用 ──
     println!("\n=== 测试 1: 基础流式调用 ===");
     let rx = client
-        .chat_stream(
+        .generate_stream(
             LlmCallKind::StreamChat,
             Some("你是一个友好的AI助手。请用一句话回答。"),
             "你好，请介绍一下你自己",
@@ -151,7 +151,7 @@ async fn test_real_deepseek_chat_stream() {
     // ── 测试 2: 无 system prompt 的流式调用 ──
     println!("\n=== 测试 2: 无 system prompt ===");
     let rx2 = client
-        .chat_stream(LlmCallKind::StreamChat, None, "1+1等于几？只回答数字", 0.1)
+        .generate_stream(LlmCallKind::StreamChat, None, "1+1等于几？只回答数字", 0.1)
         .await
         .expect("chat_stream 应返回 Some(receiver)");
 
@@ -194,7 +194,7 @@ async fn test_real_deepseek_chat_stream() {
     // ── 测试 3: 中文长回复流式 ──
     println!("\n=== 测试 3: 中文长回复 ===");
     let rx3 = client
-        .chat_stream(
+        .generate_stream(
             LlmCallKind::StreamChat,
             Some("你是一个有情感的AI伴侣，名叫Atrium。用中文回答。"),
             "给我讲一个简短有趣的故事",

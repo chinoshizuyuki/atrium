@@ -450,7 +450,8 @@ async fn test_phase15_relationship_transition_detection() {
 mod real_api {
     use super::*;
     use atrium_core::config::LlmCfg;
-    use atrium_core::llm_client::{LlmCallKind, LlmClient};
+    use atrium_core::llm_client::{HttpLlmClient, LlmCallKind};
+    use atrium_memory::llm_client::LlmClient; // trait for .generate() dispatch + dyn type
     use std::sync::Arc;
 
     fn make_llm_cfg() -> LlmCfg {
@@ -483,7 +484,7 @@ mod real_api {
         let svc = make_service();
 
         // 设置 LLM 客户端
-        let client = Arc::new(LlmClient::new(cfg));
+        let client = Arc::new(HttpLlmClient::new(cfg));
 
         // 模拟一次完整的用户对话（通过 process_message）
         let user_messages = &[
@@ -543,7 +544,7 @@ mod real_api {
             emo.pleasure, emo.arousal, um_fragment, stage
         );
 
-        let result = client.chat(LlmCallKind::StreamChat, &prompt, 0.75).await;
+        let result = client.generate(LlmCallKind::StreamChat, None, &prompt, 0.75).await;
         assert!(result.is_ok(), "LLM 调用应成功");
         let result = result.unwrap();
         println!(
@@ -582,13 +583,13 @@ mod real_api {
         );
 
         // 如果时机合适，用 LLM 生成主动话题
-        let client = LlmClient::new(cfg);
+        let client = HttpLlmClient::new(cfg);
 
         let prompt = "你是 AI 助手，用户已经沉默了 10 分钟。用户兴趣: 编程、音乐、Rust。\
  请生成一个简短的主动话题来重新开启对话（1-2句话，友好自然）："
             .to_string();
 
-        let result = client.chat(LlmCallKind::StreamChat, &prompt, 0.8).await;
+        let result = client.generate(LlmCallKind::StreamChat, None, &prompt, 0.8).await;
         assert!(result.is_ok(), "LLM 调用应成功");
         let result = result.unwrap();
         println!("主动话题 ({}ms): {}", result.latency_ms, result.content);
@@ -659,7 +660,7 @@ mod real_api {
         );
 
         // 使用 LLM 生成回复，包含图上下文
-        let client = LlmClient::new(cfg);
+        let client = HttpLlmClient::new(cfg);
         let prompt = format!(
             "你是一个情感AI助手。关联记忆显示用户喜欢 Rust 编程和 AI。\
  当前图有 {} 个节点和 {} 条边。\
@@ -667,7 +668,7 @@ mod real_api {
             stats.node_count, stats.edge_count
         );
 
-        let result = client.chat(LlmCallKind::StreamChat, &prompt, 0.75).await;
+        let result = client.generate(LlmCallKind::StreamChat, None, &prompt, 0.75).await;
         assert!(result.is_ok(), "LLM 调用应成功");
         let result = result.unwrap();
         println!("LLM 回复 ({}ms): {}", result.latency_ms, result.content);
@@ -737,12 +738,12 @@ mod real_api {
             eprintln!("跳过LLM验证：未配置API key");
         } else {
             let injection = ExpressionOrchestrator::build_system_prompt_injection(&expr);
-            let client = LlmClient::new(cfg);
+            let client = HttpLlmClient::new(cfg);
             let prompt = format!(
                 "你是一个情感AI助手。{}\n用户说：'我最近压力好大，什么都不想做'。请用1-2句话回应。",
                 injection
             );
-            let result = client.chat(LlmCallKind::StreamChat, &prompt, 0.7).await;
+            let result = client.generate(LlmCallKind::StreamChat, None, &prompt, 0.7).await;
             assert!(result.is_ok(), "LLM调用应成功");
             let result = result.unwrap();
             println!("悲伤LLM回复({}ms): {}", result.latency_ms, result.content);
@@ -808,12 +809,12 @@ mod real_api {
             eprintln!("跳过LLM验证：未配置API key");
         } else {
             let injection = ExpressionOrchestrator::build_system_prompt_injection(&expr);
-            let client = LlmClient::new(cfg);
+            let client = HttpLlmClient::new(cfg);
             let prompt = format!(
                 "你是一个情感AI助手。{}\n用户说：'太棒了！我终于搞定了那个bug！'。请用1-2句话回应。",
                 injection
             );
-            let result = client.chat(LlmCallKind::StreamChat, &prompt, 0.7).await;
+            let result = client.generate(LlmCallKind::StreamChat, None, &prompt, 0.7).await;
             assert!(result.is_ok(), "LLM调用应成功");
             let result = result.unwrap();
             println!("喜悦LLM回复({}ms): {}", result.latency_ms, result.content);
@@ -884,20 +885,22 @@ mod real_api {
         {
             eprintln!("跳过LLM验证：未配置API key");
         } else {
-            let client = LlmClient::new(cfg);
+            let client = HttpLlmClient::new(cfg);
             let inj_acq = ExpressionOrchestrator::build_system_prompt_injection(&expr_acq);
             let inj_deep = ExpressionOrchestrator::build_system_prompt_injection(&expr_deep);
             let r1 = client
-                .chat(
+                .generate(
                     LlmCallKind::StreamChat,
+                    None,
                     &format!("{}\n用户说'你好'，回应1句", inj_acq),
                     0.7,
                 )
                 .await
                 .unwrap();
             let r2 = client
-                .chat(
+                .generate(
                     LlmCallKind::StreamChat,
+                    None,
                     &format!("{}\n用户说'你好'，回应1句", inj_deep),
                     0.7,
                 )
@@ -965,12 +968,12 @@ mod real_api {
             eprintln!("跳过LLM验证：未配置API key");
         } else {
             let injection = ExpressionOrchestrator::build_system_prompt_injection(&expr);
-            let client = LlmClient::new(cfg);
+            let client = HttpLlmClient::new(cfg);
             let prompt = format!(
                 "你是一个情感AI助手。{}\n用户说：'我没事'。请用1-2句话回应。",
                 injection
             );
-            let result = client.chat(LlmCallKind::StreamChat, &prompt, 0.7).await;
+            let result = client.generate(LlmCallKind::StreamChat, None, &prompt, 0.7).await;
             assert!(result.is_ok(), "LLM调用应成功");
             let result = result.unwrap();
             println!("潜台词LLM回复({}ms): {}", result.latency_ms, result.content);
@@ -1084,12 +1087,12 @@ mod real_api {
             let expr =
                 ExpressionOrchestrator::orchestrate(&ctx, "今天天气真好", [0.3, 0.2, 0.1], 50);
             let injection = ExpressionOrchestrator::build_system_prompt_injection(&expr);
-            let client = LlmClient::new(cfg);
+            let client = HttpLlmClient::new(cfg);
             let prompt = format!(
                 "你是一个情感AI助手。{}\n用户说：'今天天气真好'。请用1-2句话回应。",
                 injection
             );
-            let result = client.chat(LlmCallKind::StreamChat, &prompt, 0.7).await;
+            let result = client.generate(LlmCallKind::StreamChat, None, &prompt, 0.7).await;
             assert!(result.is_ok(), "LLM调用应成功");
             let result = result.unwrap();
             println!(
@@ -1118,7 +1121,7 @@ mod real_api {
         let svc = make_service();
 
         // 设置 LLM 客户端 / Set LLM client
-        let client = Arc::new(LlmClient::new(cfg));
+        let client = Arc::new(HttpLlmClient::new(cfg));
         svc.set_llm_client(client);
 
         // 发送消息填充 FactStore（graph_wander 需要种子事实）
