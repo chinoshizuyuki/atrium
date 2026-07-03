@@ -184,7 +184,6 @@ impl ReplayPipeline {
                     kind: PatternKind::FrequentFact,
                     description: format!("高频事实(出现{}次): {}", count, key),
                     confidence: (*count as f64 / timeline.len() as f64).min(1.0),
-                    supporting_keys: vec![key.clone()],
                 });
             }
         }
@@ -211,7 +210,6 @@ impl ReplayPipeline {
                         sorted
                     ),
                     confidence: 0.7,
-                    supporting_keys: vec![subject.clone()],
                 });
             }
         }
@@ -239,7 +237,6 @@ impl ReplayPipeline {
                         trend, early_avg, recent_avg
                     ),
                     confidence: 0.6,
-                    supporting_keys: vec![],
                 });
             }
         }
@@ -264,11 +261,6 @@ impl ReplayPipeline {
                             i - window_start + 1
                         ),
                         confidence: 0.65,
-                        supporting_keys: timeline[window_start..=i]
-                            .iter()
-                            .map(|e| format!("{}|{}", e.predicate, e.object))
-                            .take(5)
-                            .collect(),
                     });
                     window_start = i + 1;
                 }
@@ -373,7 +365,6 @@ struct AnalyzedPattern {
     kind: PatternKind,
     description: String,
     confidence: f64,
-    supporting_keys: Vec<String>,
 }
 
 /// 发现的模式（对外输出）

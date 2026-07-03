@@ -4,78 +4,109 @@
 
 use metrics::{counter, gauge, histogram};
 use std::net::SocketAddr;
+use std::sync::OnceLock;
 use std::time::Instant;
 
-// ─── Metrics 键名常量 / Metrics Key Constants ───
+// ─── Metrics 前缀（可配置）/ Metrics Prefix (configurable) ───
+
+/// 全局 metrics 键名前缀，由 init_prefix() 在启动时设置 / Global metrics key prefix, set by init_prefix() at startup
+static METRICS_PREFIX: OnceLock<String> = OnceLock::new();
+
+/// 初始化 metrics 前缀 / Initialize metrics prefix
+///
+/// 在 CoreService 启动时从 ObservabilityCfg.metrics_prefix 调用。
+/// 若未调用，默认前缀为 `"atrium_"`。
+///
+/// Called at startup from ObservabilityCfg.metrics_prefix.
+/// If not called, defaults to `"atrium_"`.
+pub fn init_prefix(prefix: &str) {
+    let _ = METRICS_PREFIX.set(prefix.to_string());
+}
+
+/// 获取当前前缀 / Get current prefix (fallback: "atrium_")
+fn prefix() -> &'static str {
+    METRICS_PREFIX
+        .get()
+        .map(|s| s.as_str())
+        .unwrap_or("atrium_")
+}
+
+/// 拼接完整指标键名 / Build full metric key from prefix + suffix
+#[inline]
+fn fmt_key(suffix: &str) -> String {
+    format!("{}{}", prefix(), suffix)
+}
+
+// ─── Metrics 键名后缀常量 / Metrics Key Suffix Constants ───
 
 pub mod keys {
-    // 计数器 / Counters
-    pub const MSG_RECEIVED: &str = "atrium_msg_received_total";
-    pub const MSG_PROCESSED: &str = "atrium_msg_processed_total";
-    pub const LLM_CALLS: &str = "atrium_llm_calls_total";
-    pub const LLM_ERRORS: &str = "atrium_llm_errors_total";
-    pub const LLM_STREAM_TOKENS: &str = "atrium_llm_stream_tokens_total";
-    pub const PROACTIVE_DECISIONS: &str = "atrium_proactive_decisions_total";
-    pub const ACK_LEARNED: &str = "atrium_ack_learned_total";
-    pub const GUARD_BLOCKED: &str = "atrium_guard_blocked_total";
-    pub const FACTS_INSERTED: &str = "atrium_facts_inserted_total";
-    pub const CONSOLIDATION_RUNS: &str = "atrium_consolidation_runs_total";
+    // 计数器 / Counters (suffixes — prefix is prepended at call time)
+    pub const MSG_RECEIVED: &str = "msg_received_total";
+    pub const MSG_PROCESSED: &str = "msg_processed_total";
+    pub const LLM_CALLS: &str = "llm_calls_total";
+    pub const LLM_ERRORS: &str = "llm_errors_total";
+    pub const LLM_STREAM_TOKENS: &str = "llm_stream_tokens_total";
+    pub const PROACTIVE_DECISIONS: &str = "proactive_decisions_total";
+    pub const ACK_LEARNED: &str = "ack_learned_total";
+    pub const GUARD_BLOCKED: &str = "guard_blocked_total";
+    pub const FACTS_INSERTED: &str = "facts_inserted_total";
+    pub const CONSOLIDATION_RUNS: &str = "consolidation_runs_total";
 
     // 直方图 / Histograms
-    pub const MSG_LATENCY: &str = "atrium_msg_latency_ms";
-    pub const LLM_LATENCY: &str = "atrium_llm_latency_ms";
-    pub const SEARCH_LATENCY: &str = "atrium_search_latency_ms";
-    pub const EMOTION_TICK: &str = "atrium_emotion_tick_us";
+    pub const MSG_LATENCY: &str = "msg_latency_ms";
+    pub const LLM_LATENCY: &str = "llm_latency_ms";
+    pub const SEARCH_LATENCY: &str = "search_latency_ms";
+    pub const EMOTION_TICK: &str = "emotion_tick_us";
 
     // 仪表盘 / Gauges
-    pub const FACT_STORE_SIZE: &str = "atrium_fact_store_size";
-    pub const STM_SIZE: &str = "atrium_stm_size";
-    pub const GRAPH_NODES: &str = "atrium_graph_nodes";
-    pub const GRAPH_EDGES: &str = "atrium_graph_edges";
-    pub const EMOTION_PLEASURE: &str = "atrium_emotion_pleasure";
-    pub const EMOTION_AROUSAL: &str = "atrium_emotion_arousal";
-    pub const RELATIONSHIP_STAGE: &str = "atrium_relationship_stage";
+    pub const FACT_STORE_SIZE: &str = "fact_store_size";
+    pub const STM_SIZE: &str = "stm_size";
+    pub const GRAPH_NODES: &str = "graph_nodes";
+    pub const GRAPH_EDGES: &str = "graph_edges";
+    pub const EMOTION_PLEASURE: &str = "emotion_pleasure";
+    pub const EMOTION_AROUSAL: &str = "emotion_arousal";
+    pub const RELATIONSHIP_STAGE: &str = "relationship_stage";
 }
 
 // ─── 便捷函数 / Convenience Functions ───
 
 /// 计数器 +1 / Increment counter by 1
 #[inline]
-pub fn inc(key: &'static str) {
-    counter!(key).increment(1);
+pub fn inc(key: &str) {
+    counter!(fmt_key(key)).increment(1);
 }
 
 /// 计数器 +n / Increment counter by n
 #[inline]
-pub fn inc_by(key: &'static str, n: u64) {
-    counter!(key).increment(n);
+pub fn inc_by(key: &str, n: u64) {
+    counter!(fmt_key(key)).increment(n);
 }
 
 /// 记录延迟（毫秒）/ Record latency in milliseconds
 ///
-/// @param key    指标名称 / Metric name
+/// @param key    指标名称后缀 / Metric name suffix
 /// @param start  计时起点 / Start instant
 #[inline]
-pub fn latency_ms(key: &'static str, start: Instant) {
-    histogram!(key).record(start.elapsed().as_millis() as f64);
+pub fn latency_ms(key: &str, start: Instant) {
+    histogram!(fmt_key(key)).record(start.elapsed().as_millis() as f64);
 }
 
 /// 记录延迟（微秒）/ Record latency in microseconds
 ///
-/// @param key    指标名称 / Metric name
+/// @param key    指标名称后缀 / Metric name suffix
 /// @param start  计时起点 / Start instant
 #[inline]
-pub fn latency_us(key: &'static str, start: Instant) {
-    histogram!(key).record(start.elapsed().as_micros() as f64);
+pub fn latency_us(key: &str, start: Instant) {
+    histogram!(fmt_key(key)).record(start.elapsed().as_micros() as f64);
 }
 
 /// 设置仪表盘值 / Set gauge value
 ///
-/// @param key    指标名称 / Metric name
+/// @param key    指标名称后缀 / Metric name suffix
 /// @param value  指标值 / Metric value
 #[inline]
-pub fn set_gauge(key: &'static str, value: f64) {
-    gauge!(key).set(value);
+pub fn set_gauge(key: &str, value: f64) {
+    gauge!(fmt_key(key)).set(value);
 }
 
 // ─── Prometheus exporter 启动 / Prometheus Exporter Bootstrap ───
@@ -152,5 +183,23 @@ mod tests {
         std::thread::sleep(Duration::from_micros(50));
         latency_us(keys::EMOTION_TICK, start2);
         // 无 panic 即通过
+    }
+
+    #[test]
+    fn test_init_prefix() {
+        // 初始化自定义前缀 / Initialize custom prefix
+        init_prefix("test_app_");
+        // 验证前缀已设置（内部函数不可直接测试，但 init_prefix 不 panic 即通过）
+        // Verify prefix is set (init_prefix not panicking means it works)
+        inc(keys::MSG_RECEIVED);
+        // 无 panic 即通过
+    }
+
+    #[test]
+    fn test_fmt_key() {
+        // 验证键名拼接格式正确 / Verify key formatting is correct
+        init_prefix("custom_");
+        let key = fmt_key("msg_received_total");
+        assert_eq!(key, "custom_msg_received_total");
     }
 }

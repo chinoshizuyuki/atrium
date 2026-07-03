@@ -8,8 +8,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::conflict_reconciliation::{
-    ApologyTemplate, ConflictConfig, ConflictIntensity, ConflictSignal, ConflictState,
-    EscalationConfig, ReconciliationConfig,
+    ApologyTemplate, ConflictConfig, ConflictIntensity, ConflictPadBridge, ConflictSignal,
+    ConflictState, EscalationConfig, ProactiveReconcilerConfig, ReconciliationConfig,
+    ReconciliationRitual, RecoveryCurve,
 };
 
 // ════════════════════════════════════════════════════════════════════
@@ -80,6 +81,26 @@ pub struct SerializableConflictManager {
     /// 冲突状态 / Conflict state
     pub state: ConflictState,
 
+    // ── G1: 主动和解管线状态 / G1: Proactive reconciler state ──
+    /// 主动和解配置 / Proactive reconciler config
+    pub proactive_config: ProactiveReconcilerConfig,
+    /// 本会话主动和解次数 / Proactive reconciliation count this session
+    pub proactive_count: u32,
+    /// 上次主动和解时间戳 / Last proactive reconciliation timestamp
+    pub last_proactive_ts: i64,
+
+    // ── G2: 冲突↔情绪双向闭环 / G2: Conflict↔emotion PAD bridge ──
+    /// PAD桥接参数 / PAD bridge parameters
+    pub pad_bridge: ConflictPadBridge,
+
+    // ── G4: 冲突恢复曲线 / G4: Conflict recovery curve ──
+    /// 恢复曲线 / Recovery curve
+    pub recovery_curve: RecoveryCurve,
+
+    // ── G5: 和解仪式 / G5: Reconciliation ritual ──
+    /// 和解仪式（可能为空）/ Reconciliation ritual (optional)
+    pub ritual: Option<ReconciliationRitual>,
+
     // ── 全局配置 / Global config ──
     /// 冲突管理器配置 / Conflict manager config
     pub config: ConflictConfig,
@@ -99,6 +120,16 @@ impl From<&crate::conflict_reconciliation::ConflictManager> for SerializableConf
             reconciliation_config: mgr.reconciliation.config.clone(),
             apology_templates: mgr.apology.templates.clone(),
             state: mgr.state.clone(),
+            // G1: 主动和解管线 / G1: Proactive reconciler
+            proactive_config: mgr.proactive_reconciler.config.clone(),
+            proactive_count: mgr.proactive_reconciler.proactive_count,
+            last_proactive_ts: mgr.proactive_reconciler.last_proactive_ts,
+            // G2: PAD桥接 / G2: PAD bridge
+            pad_bridge: mgr.pad_bridge.clone(),
+            // G4: 恢复曲线 / G4: Recovery curve
+            recovery_curve: mgr.recovery_curve.clone(),
+            // G5: 和解仪式 / G5: Reconciliation ritual
+            ritual: mgr.ritual.clone(),
             config: ConflictConfig {
                 disagreement_sensitivity: mgr.disagreement.sensitivity,
                 over_demand_window: mgr.over_demand.window_size,
@@ -139,6 +170,20 @@ impl SerializableConflictManager {
 
         // 恢复冲突状态 / Restore conflict state
         mgr.state = self.state;
+
+        // G1: 恢复主动和解管线 / G1: Restore proactive reconciler
+        mgr.proactive_reconciler.config = self.proactive_config;
+        mgr.proactive_reconciler.proactive_count = self.proactive_count;
+        mgr.proactive_reconciler.last_proactive_ts = self.last_proactive_ts;
+
+        // G2: 恢复PAD桥接 / G2: Restore PAD bridge
+        mgr.pad_bridge = self.pad_bridge;
+
+        // G4: 恢复恢复曲线 / G4: Restore recovery curve
+        mgr.recovery_curve = self.recovery_curve;
+
+        // G5: 恢复和解仪式 / G5: Restore reconciliation ritual
+        mgr.ritual = self.ritual;
 
         mgr
     }

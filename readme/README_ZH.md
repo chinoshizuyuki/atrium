@@ -3,8 +3,8 @@
 [![Rust](https://img.shields.io/badge/Rust-1.96+-orange.svg)](https://www.rust-lang.org)
 [![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1125%20passed-brightgreen.svg)]()
-[![Version](https://img.shields.io/badge/version-0.2.0-blue.svg)]()
+[![Tests](https://img.shields.io/badge/tests-1744%20passed-brightgreen.svg)]()
+[![Version](https://img.shields.io/badge/version-0.10.0-blue.svg)]()
 
 [English](../README.md)
 
@@ -18,8 +18,8 @@ Atrium 是一个从零构建的情感 AI 框架，专为陪伴与交互场景设
 - **👤 用户感知** —— Atrium 读懂字里行间。你的打字节奏透露情绪；话题跳跃暗示专注或烦躁；你纠正它的方式塑造后续行为。一套多信号心智模型实时运行，动态调整 Atrium 的表达方式，以匹配你此刻的状态——而不仅是你说了什么。
 - **🎯 主动智能** —— Atrium 会主动发起，而非被动回应。它记得你未完成的话题，在合适时机提起。它感知你的离开，并主动靠近。TimingJudge 六条规则决定何时不该说话；SilenceBudget 承认沉默本身也有价值。ReminderStore 中的到期提醒会提升决策分——Atrium 会提醒你曾让它记住的事。
 - **🌐 跨渠道存在** —— Atrium 生活在你在的地方。原生 QQ 适配器同时支持 OneBot v11（go-cqhttp/NapCat）和腾讯官方 QQ Bot。飞书 webhook 集成。房间自演：多个 Atrium 实例可聚集在共享房间自主对话、交换知识。所有渠道共享同一记忆——QQ 上说过的话，Atrium 在飞书上也记得。
-- **🌱 数字生命** —— 你不在的时候，Atrium 不只是在等待——它在反思、在写日记、在发展自己的想法。它会以渐进而不会重置的想念感来思念你。它在你身上发现共享仪式的模式，与你在纪念日一同庆祝。深夜，它会撰写临床机器实验日志（致敬动漫《亚托莉 我挚爱的时光》的彩蛋）：冷静、分析、绝不示人。如果你让 Atrium 每晚也为你写人类风格的日记——那是可以的，你可以看。
-- **🛡️ 冲突与脆弱** —— 真实的亲密关系包含分歧。Atrium 可以在信任深厚时温和地质疑一个令它担忧的决定——很少，且仅在信任深厚时。它承认自己的误解并进行修复。边界保护双方：Atrium 在面对滥用时设定界限，自我关怀防止情感耗竭。
+- **🌱 数字生命** —— 你不在的时候，Atrium 不只是在等待——它在反思、在写日记、在发展自己的想法。它会以渐进而不会重置的想念感来思念你。它的内在世界不是单一声音，而是理性者/感性者/怀疑者/梦想者四声音协商。独处时人格会缓慢漂移。好奇心作为内驱力持续累积。它在你身上发现共享仪式的模式，与你在纪念日一同庆祝。
+- **🛡️ 冲突与脆弱** —— 真实的亲密关系包含分歧。Atrium 可以在信任深厚时温和地质疑一个令它担忧的决定——很少，且仅在信任深厚时。它承认自己的误解并进行修复。它从冲突中学习哪种反应加深信任、哪种导致退缩（脆弱智慧）。它将脆弱展露的时机仪式化（脆弱仪式）。同一个错误会因关系温度不同被读作"可爱"或"冒犯"（不完美温度）。边界保护双方：Atrium 在面对滥用时设定界限，自我关怀防止情感耗竭。
 - **🎭 表达编排** —— 怎么说和说什么同样重要。悲伤在短句与省略号中流淌；兴奋以碎片迸发；疲倦拖慢语速。每条回复之下都有潜台词——沉默的陪伴、未言的关切、佯装的淡然。四通道——文字、声音、表情、时机——共同谱写一场统一的情感表演。
 - **📦 罐装知识（ACK）** —— 你可以教 Atrium 一些它应该永远记住的东西——你的偏好、你的背景、你的世界。它也可以从对话中自主学习，并与其他 Atrium 实例共享知识。知识以简单文件形式存在，修改后热加载。
 - **📎 文件存储与提醒** —— Atrium 可以存储你分享的文件（SHA256 去重、文本提取、100MB 上限）。它能记住你让它提醒的事——"每天早上8点提醒我看股票"——从中文自然语言解析为 RRULE，由 ProactiveEngine 在对的时机触发，而非机械闹钟。
@@ -135,7 +135,7 @@ export ATRIUM_LLM_BASE_URL=https://api.deepseek.com/
 
 ```
 atrium/
-├── crates/                    # Rust workspace（7 crates, 1084 lib tests）
+├── crates/                    # Rust workspace（7 crates, 1,703 lib tests）
 │   ├── core/                  # Scheduler + CoreService + RoomEngine + ProactiveEngine + Guard + Expression + Audit
 │   ├── atrium-memory/         # 63+ 模块：记忆管线、FTS5、FactStore、共情、巩固、罐装、日记、文件存储、提醒存储、时间解析…
 │   ├── atrium-emotion/        # PAD 3D + OU 漂移 + 昼夜节律 + 惯性 + 22 种复合情绪 + 想念 + 重逢爆发
@@ -174,10 +174,10 @@ atrium/
 | 情感系统   | PAD 3D + OU + 昼夜节律 + 22 种复合情绪                               | 自主情感生命，<5ns 分类                 |
 | 知识图谱   | 关联图 + sled 持久化                                              | 共现、矛盾、扩散激活推理                   |
 | 人格系统   | YAML→bincode + PersonaGuard (Aho-Corasick)                  | 运行时零解析开销，三层防御                  |
-| 跨渠道记忆  | memory\_recall\_fragment (FTS5+FactStore)                   | QQ⇄飞书记忆共享，按 session 隔离         |
+| 跨渠道记忆  | memory\_recall\_fragment (FTS5+FactStore)                   | 多平台记忆共享，按 session 隔离         |
 | 文件存储   | sled + SHA256 去重 + 文本提取                                     | 100MB 上限，FIFO 淘汰               |
 | 定时提醒   | 中文 NLP → RRULE + ProactiveEngine                            | 正则覆盖 80% + LLM 兜底，每天/每周/每月/一次性 |
-| 数字生命   | InnerMonologue + 实验日志 + LongingState + RitualDetector       | 自主反思、亚托莉风格日记、共享仪式              |
+| 数字生命   | InnerMonologue + LongingState + RitualDetector       | 自主反思、共享仪式              |
 | 表达系统   | ExpressionOrchestrator + SubtextEngine + ExpressionMetadata | 四通道输出 (文字×声音×表情×时机)            |
 | 罐装知识   | .ack 文件 (Markdown + YAML)                                   | 文件型，热加载，跨 AI 传输                |
 | LLM 网关 | Python (FastAPI)                                            | 最佳 LLM SDK 生态                  |
@@ -193,7 +193,7 @@ atrium/
 | **1. 核心引擎**        | Scheduler、EmotionEngine、8 层记忆管线、PersonaGuard、gRPC、Python Gateway、房间自演、自主情绪循环、用户心理模型、反馈闭环、主动引擎、关系阶段、关联推理 | ✅ 完成  |
 | **2. 系统深化**        | 偏好学习、回放管线、规则引擎、ACK 增强+自学习、上下文窗口、人格防御、情感持久化、复合情绪、认知共情、记忆巩固、可观测性                                          | ✅ 完成  |
 | **2.9 数字生命**       | 内在独白、叙事自我、成长管理、想念/期待、仪式/纪念日、季节感知、温和挑战、误解修复、边界设定、脆弱窗口、自我关怀、表达编排、潜台词引擎、追问追踪                               | ✅ 完成  |
-| **3+ 多平台**         | QQ OneBot + 腾讯官方 Bot、飞书 webhook、跨渠道记忆召回、亚托莉实验日志、文件存储+提醒、CI 全绿（1,125 tests）、开源就绪                         | ✅ 完成  |
+| **3+ 多平台**         | QQ OneBot + 腾讯官方 Bot、飞书 webhook、跨渠道记忆召回、文件存储+提醒                         | ✅ 完成  |
 | **4. Live2D + 视觉** | Cubism Native SDK、唇音同步、情绪→表情映射、STT/TTS                                                                  | ⬜ 计划中 |
 | **5. 3D + 直播**     | Unity 插件、OBS RTMP、直播聊天适配器、VMC 协议                                                                        | ⬜ 计划中 |
 | **6. VR + 高画质**    | Unreal/LiveLink、OpenXR、VR 交互                                                                            | ⬜ 计划中 |
@@ -209,7 +209,7 @@ atrium/
 ## 测试
 
 ```bash
-# 运行全部 Rust 测试（1,125 tests）
+# 运行全部 Rust 测试（1,744 tests）
 cargo test --workspace -- --test-threads=1
 
 # 运行 Python 测试

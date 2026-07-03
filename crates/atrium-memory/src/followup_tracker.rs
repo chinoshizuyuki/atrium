@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: MIT
-#![allow(dead_code)]
 
 //! 追问追踪系统 — Follow-up tracker with extraction, decay, recall, trigger, expression, and reaction.
 //!

@@ -85,18 +85,6 @@ pub struct CoherenceReport {
 }
 
 impl CoherenceReport {
-    /// 全部通过
-    #[allow(dead_code)]
-    fn all_pass() -> Self {
-        Self {
-            direction_consistent: true,
-            arousal_consistent: true,
-            dominance_consistent: true,
-            speech_act_consistent: true,
-            is_coherent: true,
-            warnings: Vec::new(),
-        }
-    }
 }
 
 // ════════════════════════════════════════════════════════════════════

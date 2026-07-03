@@ -92,6 +92,7 @@ impl TimeSlot {
 ///   - GoodMorning: 早安、早上好等 / Good morning patterns
 ///   - WeekendGreeting: 周末愉快等 / Weekend greeting patterns
 ///   - HolidayGreeting: 节日快乐等 / Holiday greeting patterns
+///   - LunarHolidayGreeting: 农历节日问候（中秋、端午等）/ Lunar holiday greeting patterns
 ///   - Custom: 用户自定义 / User-defined custom patterns
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ContentHint {
@@ -103,6 +104,8 @@ pub enum ContentHint {
     WeekendGreeting,
     /// 节日问候 / Holiday greeting
     HolidayGreeting,
+    /// 农历节日问候 / Lunar holiday greeting (Mid-Autumn, Dragon Boat, etc.)
+    LunarHolidayGreeting,
     /// 自定义 / Custom pattern
     Custom(String),
 }
@@ -137,13 +140,24 @@ impl ContentHint {
             return Some(Self::WeekendGreeting);
         }
         // 节日问候 / Holiday greeting
-        if lower.contains("节日快乐")
-            || lower.contains("新年快乐")
-            || lower.contains("圣诞快乐")
-            || lower.contains("中秋快乐")
-            || lower.contains("端午安康")
+        if lower.contains("节日快乐") || lower.contains("新年快乐") || lower.contains("圣诞快乐")
         {
             return Some(Self::HolidayGreeting);
+        }
+        // 农历节日问候 / Lunar holiday greeting
+        if lower.contains("中秋快乐")
+            || lower.contains("中秋安康")
+            || lower.contains("端午安康")
+            || lower.contains("端午快乐")
+            || lower.contains("春节快乐")
+            || lower.contains("新年好")
+            || lower.contains("元宵快乐")
+            || lower.contains("重阳安康")
+            || lower.contains("七夕快乐")
+            || lower.contains("腊八快乐")
+            || lower.contains("除夕快乐")
+        {
+            return Some(Self::LunarHolidayGreeting);
         }
         None
     }
@@ -155,6 +169,7 @@ impl ContentHint {
             Self::GoodMorning => "早安",
             Self::WeekendGreeting => "周末问候",
             Self::HolidayGreeting => "节日问候",
+            Self::LunarHolidayGreeting => "农历节日问候",
             Self::Custom(s) => s,
         }
     }
@@ -166,6 +181,7 @@ impl ContentHint {
             Self::GoodMorning => "good_morning".to_string(),
             Self::WeekendGreeting => "weekend_greeting".to_string(),
             Self::HolidayGreeting => "holiday_greeting".to_string(),
+            Self::LunarHolidayGreeting => "lunar_holiday_greeting".to_string(),
             Self::Custom(s) => format!("custom:{}", s),
         }
     }
@@ -177,6 +193,7 @@ impl ContentHint {
             "good_morning" => Some(Self::GoodMorning),
             "weekend_greeting" => Some(Self::WeekendGreeting),
             "holiday_greeting" => Some(Self::HolidayGreeting),
+            "lunar_holiday_greeting" => Some(Self::LunarHolidayGreeting),
             s if s.starts_with("custom:") => Some(Self::Custom(s[7..].to_string())),
             _ => None,
         }
@@ -189,6 +206,7 @@ impl ContentHint {
             Self::GoodMorning => 1,
             Self::WeekendGreeting => 2,
             Self::HolidayGreeting => 3,
+            Self::LunarHolidayGreeting => 4,
             Self::Custom(_) => 255,
         }
     }
@@ -1421,7 +1439,20 @@ mod tests {
         );
         assert_eq!(
             ContentHint::detect("中秋快乐"),
-            Some(ContentHint::HolidayGreeting)
+            Some(ContentHint::LunarHolidayGreeting)
+        );
+        // 农历节日检测 / Lunar holiday detection
+        assert_eq!(
+            ContentHint::detect("端午安康"),
+            Some(ContentHint::LunarHolidayGreeting)
+        );
+        assert_eq!(
+            ContentHint::detect("春节快乐"),
+            Some(ContentHint::LunarHolidayGreeting)
+        );
+        assert_eq!(
+            ContentHint::detect("元宵快乐"),
+            Some(ContentHint::LunarHolidayGreeting)
         );
     }
 
@@ -1439,6 +1470,7 @@ mod tests {
         assert_eq!(ContentHint::GoodMorning.label_zh(), "早安");
         assert_eq!(ContentHint::WeekendGreeting.label_zh(), "周末问候");
         assert_eq!(ContentHint::HolidayGreeting.label_zh(), "节日问候");
+        assert_eq!(ContentHint::LunarHolidayGreeting.label_zh(), "农历节日问候");
     }
 
     #[test]
@@ -1449,6 +1481,7 @@ mod tests {
             ContentHint::GoodMorning,
             ContentHint::WeekendGreeting,
             ContentHint::HolidayGreeting,
+            ContentHint::LunarHolidayGreeting,
             ContentHint::Custom("打卡".to_string()),
         ];
         for hint in &hints {
@@ -1469,6 +1502,7 @@ mod tests {
         assert_eq!(ContentHint::GoodMorning.ordinal(), 1);
         assert_eq!(ContentHint::WeekendGreeting.ordinal(), 2);
         assert_eq!(ContentHint::HolidayGreeting.ordinal(), 3);
+        assert_eq!(ContentHint::LunarHolidayGreeting.ordinal(), 4);
         assert_eq!(ContentHint::Custom("x".to_string()).ordinal(), 255);
     }
 

@@ -35,3 +35,9 @@ sled = "0.34"
 [dev-dependencies]
 rand = "0.8"
 sled = "0.34"
+criterion.workspace = true
+
+
+[[bench]]
+name = "core_bench"
+harness = false

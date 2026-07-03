@@ -7,9 +7,11 @@
 
 use serde::{Deserialize, Serialize};
 
+use std::collections::HashMap;
+
 use crate::emotional_irrationality::{
-    ChaosConfig, ChaoticPulse, ContagionConfig, ContagionRuleEntry, CrossContagion, EmotionChaos,
-    EmotionResidue, PulseConfig, ResidueConfig, ShockAbsorber,
+    ChaosConfig, ChaoticPulse, ContagionConfig, ContagionRule, ContagionRuleEntry, CrossContagion,
+    EmotionChaos, EmotionResidue, PulseConfig, ResidueConfig, ShockAbsorber,
 };
 
 // ════════════════════════════════════════════════════════════════════
@@ -71,6 +73,8 @@ pub struct SerializableIrrationalityManager {
     pub contagion_rules: Vec<ContagionRuleEntry>,
     /// 近期传染记录 / Recent contagions
     pub recent_contagions: Vec<CrossContagion>,
+    /// 冷却索引 / Cooldown index: rule → last trigger timestamp
+    pub last_trigger: HashMap<ContagionRule, i64>,
     /// 传染引擎自增ID / Contagion engine next ID
     pub contagion_next_id: u64,
 
@@ -104,6 +108,7 @@ impl From<&crate::emotional_irrationality::IrrationalityManager>
             contagion_config: mgr.contagion.config.clone(),
             contagion_rules: mgr.contagion.rules.clone(),
             recent_contagions: mgr.contagion.recent_contagions.clone(),
+            last_trigger: mgr.contagion.last_trigger.clone(),
             contagion_next_id: mgr.contagion.next_id,
 
             chaos_config: mgr.chaos.config.clone(),
@@ -138,6 +143,7 @@ impl SerializableIrrationalityManager {
         let mut contagion = ContagionEngine::new(self.contagion_config);
         contagion.rules = self.contagion_rules;
         contagion.recent_contagions = self.recent_contagions;
+        contagion.last_trigger = self.last_trigger;
         contagion.next_id = self.contagion_next_id;
 
         // 重建混沌引擎 / Reconstruct chaos engine

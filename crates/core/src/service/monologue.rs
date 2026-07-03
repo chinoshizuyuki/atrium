@@ -27,23 +27,67 @@ impl CoreService {
     pub async fn tick_inner_monologue(&self, idle_secs: u64, hour: u32) {
         let now = chrono::Utc::now().timestamp();
 
+        // ── G1: 情绪驱动模式选择 / Emotion-driven mode selection ──
+        // 获取当前情绪状态 / Get current emotion state
+        let emo = self.emotion.lock().current().clone();
+        let emotion_mode_override = {
+            let engine = self.inner_monologue.lock();
+            if engine.config().emotion_driven_mode {
+                engine.theme_selector.select_mode(
+                    emo.pleasure as f64,
+                    emo.arousal as f64,
+                    emo.dominance as f64,
+                    idle_secs,
+                    hour,
+                )
+            } else {
+                None
+            }
+        };
+
         // 收集所有模式门控结果后立即释放锁 / Gather all gating results, then release lock
         let (can_wander, can_diary, can_learn, can_daydream) = {
             let mut engine = self.inner_monologue.lock();
             engine.check_daily_reset();
+
+            // G1: 情绪驱动模式可覆盖时间门控 / Emotion-driven mode can override time gating
+            let emotion_wander = emotion_mode_override
+                == Some(atrium_memory::inner_monologue::ThoughtMode::GraphWander);
+            let emotion_diary = emotion_mode_override
+                == Some(atrium_memory::inner_monologue::ThoughtMode::DiaryEntry);
+            let emotion_learn = emotion_mode_override
+                == Some(atrium_memory::inner_monologue::ThoughtMode::AutonomousLearning);
+            let emotion_dream = emotion_mode_override
+                == Some(atrium_memory::inner_monologue::ThoughtMode::Daydream);
+
             (
-                idle_secs >= 600 && engine.can_graph_wander(now),
-                ((23..=24).contains(&hour) || hour == 0)
-                    && idle_secs >= 1800
+                (idle_secs >= 600 || emotion_wander) && engine.can_graph_wander(now),
+                ((23..=24).contains(&hour) || hour == 0 || emotion_diary)
+                    && (idle_secs >= 1800 || emotion_diary)
                     && self
                         .diary_store
                         .as_ref()
                         .map(|d| !d.has_entry_for_today())
                         .unwrap_or(false),
-                idle_secs >= 1800 && engine.can_learn(now),
-                hour < 6 && idle_secs >= 7200 && engine.can_daydream(now),
+                (idle_secs >= 1800 || emotion_learn) && engine.can_learn(now),
+                (emotion_dream || hour < 6 && idle_secs >= 7200) && engine.can_daydream(now),
             )
         };
+
+        // ── G4: 独处氛围调制tick / Solitude atmosphere tick ──
+        {
+            let mut engine = self.inner_monologue.lock();
+            if engine.config().solitude_atmosphere_enabled {
+                let is_thinking = can_wander || can_diary || can_learn || can_daydream;
+                let (dp, da, dd) = engine.atmosphere.tick(idle_secs, is_thinking);
+                // 氛围漂移作用于情感 / Atmosphere drift affects emotion
+                if dp.abs() > 1e-6 || da.abs() > 1e-6 || dd.abs() > 1e-6 {
+                    self.emotion
+                        .lock()
+                        .affect(&EmotionEngineState::new(dp, da, dd));
+                }
+            }
+        }
 
         // 模式 A: GraphWander — 关联图漫游 / Graph wander
         if can_wander {
@@ -83,13 +127,31 @@ impl CoreService {
         if let Some(client) = _client_arc.as_ref() {
             let gen = atrium_memory::monologue_gen::MonologueGenerator::new(client.clone());
             // 从关联图中选择种子节点 / Pick seed node from associative graph
+            // G5: 情绪回响种子选取 — 情绪影响记忆选取偏好 / Emotion-resonant seed selection
+            let emo_for_seed = self.emotion.lock().current().clone();
             let (seed_id, seed_content) = {
                 let graph = self.graph.lock();
                 let nodes = graph.nodes();
                 let mut rng = rand::thread_rng();
-                match atrium_memory::monologue_gen::pick_seed_node(nodes, &mut rng) {
-                    Some(s) => s,
-                    None => return, // 图为空，无法漫游 / Graph empty, cannot wander
+                let engine = self.inner_monologue.lock();
+                if engine.config().emotion_resonant_seed {
+                    // G5: 情绪回响选取 / Emotion-resonant selection
+                    match atrium_memory::monologue_gen::pick_emotion_resonant_seed(
+                        nodes,
+                        &engine.resonant_selector,
+                        emo_for_seed.pleasure as f64,
+                        emo_for_seed.arousal as f64,
+                        &mut rng,
+                    ) {
+                        Some(s) => s,
+                        None => return,
+                    }
+                } else {
+                    // 原始访问量加权选取 / Original access-count weighted selection
+                    match atrium_memory::monologue_gen::pick_seed_node(nodes, &mut rng) {
+                        Some(s) => s,
+                        None => return,
+                    }
                 }
             };
 
@@ -742,5 +804,113 @@ impl CoreService {
                 }
             }
         }
+    }
+
+    // ── G3: 独处→对话衔接 / Solitude→Conversation Bridge ──
+
+    /// 用户归来时生成问候 — 自然融入独处期间的思考
+    /// Compose return greeting when user returns — naturally weave in solitude thoughts
+    ///
+    /// 只有独处超过10分钟且有可分享洞察时才生成
+    pub fn harvest_solitude_greeting(&self) -> Option<String> {
+        let mut engine = self.inner_monologue.lock();
+        if !engine.config().solitude_bridge_enabled {
+            return None;
+        }
+        let emo = self.emotion.lock().current().clone();
+        engine.bridge.compose_return_greeting(emo.pleasure as f64)
+    }
+
+    /// 用户归来时处理独处结束 / Handle end of solitude when user returns
+    ///
+    /// 1. 结束独处计时 / End solitude timing
+    /// 2. 重置氛围调制 / Reset atmosphere modulation
+    /// 3. 记录温暖互动 / Record warm interaction
+    pub fn on_user_return(&self, idle_secs: u64) {
+        let mut engine = self.inner_monologue.lock();
+        // G3: 结束独处 / End solitude
+        engine.bridge.end_solitude(idle_secs);
+        // G4: 重置氛围 / Reset atmosphere
+        engine.atmosphere.reset_solitude();
+        // G4: 记录温暖互动 / Record warm interaction
+        let emo = self.emotion.lock().current().clone();
+        engine
+            .atmosphere
+            .record_warm_interaction(emo.pleasure as f64);
+    }
+
+    /// 记录独处期间的可分享思考 / Record a shareable thought during solitude
+    pub fn record_solitude_thought(&self, content: &str, shareable: bool) {
+        let mut engine = self.inner_monologue.lock();
+        if engine.config().solitude_bridge_enabled {
+            engine.bridge.record_solitude_thought(content, shareable);
+        }
+    }
+
+    // ── G4: 温暖互动记录 / Warm Interaction Recording ──
+
+    /// 记录用户消息带来的温暖互动 / Record warm interaction from user message
+    pub fn record_warm_interaction(&self, pleasure: f64) {
+        let mut engine = self.inner_monologue.lock();
+        if engine.config().solitude_atmosphere_enabled {
+            engine.atmosphere.record_warm_interaction(pleasure);
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // 内心多元对话 / Inner Dialogue
+    // ════════════════════════════════════════════════════════════════════
+
+    /// 内心多元对话周期 tick / Inner dialogue periodic tick.
+    ///
+    /// 衰减声音活跃度并更新主导声音。不生成对话内容，仅维护状态。
+    /// Decays voice activity and updates dominant voice. Does not generate content.
+    pub fn inner_dialogue_tick(&self) {
+        let mut engine = self.inner_dialogue.lock();
+        engine.tick();
+    }
+
+    /// 触发内心多元对话生成 / Trigger inner dialogue generation.
+    ///
+    /// 在独处或情感强烈时调用，生成四声音协商对话。
+    /// Called during solitude or intense emotion, generates four-voice negotiation.
+    pub fn trigger_inner_dialogue(&self, idle_secs: u64, hour: u32) {
+        let now = chrono::Utc::now().timestamp();
+        let (pleasure, arousal) = {
+            let emo = self.emotion.lock();
+            (emo.current().pleasure, emo.current().arousal)
+        };
+
+        let mut engine = self.inner_dialogue.lock();
+        if !engine.can_trigger(now) {
+            return;
+        }
+        let ctx =
+            atrium_memory::inner_dialogue::DialogueContext::new(pleasure, arousal, idle_secs, hour);
+        if ctx.should_trigger() {
+            engine.generate_dialogue(&ctx, now);
+        }
+    }
+
+    /// 内心多元对话 prompt 注入 / Inner dialogue prompt injection.
+    ///
+    /// 将最近一次内心对话摘要注入系统提示。
+    /// Injects the latest inner dialogue summary into the system prompt.
+    pub fn inner_dialogue_prompt_fragment(&self) -> String {
+        let engine = self.inner_dialogue.lock();
+        engine.prompt_injection()
+    }
+
+    /// 内心多元对话状态 / Inner dialogue status.
+    pub fn inner_dialogue_status(&self) -> String {
+        let engine = self.inner_dialogue.lock();
+        let stats = engine.stats();
+        format!(
+            "triggers={} history={} dominant={} avg_activity={:.2}",
+            stats.total_triggers,
+            stats.history_len,
+            stats.dominant_voice.label_zh(),
+            stats.avg_activity,
+        )
     }
 } // impl CoreService

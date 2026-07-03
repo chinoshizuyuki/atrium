@@ -78,6 +78,12 @@ pub struct Config {
     pub emotional_demand: EmotionalDemandCfg,
     /// 自我关怀边界 / Self-Care Boundary
     pub self_care: SelfCareCfg,
+    /// 适度犯错配置 / Imperfection engine configuration
+    #[serde(default)]
+    pub imperfection: ImperfectionCfg,
+    /// 物理存在感配置 / Physical presence configuration
+    #[serde(default)]
+    pub physical_presence: PhysicalPresenceCfg,
 }
 
 fn default_version() -> String {
@@ -1010,6 +1016,10 @@ pub struct RitualCfg {
     /// 季节感知 prompt 预算字符数
     #[serde(default = "default_ritual_prompt_budget")]
     pub prompt_budget: usize,
+    /// 防抖写穿阈值：累积 N 条交互后批量持久化，降低 sled 写放大
+    /// Debounced write-through threshold: batch persist after N interactions to reduce sled write amplification
+    #[serde(default = "default_save_debounce_interactions")]
+    pub save_debounce_interactions: u32,
 }
 
 impl Default for RitualCfg {
@@ -1019,6 +1029,7 @@ impl Default for RitualCfg {
             tick_interval_ticks: default_ritual_tick_interval_ticks(),
             anniversary_remind_days: default_anniversary_remind_days(),
             prompt_budget: default_ritual_prompt_budget(),
+            save_debounce_interactions: default_save_debounce_interactions(),
         }
     }
 }
@@ -1031,6 +1042,10 @@ fn default_anniversary_remind_days() -> u32 {
 }
 fn default_ritual_prompt_budget() -> usize {
     300
+}
+/// 防抖写穿默认阈值：每 5 条交互写穿一次 / Default debounce threshold: write-through every 5 interactions
+fn default_save_debounce_interactions() -> u32 {
+    5
 }
 
 // ── Vulnerability 脆弱与不完美配置 / Vulnerability & Imperfection Config ──
@@ -1552,6 +1567,36 @@ pub struct ConflictCfg {
     /// 冲突评估周期（tick 数），默认 3000（约 30s）
     #[serde(default = "default_conflict_tick_interval")]
     pub tick_interval: u64,
+
+    // ── G1: 主动和解管线配置 / G1: Proactive reconciler config ──
+    /// 连续冲突N轮后触发主动和解 / Trigger proactive reconciliation after N turns
+    #[serde(default = "default_proactive_threshold_turns")]
+    pub proactive_threshold_turns: u32,
+    /// 冲突后M秒仍无和解则主动 / Proactive after M seconds without reconciliation
+    #[serde(default = "default_proactive_time_secs")]
+    pub proactive_time_secs: i64,
+    /// 每会话最多主动和解次数 / Max proactive reconciliations per session
+    #[serde(default = "default_proactive_max_per_session")]
+    pub proactive_max_per_session: u32,
+
+    // ── G2: 冲突↔情绪双向闭环配置 / G2: Conflict↔emotion PAD bridge config ──
+    /// 冲突→愉悦衰减系数 / Conflict→pleasure decay coefficient
+    #[serde(default = "default_pleasure_decay")]
+    pub pleasure_decay: f64,
+    /// 冲突→唤醒增强系数 / Conflict→arousal boost coefficient
+    #[serde(default = "default_arousal_boost")]
+    pub arousal_boost: f64,
+    /// 冲突→支配衰减系数 / Conflict→dominance decay coefficient
+    #[serde(default = "default_dominance_decay")]
+    pub dominance_decay: f64,
+
+    // ── G4: 恢复曲线配置 / G4: Recovery curve config ──
+    /// 基础恢复率/tick / Base recovery rate per tick
+    #[serde(default = "default_base_recovery_rate")]
+    pub base_recovery_rate: f64,
+    /// 冲突衰减率 / Conflict decay rate
+    #[serde(default = "default_conflict_decay_rate")]
+    pub conflict_decay_rate: f64,
 }
 
 impl Default for ConflictCfg {
@@ -1565,6 +1610,14 @@ impl Default for ConflictCfg {
             consecutive_threshold: default_consecutive_threshold(),
             de_escalation_turns: default_de_escalation_turns(),
             tick_interval: default_conflict_tick_interval(),
+            proactive_threshold_turns: default_proactive_threshold_turns(),
+            proactive_time_secs: default_proactive_time_secs(),
+            proactive_max_per_session: default_proactive_max_per_session(),
+            pleasure_decay: default_pleasure_decay(),
+            arousal_boost: default_arousal_boost(),
+            dominance_decay: default_dominance_decay(),
+            base_recovery_rate: default_base_recovery_rate(),
+            conflict_decay_rate: default_conflict_decay_rate(),
         }
     }
 }
@@ -1589,6 +1642,36 @@ fn default_de_escalation_turns() -> u32 {
 }
 fn default_conflict_tick_interval() -> u64 {
     3000
+}
+
+// ── G1: 主动和解默认值 / G1: Proactive reconciler defaults ──
+fn default_proactive_threshold_turns() -> u32 {
+    3
+}
+fn default_proactive_time_secs() -> i64 {
+    300
+}
+fn default_proactive_max_per_session() -> u32 {
+    2
+}
+
+// ── G2: PAD桥接默认值 / G2: PAD bridge defaults ──
+fn default_pleasure_decay() -> f64 {
+    0.15
+}
+fn default_arousal_boost() -> f64 {
+    0.1
+}
+fn default_dominance_decay() -> f64 {
+    0.1
+}
+
+// ── G4: 恢复曲线默认值 / G4: Recovery curve defaults ──
+fn default_base_recovery_rate() -> f64 {
+    0.002
+}
+fn default_conflict_decay_rate() -> f64 {
+    0.15
 }
 
 fn default_narrative_tick_interval() -> u64 {
@@ -1617,4 +1700,190 @@ fn default_narrative_daily_tick_interval() -> u64 {
 }
 fn default_narrative_weekly_tick_interval() -> u64 {
     6_048_000 // ~7 天 @ 10ms/tick
+}
+
+// ── Imperfection 适度犯错配置 / Imperfection Engine Config ──
+
+/// 适度犯错配置 — 五维犯错模型、概率门控、延迟自纠闭环
+///
+/// Imperfection engine configuration — five-dimensional mistake model,
+/// probabilistic gating, and delayed self-correction closed loop.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ImperfectionCfg {
+    /// 是否启用适度犯错系统 / Whether to enable the imperfection engine.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// 基础犯错概率 / Base mistake probability.
+    #[serde(default = "default_imperfection_base_prob")]
+    pub base_prob: f64,
+    /// 概率上限（安全阀）/ Probability cap (safety).
+    #[serde(default = "default_imperfection_max_prob")]
+    pub max_prob: f64,
+    /// 认知负荷阈值 / Cognitive load threshold.
+    #[serde(default = "default_imperfection_cognitive_load_threshold")]
+    pub cognitive_load_threshold: f64,
+    /// 疲劳阈值 / Fatigue threshold.
+    #[serde(default = "default_imperfection_fatigue_threshold")]
+    pub fatigue_threshold: f64,
+    /// 陌生领域阈值 / Unfamiliar domain threshold.
+    #[serde(default = "default_imperfection_unfamiliar_threshold")]
+    pub unfamiliar_threshold: f64,
+    /// 情绪干扰激活下限 / Emotional interference activation floor.
+    #[serde(default = "default_imperfection_emotion_activation_floor")]
+    pub emotion_activation_floor: f64,
+    /// 关系深度门控下限 / Relationship depth gate minimum.
+    #[serde(default = "default_imperfection_relationship_gate_min")]
+    pub relationship_gate_min: f64,
+    /// 成熟度序号门控下限 / Maturity ordinal gate minimum.
+    #[serde(default = "default_imperfection_maturity_gate_min")]
+    pub maturity_gate_min: u32,
+    /// 自纠延迟最小秒数 / Self-correction delay min seconds.
+    #[serde(default = "default_imperfection_correction_delay_min_secs")]
+    pub correction_delay_min_secs: f64,
+    /// 自纠延迟最大秒数 / Self-correction delay max seconds.
+    #[serde(default = "default_imperfection_correction_delay_max_secs")]
+    pub correction_delay_max_secs: f64,
+    /// 单次对话最大犯错次数 / Max mistakes per conversation turn.
+    #[serde(default = "default_imperfection_max_mistakes_per_turn")]
+    pub max_mistakes_per_turn: u32,
+    /// 冷却期秒数 / Cooldown between mistakes in seconds.
+    #[serde(default = "default_imperfection_cooldown_secs")]
+    pub cooldown_secs: f64,
+    /// 连续无犯错衰减因子 / Clean streak decay factor.
+    #[serde(default = "default_imperfection_clean_streak_decay")]
+    pub clean_streak_decay: f64,
+    /// Prompt 预算字符数 / Prompt budget in characters.
+    #[serde(default = "default_imperfection_prompt_budget")]
+    pub prompt_budget: usize,
+    /// tick 间隔（tick 数），默认 1000（约 10s）/ Tick interval in ticks.
+    #[serde(default = "default_imperfection_tick_interval_ticks")]
+    pub tick_interval_ticks: u64,
+}
+
+impl Default for ImperfectionCfg {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            base_prob: default_imperfection_base_prob(),
+            max_prob: default_imperfection_max_prob(),
+            cognitive_load_threshold: default_imperfection_cognitive_load_threshold(),
+            fatigue_threshold: default_imperfection_fatigue_threshold(),
+            unfamiliar_threshold: default_imperfection_unfamiliar_threshold(),
+            emotion_activation_floor: default_imperfection_emotion_activation_floor(),
+            relationship_gate_min: default_imperfection_relationship_gate_min(),
+            maturity_gate_min: default_imperfection_maturity_gate_min(),
+            correction_delay_min_secs: default_imperfection_correction_delay_min_secs(),
+            correction_delay_max_secs: default_imperfection_correction_delay_max_secs(),
+            max_mistakes_per_turn: default_imperfection_max_mistakes_per_turn(),
+            cooldown_secs: default_imperfection_cooldown_secs(),
+            clean_streak_decay: default_imperfection_clean_streak_decay(),
+            prompt_budget: default_imperfection_prompt_budget(),
+            tick_interval_ticks: default_imperfection_tick_interval_ticks(),
+        }
+    }
+}
+
+fn default_imperfection_base_prob() -> f64 {
+    0.15
+}
+fn default_imperfection_max_prob() -> f64 {
+    0.40
+}
+fn default_imperfection_cognitive_load_threshold() -> f64 {
+    0.5
+}
+fn default_imperfection_fatigue_threshold() -> f64 {
+    0.6
+}
+fn default_imperfection_unfamiliar_threshold() -> f64 {
+    0.4
+}
+fn default_imperfection_emotion_activation_floor() -> f64 {
+    0.3
+}
+fn default_imperfection_relationship_gate_min() -> f64 {
+    0.3
+}
+fn default_imperfection_maturity_gate_min() -> u32 {
+    1 // Growing 阶段起
+}
+fn default_imperfection_correction_delay_min_secs() -> f64 {
+    2.0
+}
+fn default_imperfection_correction_delay_max_secs() -> f64 {
+    15.0
+}
+fn default_imperfection_max_mistakes_per_turn() -> u32 {
+    2
+}
+fn default_imperfection_cooldown_secs() -> f64 {
+    30.0
+}
+fn default_imperfection_clean_streak_decay() -> f64 {
+    0.95
+}
+fn default_imperfection_prompt_budget() -> usize {
+    300
+}
+fn default_imperfection_tick_interval_ticks() -> u64 {
+    1000
+}
+
+// ── PhysicalPresence 物理存在感配置 / Physical Presence Config ──
+
+/// 物理存在感配置 — 体感模拟、昼夜节律、交互疲劳、体感→情绪反向通道
+///
+/// Physical presence configuration — somatic simulation, circadian rhythm,
+/// interaction fatigue, body→emotion reverse channel.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PhysicalPresenceCfg {
+    /// 是否启用物理存在感系统 / Whether to enable the physical presence system.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// 物理存在感 tick 间隔（tick 数），默认 500（约 5s）
+    /// Physical presence tick interval in ticks, defaults to 500 (~5s).
+    #[serde(default = "default_physical_presence_tick_interval_ticks")]
+    pub tick_interval_ticks: u64,
+    /// 疲劳半衰期（秒），默认 14400（4h）
+    /// Fatigue half-life in seconds, defaults to 14400 (4h).
+    #[serde(default = "default_physical_presence_fatigue_half_life_secs")]
+    pub fatigue_half_life_secs: f64,
+    /// 昼夜节律调制启用 / Circadian modulation enabled.
+    #[serde(default = "default_true")]
+    pub circadian_enabled: bool,
+    /// 交互疲劳启用 / Interaction fatigue enabled.
+    #[serde(default = "default_true")]
+    pub interaction_fatigue_enabled: bool,
+    /// 体感→情绪反向通道启用 / Body→emotion reverse channel enabled.
+    #[serde(default = "default_true")]
+    pub body_to_emotion_enabled: bool,
+    /// Prompt 预算字符数 / Prompt budget in characters.
+    #[serde(default = "default_physical_presence_prompt_budget")]
+    pub prompt_budget: usize,
+}
+
+impl Default for PhysicalPresenceCfg {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            tick_interval_ticks: default_physical_presence_tick_interval_ticks(),
+            fatigue_half_life_secs: default_physical_presence_fatigue_half_life_secs(),
+            circadian_enabled: true,
+            interaction_fatigue_enabled: true,
+            body_to_emotion_enabled: true,
+            prompt_budget: default_physical_presence_prompt_budget(),
+        }
+    }
+}
+
+fn default_physical_presence_tick_interval_ticks() -> u64 {
+    500
+}
+
+fn default_physical_presence_fatigue_half_life_secs() -> f64 {
+    14400.0 // 4h
+}
+
+fn default_physical_presence_prompt_budget() -> usize {
+    200
 }

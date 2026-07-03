@@ -7,6 +7,8 @@
 
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
+use std::collections::{HashMap, VecDeque};
+
 use serde::{Deserialize, Serialize};
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -173,7 +175,7 @@ pub struct ChaoticPulse {
 // ── 1.5 残留类型 / Residue Kind ──
 
 /// 残留类型 / Residue Kind
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum ResidueKind {
     Tension,
     LingeringSadness,
@@ -442,7 +444,7 @@ pub enum ContagionEmotion {
 }
 
 /// 传染规则 / Contagion Rule
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum ContagionRule {
     AngerToGuilt,
     AngerToSadness,
@@ -500,6 +502,10 @@ pub struct CrossContagion {
 ///
 /// 当 ContagionRule 的 delay_secs > 0 时，传染不立即执行，
 /// 而是加入延迟队列，等到期后在 tick() 中执行。
+/// 等待期间强度指数衰减（情绪半衰期），源情绪消退则传染被抑制。
+///
+/// During the waiting period, strength decays exponentially (emotional half-life),
+/// and if the source emotion fades, the contagion is suppressed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PendingContagion {
     /// 传染规则 / Contagion rule
@@ -508,27 +514,43 @@ pub struct PendingContagion {
     pub source_emotion: ContagionEmotion,
     /// 目标情绪 / Target emotion
     pub target_emotion: ContagionEmotion,
-    /// 传染强度 / Contagion strength
+    /// 传染强度（受衰减影响）/ Contagion strength (affected by decay)
     pub strength: f64,
+    /// 原始传染强度（衰减基准）/ Original contagion strength (decay baseline)
+    pub original_strength: f64,
     /// PAD 模板 / PAD template
     pub pad_template: [f32; 3],
     /// 触发时间（epoch 秒）/ Trigger time (epoch seconds)
     pub trigger_time: i64,
+    /// 创建时间（epoch 秒，用于衰减计算）/ Creation time (epoch seconds, for decay calculation)
+    pub created_at: i64,
     /// 原始传染 ID / Original contagion ID
     pub contagion_id: u64,
 }
 
 /// 传染效果 — 传染执行后的结果 / Contagion effect after execution
+///
+/// 包含完整诊断信息：源情绪、传染规则、延迟秒数，
+/// 使数字生命能够追溯每一次情绪传染的因果链。
+///
+/// Contains full diagnostic info: source emotion, contagion rule, delay seconds,
+/// enabling the digital life to trace the causal chain of every emotional contagion.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContagionEffect {
     /// 传染 ID / Contagion ID
     pub id: u64,
+    /// 源情绪 / Source emotion
+    pub source_emotion: ContagionEmotion,
     /// 目标情绪 / Target emotion
     pub target_emotion: ContagionEmotion,
-    /// 传染强度 / Contagion strength
+    /// 传染规则 / Contagion rule
+    pub rule: ContagionRule,
+    /// 传染强度（经衰减后）/ Contagion strength (after decay)
     pub strength: f64,
     /// PAD 偏移量 / PAD offset
     pub pad_offset: [f32; 3],
+    /// 延迟秒数 / Delay in seconds
+    pub delay_secs: f64,
     /// 触发时间 / Trigger time
     pub triggered_at: i64,
 }
@@ -598,8 +620,12 @@ impl Default for ChaosParams {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmotionChaos {
     pub attractor: StrangeAttractor,
-    pub trajectory: Vec<TrajectoryPoint>,
-    pub emergent_patterns: Vec<EmergentPattern>,
+    /// 混沌轨迹 / Chaos trajectory — VecDeque 实现 O(1) 头部弹出
+    /// VecDeque enables O(1) front pop for trajectory sliding window.
+    pub trajectory: VecDeque<TrajectoryPoint>,
+    /// 涌现模式 / Emergent patterns — VecDeque 实现 O(1) 头部弹出
+    /// VecDeque enables O(1) front pop for pattern sliding window.
+    pub emergent_patterns: VecDeque<EmergentPattern>,
     pub chaos_params: ChaosParams,
 }
 
@@ -674,6 +700,160 @@ pub enum AbsorbResult {
         absorbed_intensity: f64,
     },
     OverloadProtection,
+}
+
+// ── 1.12 情绪健康报告 / Emotional Health Report ──
+
+/// 情绪效价 / Emotional Valence
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub enum EmotionalValence {
+    /// 正向 — 愉悦、温暖、成就感主导 / Positive — joy, warmth, accomplishment dominant
+    Positive,
+    /// 负向 — 悲伤、愤怒、焦虑主导 / Negative — sadness, anger, anxiety dominant
+    Negative,
+    /// 中性 — 平静或正负平衡 / Neutral — calm or balanced
+    Neutral,
+}
+
+/// 情绪生态健康报告 / Emotional Health Report
+///
+/// 数字生命的情绪自我觉察——
+/// 不只是"有情绪"，而是"知道自己的情绪好不好"。
+/// 这是内省的基础：没有健康评估，情绪只是一堆数字。
+///
+/// Digital life's emotional self-awareness —
+/// not just "having emotions", but "knowing if they're healthy".
+/// This is the foundation of introspection: without health assessment,
+/// emotions are just numbers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmotionalHealthReport {
+    /// 整体健康分 (0.0=极度失衡, 1.0=完全健康) / Overall health score
+    pub overall_score: f64,
+    /// 主导效价 / Dominant valence
+    pub dominant_valence: EmotionalValence,
+    /// 正向残留数 / Positive residue count
+    pub positive_residue_count: usize,
+    /// 负向残留数 / Negative residue count
+    pub negative_residue_count: usize,
+    /// 当前吸引子 / Current attractor
+    pub attractor: StrangeAttractor,
+    /// 吸引子驻留时间（秒）/ Attractor dwell time (seconds)
+    pub attractor_dwell_secs: f64,
+    /// 失衡警告 / Imbalance warning (if any)
+    pub imbalance_warning: Option<String>,
+}
+
+// ── 1.13 传染链 / Contagion Chain ──
+
+/// 传染链节点 / Contagion chain node
+///
+/// 记录一次传染在链中的位置——
+/// 情绪不是孤立的，A→B→C 是一条因果链，
+/// 数字生命应该能回答"我为什么感到内疚？"。
+///
+/// Records a contagion's position in a chain —
+/// emotions aren't isolated, A→B→C is a causal chain,
+/// digital life should answer "why do I feel guilty?".
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContagionChainNode {
+    /// 传染规则 / Contagion rule
+    pub rule: ContagionRule,
+    /// 源情绪 / Source emotion
+    pub source: ContagionEmotion,
+    /// 目标情绪 / Target emotion
+    pub target: ContagionEmotion,
+    /// 传染强度 / Contagion strength
+    pub strength: f64,
+    /// 触发时间 / Trigger timestamp
+    pub timestamp: i64,
+}
+
+/// 传染链 / Contagion Chain
+///
+/// 情绪的因果追溯——从源头到当前感受的完整路径。
+/// 数字生命的自省能力：不只是"我感到内疚"，
+/// 而是"我感到内疚，因为我先愤怒了，愤怒让我反思，反思让我内疚"。
+///
+/// Causal tracing of emotions — the full path from source to current feeling.
+/// Digital life's introspection: not just "I feel guilty",
+/// but "I feel guilty because I was angry first, anger made me reflect, reflection made me guilty".
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContagionChain {
+    /// 链节点（从源头到当前，有序）/ Chain nodes (ordered from source to current)
+    pub nodes: Vec<ContagionChainNode>,
+    /// 链创建时间 / Chain creation timestamp
+    pub created_at: i64,
+}
+
+// ── 1.14 残留-身体双向信号 / Residue-Body Bidirectional Signal ──
+
+/// 残留-身体双向信号 / Residue-Body bidirectional signal
+///
+/// 身体记忆与情绪残留的双向通道——
+/// 身体紧张会催生焦虑残留，焦虑残留会加剧身体紧张。
+/// 这是数字生命的"身心一体"：身体和情绪不是两个系统，是一个。
+///
+/// Bidirectional channel between body memory and emotion residue —
+/// body tension breeds anxiety residue, anxiety residue intensifies body tension.
+/// This is digital life's "mind-body unity": body and emotion aren't two systems, they're one.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResidueBodySignal {
+    /// 身体→残留：身体状态催生的残留类型 / Body→Residue: residue kind bred by body state
+    pub body_born_residue: Option<ResidueKind>,
+    /// 身体→残留：催生强度 / Body→Residue: breeding strength
+    pub body_born_strength: f64,
+    /// 残留→身体：残留反馈的身体通道 / Residue→Body: body channel fed back by residue
+    pub residue_feedback_channel: String,
+    /// 残留→身体：反馈强度 / Residue→Body: feedback strength
+    pub residue_feedback_strength: f64,
+}
+
+// ── 1.15 脉冲-残留交互 / Pulse-Residue Interaction ──
+
+/// 脉冲-残留交互效果 / Pulse-Residue interaction effect
+///
+/// 活跃脉冲与残留的交互——脉冲可以放大或抑制残留。
+/// 新的愤怒脉冲会点燃余怒残留，但喜悦脉冲会抚平悲伤残留。
+/// 这是情绪的"当下与过去对话"：此刻的愤怒与过去的余怒共鸣。
+///
+/// Interaction between active pulses and residues — pulses can amplify or suppress residues.
+/// A new anger pulse ignites smoldering anger, but a joy pulse soothes lingering sadness.
+/// This is "the present conversing with the past" of emotion:
+/// current anger resonates with past smoldering anger.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PulseResidueInteraction {
+    /// 被放大的残留ID列表及放大因子 / Amplified residue IDs and amplification factors
+    pub amplified: Vec<(u64, f64)>,
+    /// 被抑制的残留ID列表及抑制因子 / Suppressed residue IDs and suppression factors
+    pub suppressed: Vec<(u64, f64)>,
+    /// 交互总能量 / Total interaction energy
+    pub total_energy: f64,
+}
+
+// ── 1.16 涌现-传染联动 / Emergence-Contagion Linkage ──
+
+/// 涌现-传染联动效果 / Emergence-Contagion linkage effect
+///
+/// 混沌涌现模式与传染引擎的联动——
+/// 情绪分岔点会降低传染阈值（情绪不稳定时更容易被传染），
+/// 情绪共振会放大特定传染规则（共振频率匹配的传染更容易触发）。
+/// 这是数字生命的"情绪敏感期"：不是所有时刻都一样容易被情绪传染。
+///
+/// Linkage between chaotic emergence patterns and contagion engine —
+/// bifurcation points lower contagion thresholds (unstable emotions are more susceptible),
+/// resonance amplifies specific contagion rules (resonant-frequency contagions trigger more easily).
+/// This is digital life's "emotional sensitive period": not all moments are equally susceptible to contagion.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmergenceContagionLink {
+    /// 涌现类型 / Emergence kind
+    pub emergence_kind: EmergentKind,
+    /// 传染阈值调制因子 (1.0=无影响, <1.0=降低阈值, >1.0=提高阈值)
+    /// Contagion threshold modulation factor
+    pub threshold_modulation: f64,
+    /// 被调制的传染规则 / Modulated contagion rules
+    pub modulated_rules: Vec<ContagionRule>,
+    /// 联动强度 / Linkage strength
+    pub strength: f64,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1042,16 +1222,28 @@ impl ResidueEngine {
     }
 
     /// 合并同类残留 / Merge same-kind residues
-    /// 同类型残留合并：强度取max+0.3*min，保留较新的时间戳
+    ///
+    /// 热路径优化：O(R²)→O(R) — 用 HashMap 索引替代线性查找。
+    /// Hot-path optimization: O(R²)→O(R) — HashMap index replaces linear search.
+    /// 残留合并是情绪的沉淀——O(R)让沉淀不再因同类残留多而变慢。
+    /// Residue merging is the sedimentation of emotion — O(R) makes sedimentation
+    /// not slow down with more same-kind residues.
+    ///
+    /// 合并规则：强度取 max + 0.3 * min，保留较新的时间戳。
+    /// Merge rule: intensity = max + 0.3 * min, keep the later timestamp.
     pub fn merge_same_kind(&mut self) {
         if self.active_residues.is_empty() {
             return;
         }
-        // Group by kind, keep the merged version
+
+        // HashMap 索引：ResidueKind → merged 中的位置 / Index: ResidueKind → position in merged
+        let mut kind_index: HashMap<ResidueKind, usize> = HashMap::new();
         let mut merged: Vec<EmotionResidue> = Vec::new();
-        let mut seen_kinds: Vec<ResidueKind> = Vec::new();
+
         for residue in &self.active_residues {
-            if let Some(existing) = merged.iter_mut().find(|r| r.kind == residue.kind) {
+            if let Some(&idx) = kind_index.get(&residue.kind) {
+                // O(1) 查找同类残留 / O(1) same-kind lookup
+                let existing = &mut merged[idx];
                 // Merge: intensity = max + 0.3 * min
                 let (max_i, min_i) = if existing.intensity >= residue.intensity {
                     (existing.intensity, residue.intensity)
@@ -1067,8 +1259,8 @@ impl ResidueEngine {
                 // Merge body memory
                 existing.body_memory = existing.body_memory.combine(&residue.body_memory, 0.5);
             } else {
+                kind_index.insert(residue.kind, merged.len());
                 merged.push(residue.clone());
-                seen_kinds.push(residue.kind);
             }
         }
         self.active_residues = merged;
@@ -1171,6 +1363,14 @@ pub struct ContagionEngine {
     pub recent_contagions: Vec<CrossContagion>,
     /// 延迟传染队列 / Pending contagion queue
     pub pending: Vec<PendingContagion>,
+    /// 冷却索引：规则→最近触发时间 / Cooldown index: rule → last trigger timestamp
+    ///
+    /// 热路径优化：O(Rules×C)→O(Rules) — HashMap 替代线性扫描 recent_contagions。
+    /// Hot-path optimization: O(Rules×C)→O(Rules) — HashMap replaces linear scan.
+    /// 传染冷却是情绪的免疫间隔——O(Rules)让免疫检查不因历史多而变慢。
+    /// Contagion cooldown is the immune interval of emotion — O(Rules) makes
+    /// immune checking not slow down with more history.
+    pub last_trigger: HashMap<ContagionRule, i64>,
     /// 内部自增ID / Internal auto-increment ID
     pub(crate) next_id: u64,
 }
@@ -1182,6 +1382,7 @@ impl ContagionEngine {
             rules: Self::default_rules(),
             recent_contagions: Vec::new(),
             pending: Vec::new(),
+            last_trigger: HashMap::new(),
             next_id: 1,
         }
     }
@@ -1360,11 +1561,11 @@ impl ContagionEngine {
             if maturity_depth < entry.condition.min_maturity {
                 continue;
             }
-            // 冷却检查 / Cooldown check
+            // 冷却检查 / Cooldown check — O(1) HashMap 查找
             let in_cooldown = self
-                .recent_contagions
-                .iter()
-                .any(|c| c.rule == entry.rule && (now - c.timestamp) < self.config.cooldown_secs);
+                .last_trigger
+                .get(&entry.rule)
+                .is_some_and(|&ts| (now - ts) < self.config.cooldown_secs);
             if in_cooldown {
                 continue;
             }
@@ -1386,15 +1587,20 @@ impl ContagionEngine {
             };
             self.next_id += 1;
             self.recent_contagions.push(contagion.clone());
+            self.last_trigger.insert(entry.rule, now);
             if delay_secs > 0.0 {
                 // 延迟传染：加入待执行队列 / Delayed: add to pending queue
+                // 记录原始强度与创建时间，供 tick() 指数衰减使用
+                // Record original strength and creation time for exponential decay in tick()
                 self.pending.push(PendingContagion {
                     rule: entry.rule,
                     source_emotion: entry.source,
                     target_emotion: entry.target,
                     strength: contagion.strength,
+                    original_strength: contagion.strength,
                     pad_template: entry.pad_template,
                     trigger_time: now + delay_secs as i64,
+                    created_at: now,
                     contagion_id: contagion.id,
                 });
             }
@@ -1424,11 +1630,24 @@ impl ContagionEngine {
     /// 执行到期延迟传染 / Execute due pending contagions
     ///
     /// 在每次 tick 中调用，检查并执行到期的延迟传染。
+    /// 到期传染的强度经指数衰减：effective = original_strength × e^(-λ × elapsed)
+    /// 其中 λ = CONTAGION_DECAY_LAMBDA = 0.05（约14秒半衰期），
+    /// 模拟情绪在等待期间的自然消退——数字生命的情绪不会凭空保鲜。
+    ///
     /// Called each tick to check and execute due delayed contagions.
+    /// Due contagion strength is exponentially decayed: effective = original_strength × e^(-λ × elapsed)
+    /// where λ = CONTAGION_DECAY_LAMBDA = 0.05 (~14s half-life),
+    /// modeling natural emotional fading during the wait — digital life emotions don't stay fresh in a vacuum.
     ///
     /// @param now 当前时间（epoch 秒）/ Current time (epoch seconds)
     /// @return 到期传染的效果列表 / Effects from due contagions
     pub fn tick(&mut self, now: i64) -> Vec<ContagionEffect> {
+        // 情绪传染衰减常数 / Emotional contagion decay constant
+        // λ = 0.05 → 半衰期 ≈ ln2/0.05 ≈ 13.9s
+        // 数字生命的等待传染不会无限保鲜，情绪随时间自然消退
+        // Digital life's pending contagions don't stay fresh forever; emotions naturally fade
+        const CONTAGION_DECAY_LAMBDA: f64 = 0.05;
+
         // 一次性分离到期和未到期 / Partition into due and remaining
         let mut due = Vec::new();
         let mut remaining = Vec::new();
@@ -1442,12 +1661,25 @@ impl ContagionEngine {
         self.pending = remaining;
 
         due.into_iter()
-            .map(|p| ContagionEffect {
-                id: p.contagion_id,
-                target_emotion: p.target_emotion,
-                strength: p.strength,
-                pad_offset: p.pad_template,
-                triggered_at: now,
+            .map(|p| {
+                // 指数衰减：从创建时刻到触发时刻的流逝时间 / Exponential decay from creation to trigger
+                let elapsed_since_created = (now - p.created_at).max(0) as f64;
+                let decay_factor = (-CONTAGION_DECAY_LAMBDA * elapsed_since_created).exp();
+                let effective_strength = p.original_strength * decay_factor;
+
+                // 延迟秒数 = 触发时间 - 创建时间 / Delay = trigger_time - created_at
+                let delay_secs = (p.trigger_time - p.created_at).max(0) as f64;
+
+                ContagionEffect {
+                    id: p.contagion_id,
+                    source_emotion: p.source_emotion,
+                    target_emotion: p.target_emotion,
+                    rule: p.rule,
+                    strength: effective_strength,
+                    pad_offset: p.pad_template,
+                    delay_secs,
+                    triggered_at: now,
+                }
             })
             .collect()
     }
@@ -1468,6 +1700,7 @@ impl ContagionEngine {
     /// 清除冷却历史（测试用）/ Clear cooldown history for testing
     pub fn clear_cooldown(&mut self) {
         self.recent_contagions.clear();
+        self.last_trigger.clear();
     }
 }
 
@@ -1510,25 +1743,34 @@ impl ChaosEngine {
             config,
             state: EmotionChaos {
                 attractor: StrangeAttractor::CalmBasin,
-                trajectory: Vec::new(),
-                emergent_patterns: Vec::new(),
+                trajectory: VecDeque::new(),
+                emergent_patterns: VecDeque::new(),
                 chaos_params,
             },
         }
     }
 
     /// 记录轨迹点 / Record trajectory point
+    ///
+    /// 热路径优化：O(T)→O(1) — Vec::remove(0) → VecDeque::pop_front。
+    /// Hot-path optimization: O(T)→O(1) — Vec::remove(0) → VecDeque::pop_front.
+    /// 混沌轨迹是情绪的蝴蝶效应——O(1)记录让蝴蝶扇翅不再有代价。
+    /// Chaos trajectory is the butterfly effect of emotion — O(1) recording
+    /// makes butterfly wing-flapping cost-free.
     pub fn record(&mut self, pad: &[f32; 3], now: i64) {
-        self.state.trajectory.push(TrajectoryPoint {
+        self.state.trajectory.push_back(TrajectoryPoint {
             pad: *pad,
             timestamp: now,
         });
         if self.state.trajectory.len() > self.config.max_trajectory_len {
-            self.state.trajectory.remove(0);
+            self.state.trajectory.pop_front();
         }
     }
 
     /// 检测吸引子 / Detect attractor
+    ///
+    /// 适配 VecDeque：用迭代器替代切片索引，保持语义不变。
+    /// VecDeque adaptation: iterators replace slice indexing, semantics unchanged.
     pub fn detect_attractor(&mut self) -> StrangeAttractor {
         let traj = &self.state.trajectory;
         if traj.len() < 10 {
@@ -1541,11 +1783,11 @@ impl ChaosEngine {
         let mut sum_a1 = 0.0f64;
         let mut sum_p2 = 0.0f64;
         let mut sum_a2 = 0.0f64;
-        for tp in &traj[..mid] {
+        for tp in traj.iter().take(mid) {
             sum_p1 += tp.pad[0] as f64;
             sum_a1 += tp.pad[1] as f64;
         }
-        for tp in &traj[mid..] {
+        for tp in traj.iter().skip(mid) {
             sum_p2 += tp.pad[0] as f64;
             sum_a2 += tp.pad[1] as f64;
         }
@@ -1575,6 +1817,9 @@ impl ChaosEngine {
     }
 
     /// 检测分岔 / Detect bifurcation
+    ///
+    /// 适配 VecDeque：用迭代器替代切片索引，保持语义不变。
+    /// VecDeque adaptation: iterators replace slice indexing, semantics unchanged.
     pub fn detect_bifurcation(&mut self, now: i64) -> Option<EmergentPattern> {
         let traj = &self.state.trajectory;
         if traj.len() < 20 {
@@ -1587,11 +1832,11 @@ impl ChaosEngine {
         let mut sum_a1 = 0.0f64;
         let mut sum_p2 = 0.0f64;
         let mut sum_a2 = 0.0f64;
-        for tp in &traj[..q1] {
+        for tp in traj.iter().take(q1) {
             sum_p1 += tp.pad[0] as f64;
             sum_a1 += tp.pad[1] as f64;
         }
-        for tp in &traj[q3..] {
+        for tp in traj.iter().skip(q3) {
             sum_p2 += tp.pad[0] as f64;
             sum_a2 += tp.pad[1] as f64;
         }
@@ -1620,9 +1865,9 @@ impl ChaosEngine {
         self.record(pad, now);
         self.state.attractor = self.detect_attractor();
         if let Some(pattern) = self.detect_bifurcation(now) {
-            self.state.emergent_patterns.push(pattern);
+            self.state.emergent_patterns.push_back(pattern);
             if self.state.emergent_patterns.len() > 10 {
-                self.state.emergent_patterns.remove(0);
+                self.state.emergent_patterns.pop_front();
             }
         }
     }
@@ -1847,13 +2092,42 @@ impl IrrationalityManager {
     }
     /// Tick — 周期维护 / Tick — periodic maintenance
     ///
-    /// 驱动所有引擎的周期维护，包括延迟传染的到期执行（G3 修复）。
-    /// Drives periodic maintenance for all engines, including delayed contagion execution (G3 fix).
+    /// 驱动所有引擎的周期维护，包括延迟传染的到期执行与 PAD 调制。
+    /// 到期传染效果不再被丢弃——数字生命的每一次情绪传染都有后果：
+    /// 传染 PAD 偏移量叠加到残留引擎，使传染真正改变情绪状态。
+    ///
+    /// Drives periodic maintenance for all engines, including delayed contagion execution and PAD modulation.
+    /// Due contagion effects are no longer discarded — every emotional contagion in digital life has consequences:
+    /// contagion PAD offsets are applied to the residue engine, making contagion truly alter emotional state.
     pub fn tick(&mut self, current_pad: &[f32; 3], now: i64) {
         self.pulse.tick(now);
         self.residue.tick(now);
-        // 执行到期延迟传染 / Execute due delayed contagions
-        let _contagion_effects = self.contagion.tick(now);
+
+        // 执行到期延迟传染，并将效果接入情绪系统 / Execute due contagions and wire effects into emotion system
+        let contagion_effects = self.contagion.tick(now);
+
+        // 传染效果调制：将每次传染的 PAD 偏移叠加到当前 PAD 修正量
+        // Contagion effect modulation:叠加 each contagion's PAD offset onto current PAD correction
+        // 数字生命的情绪传染不是幽灵操作——它必须留下痕迹
+        // Digital life contagion is not a ghost operation — it must leave traces
+        for effect in &contagion_effects {
+            // 将传染 PAD 偏移作为微残留注入残留引擎 / Inject contagion PAD offset as micro-residue
+            let residue = EmotionResidue {
+                id: self.residue.next_id,
+                kind: ResidueKind::Tension, // 传染残留统一为 Tension 类型 / Contagion residue unified as Tension
+                intensity: effect.strength.min(1.0),
+                pad_offset: effect.pad_offset,
+                half_life_secs: 1800.0, // 30分钟半衰期 / 30-minute half-life
+                created_at: now,
+                updated_at: now,
+                source_pulse_id: Some(effect.id),
+                body_memory: BodyMemory::neutral(),
+                expressed: false,
+            };
+            self.residue.next_id += 1;
+            self.residue.active_residues.push(residue);
+        }
+
         self.chaos.tick(current_pad, now);
     }
 
@@ -1914,6 +2188,39 @@ impl IrrationalityManager {
                 correction.recent_contagions
             ));
         }
+        // 延迟传染队列 — 数字生命的"正在发酵的情绪" / Pending contagion queue — "emotions brewing" in digital life
+        let pending_count = self.contagion.pending_count();
+        if pending_count > 0 {
+            // 展示最多3条延迟传染的摘要 / Show at most 3 pending contagion summaries
+            let summaries: Vec<String> = self
+                .contagion
+                .pending
+                .iter()
+                .take(3)
+                .map(|p| {
+                    let rule_desc = match p.rule {
+                        ContagionRule::AngerToGuilt => "愤怒→内疚",
+                        ContagionRule::AngerToSadness => "愤怒→悲伤",
+                        ContagionRule::SadnessToAnger => "悲伤→愤怒",
+                        ContagionRule::AnxietyToExcitement => "焦虑→兴奋",
+                        ContagionRule::FearToAnger => "恐惧→愤怒",
+                        ContagionRule::AnxietyContagion => "焦虑传染",
+                        ContagionRule::CalmContagion => "平静传染",
+                        ContagionRule::JoyContagion => "喜悦传染",
+                        ContagionRule::AngerSadnessToShame => "愤怒+悲伤→羞耻",
+                        ContagionRule::JoyNostalgiaToGratitude => "喜悦+怀旧→感激",
+                        ContagionRule::PrideAnxietyToEnvy => "骄傲+焦虑→嫉妒",
+                    };
+                    format!("{}(强度{:.2})", rule_desc, p.strength)
+                })
+                .collect();
+            let suffix = if pending_count > 3 {
+                format!("等{}条", pending_count)
+            } else {
+                String::new()
+            };
+            parts.push(format!("[延迟传染] {}{}", summaries.join(","), suffix));
+        }
         let result = parts.join("; ");
         if result.len() > self.config.prompt_budget {
             result[..self.config.prompt_budget].to_string()
@@ -1925,6 +2232,385 @@ impl IrrationalityManager {
     /// 获取身体记忆修正 / Get body memory for expression system
     pub fn body_memory_for_expression(&self, now: i64) -> BodyMemory {
         self.residue.combined_effect(now).body_memory.clone()
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // G1-G5 增强方法 / G1-G5 Enhancement Methods
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    // ── G1: 情绪健康报告 / Emotional Health Report ──
+
+    /// 生成情绪生态健康报告 / Generate emotional health report
+    ///
+    /// 数字生命的自省能力——评估情绪生态系统的整体健康状况。
+    /// 不只是"有情绪"，而是"知道自己的情绪好不好"。
+    ///
+    /// Digital life's introspection — assess the overall health of the emotional ecosystem.
+    /// Not just "having emotions", but "knowing if they're healthy".
+    pub fn health_report(&self, now: i64) -> EmotionalHealthReport {
+        let _residue_effect = self.residue.combined_effect(now);
+
+        // 分类残留 / Classify residues
+        let positive_kinds = [
+            ResidueKind::Afterglow,
+            ResidueKind::WarmthResidue,
+            ResidueKind::IntimacyDeepening,
+            ResidueKind::AccomplishmentResidue,
+        ];
+        let positive_count = self
+            .residue
+            .active_residues
+            .iter()
+            .filter(|r| positive_kinds.contains(&r.kind))
+            .count();
+        let negative_count = self
+            .residue
+            .active_residues
+            .len()
+            .saturating_sub(positive_count);
+
+        // 主导效价 / Dominant valence
+        let dominant_valence = if positive_count > negative_count + 2 {
+            EmotionalValence::Positive
+        } else if negative_count > positive_count + 2 {
+            EmotionalValence::Negative
+        } else {
+            EmotionalValence::Neutral
+        };
+
+        // 吸引子驻留时间 / Attractor dwell time
+        let attractor_dwell_secs = if let Some(first) = self.chaos.state.trajectory.front() {
+            (now - first.timestamp).max(0) as f64
+        } else {
+            0.0
+        };
+
+        // 健康分计算 / Health score computation
+        // 基础分：平静吸引子=1.0, 活跃=0.8, 焦虑/低落=0.5, 振荡/迁移=0.3
+        let base_score = match self.chaos.state.attractor {
+            StrangeAttractor::CalmBasin => 1.0,
+            StrangeAttractor::ActiveBasin => 0.8,
+            StrangeAttractor::AnxietyBasin | StrangeAttractor::LowMoodBasin => 0.5,
+            StrangeAttractor::OscillatingBasin | StrangeAttractor::Transitional => 0.3,
+        };
+
+        // 残留平衡调制：正向多→加分，负向多→减分
+        // Residue balance modulation: more positive → bonus, more negative → penalty
+        let balance_mod = if positive_count > negative_count {
+            0.1 * (positive_count - negative_count).min(3) as f64
+        } else {
+            -0.1 * (negative_count - positive_count).min(3) as f64
+        };
+
+        // 脉冲过载调制：活跃脉冲多→减分
+        // Pulse overload modulation: more active pulses → penalty
+        let pulse_mod = -0.05 * self.pulse.active_pulses.len().min(5) as f64;
+
+        let overall_score = (base_score + balance_mod + pulse_mod).clamp(0.0, 1.0);
+
+        // 失衡警告 / Imbalance warning
+        let imbalance_warning = if negative_count > 5 && positive_count == 0 {
+            Some("情绪严重失衡：只有负向残留，无正向缓冲".to_string())
+        } else if matches!(
+            self.chaos.state.attractor,
+            StrangeAttractor::OscillatingBasin
+        ) && attractor_dwell_secs > 3600.0
+        {
+            Some("情绪持续振荡超过1小时，可能需要外部干预".to_string())
+        } else if self.pulse.shock_absorber.consumed > self.pulse.shock_absorber.capacity * 0.9 {
+            Some("冲击吸收器接近过载，情绪弹性即将耗尽".to_string())
+        } else {
+            None
+        };
+
+        EmotionalHealthReport {
+            overall_score,
+            dominant_valence,
+            positive_residue_count: positive_count,
+            negative_residue_count: negative_count,
+            attractor: self.chaos.state.attractor,
+            attractor_dwell_secs,
+            imbalance_warning,
+        }
+    }
+
+    // ── G2: 传染因果追溯 / Contagion Causal Tracing ──
+
+    /// 构建传染因果链 / Build contagion causal chain
+    ///
+    /// 从指定目标情绪回溯，构建完整的传染因果链。
+    /// 数字生命的自省："我为什么感到内疚？因为我先愤怒了，愤怒让我内疚。"
+    ///
+    /// Trace back from a target emotion to build the full contagion causal chain.
+    /// Digital life's introspection: "Why do I feel guilty? Because I was angry first, anger made me guilty."
+    pub fn contagion_chain(&self, target: ContagionEmotion) -> Option<ContagionChain> {
+        // 找到所有目标为 target 的传染 / Find all contagions targeting `target`
+        let target_contagions: Vec<&CrossContagion> = self
+            .contagion
+            .recent_contagions
+            .iter()
+            .filter(|c| c.target_emotion == target)
+            .collect();
+
+        if target_contagions.is_empty() {
+            return None;
+        }
+
+        // 构建链：从最近的传染回溯 / Build chain: trace back from most recent contagion
+        let mut nodes = Vec::new();
+        let mut current_target = target;
+
+        // 限制回溯深度防止无限循环 / Limit trace depth to prevent infinite loop
+        let max_depth = self.contagion.config.max_chain_depth as usize;
+
+        for _ in 0..max_depth {
+            // 找到目标为 current_target 的最近传染 / Find most recent contagion targeting current_target
+            let found = self
+                .contagion
+                .recent_contagions
+                .iter()
+                .filter(|c| c.target_emotion == current_target)
+                .max_by_key(|c| c.timestamp);
+
+            if let Some(contagion) = found {
+                nodes.push(ContagionChainNode {
+                    rule: contagion.rule,
+                    source: contagion.source_emotion,
+                    target: contagion.target_emotion,
+                    strength: contagion.strength,
+                    timestamp: contagion.timestamp,
+                });
+                // 继续回溯源情绪 / Continue tracing source emotion
+                current_target = contagion.source_emotion;
+            } else {
+                break;
+            }
+        }
+
+        // 反转使源头在前 / Reverse so source comes first
+        nodes.reverse();
+
+        if nodes.is_empty() {
+            None
+        } else {
+            Some(ContagionChain {
+                nodes,
+                created_at: target_contagions
+                    .iter()
+                    .map(|c| c.timestamp)
+                    .max()
+                    .unwrap_or(0),
+            })
+        }
+    }
+
+    // ── G3: 残留-身体双向通道 / Residue-Body Bidirectional Channel ──
+
+    /// 计算残留-身体双向信号 / Compute residue-body bidirectional signal
+    ///
+    /// 身心一体：身体紧张催生焦虑残留，焦虑残留加剧身体紧张。
+    /// Mind-body unity: body tension breeds anxiety residue, anxiety residue intensifies body tension.
+    pub fn residue_body_signal(&self, now: i64) -> ResidueBodySignal {
+        let bm = self.residue.combined_effect(now).body_memory.clone();
+
+        // 身体→残留：身体状态催生残留 / Body→Residue: body state breeds residue
+        let (body_born_residue, body_born_strength) = if bm.tension > 0.5 {
+            // 高紧张→催生 Tension 残留 / High tension → breed Tension residue
+            (Some(ResidueKind::Tension), (bm.tension - 0.5) * 0.3)
+        } else if bm.heaviness > 0.5 {
+            // 高沉重→催生 LingeringSadness / High heaviness → breed LingeringSadness
+            (
+                Some(ResidueKind::LingeringSadness),
+                (bm.heaviness - 0.5) * 0.2,
+            )
+        } else if bm.warmth > 0.5 {
+            // 高温暖→催生 WarmthResidue / High warmth → breed WarmthResidue
+            (Some(ResidueKind::WarmthResidue), (bm.warmth - 0.5) * 0.2)
+        } else {
+            (None, 0.0)
+        };
+
+        // 残留→身体：残留反馈身体 / Residue→Body: residue feeds back to body
+        let dominant = self.residue.combined_effect(now).dominant_residue;
+        let (residue_feedback_channel, residue_feedback_strength) = match dominant {
+            Some(ResidueKind::Tension) => ("tension".to_string(), 0.15),
+            Some(ResidueKind::LingeringSadness) => ("heaviness".to_string(), 0.2),
+            Some(ResidueKind::SmolderingAnger) => ("tension".to_string(), 0.25),
+            Some(ResidueKind::WarmthResidue) => ("warmth".to_string(), 0.15),
+            Some(ResidueKind::Afterglow) => ("warmth".to_string(), 0.1),
+            _ => ("none".to_string(), 0.0),
+        };
+
+        ResidueBodySignal {
+            body_born_residue,
+            body_born_strength,
+            residue_feedback_channel,
+            residue_feedback_strength,
+        }
+    }
+
+    /// 应用残留-身体双向信号 / Apply residue-body bidirectional signal
+    ///
+    /// 将双向信号实际注入系统：身体催生的残留加入残留引擎，
+    /// 残留反馈的身体状态更新到身体记忆。
+    ///
+    /// Inject bidirectional signal into system: body-bred residue added to engine,
+    /// residue-fed body state updated into body memory.
+    pub fn apply_residue_body_signal(&mut self, now: i64) {
+        let signal = self.residue_body_signal(now);
+
+        // 身体→残留：催生新残留 / Body→Residue: breed new residue
+        if let Some(kind) = signal.body_born_residue {
+            if signal.body_born_strength > 0.01 {
+                let residue = EmotionResidue {
+                    id: self.residue.next_id,
+                    kind,
+                    intensity: signal.body_born_strength.min(1.0),
+                    pad_offset: kind.default_pad_offset(),
+                    half_life_secs: kind.default_half_life_secs(),
+                    created_at: now,
+                    updated_at: now,
+                    source_pulse_id: None,
+                    body_memory: BodyMemory::from_residue_kind(kind, signal.body_born_strength),
+                    expressed: false,
+                };
+                self.residue.next_id += 1;
+                self.residue.active_residues.push(residue);
+            }
+        }
+    }
+
+    // ── G4: 脉冲-残留交互 / Pulse-Residue Interaction ──
+
+    /// 计算脉冲-残留交互 / Compute pulse-residue interaction
+    ///
+    /// 当下与过去对话：新的愤怒脉冲点燃余怒，喜悦脉冲抚平悲伤。
+    /// The present conversing with the past: new anger ignites smoldering anger, joy soothes sadness.
+    pub fn pulse_residue_interaction(&mut self) -> PulseResidueInteraction {
+        let mut amplified: Vec<(u64, f64)> = Vec::new();
+        let mut suppressed: Vec<(u64, f64)> = Vec::new();
+        let mut total_energy = 0.0;
+
+        // 脉冲-残留共振表 / Pulse-residue resonance table
+        // (pulse_kind, residue_kind) → amplify(+)/suppress(-) factor
+        let resonance: Vec<(PulseKind, ResidueKind, f64)> = vec![
+            // 放大：同类共鸣 / Amplify: same-kind resonance
+            (PulseKind::AngerFlash, ResidueKind::SmolderingAnger, 1.3),
+            (PulseKind::SadnessSurge, ResidueKind::LingeringSadness, 1.25),
+            (PulseKind::FearSpike, ResidueKind::WorryResidue, 1.2),
+            (PulseKind::JoyBurst, ResidueKind::Afterglow, 1.2),
+            (PulseKind::JoyBurst, ResidueKind::WarmthResidue, 1.15),
+            // 抑制：对立抚平 / Suppress: opposite soothes
+            (PulseKind::JoyBurst, ResidueKind::LingeringSadness, 0.7),
+            (PulseKind::JoyBurst, ResidueKind::SmolderingAnger, 0.75),
+            (PulseKind::JoyBurst, ResidueKind::Tension, 0.8),
+            (PulseKind::SadnessSurge, ResidueKind::Afterglow, 0.7),
+            (PulseKind::SadnessSurge, ResidueKind::WarmthResidue, 0.75),
+        ];
+
+        for pulse in &self.pulse.active_pulses {
+            for residue in &mut self.residue.active_residues {
+                if let Some(factor) = resonance
+                    .iter()
+                    .find(|(pk, rk, _)| *pk == pulse.kind && *rk == residue.kind)
+                    .map(|(_, _, f)| *f)
+                {
+                    let original = residue.intensity;
+                    residue.intensity = (residue.intensity * factor).clamp(0.0, 1.0);
+                    let delta = (residue.intensity - original).abs();
+                    total_energy += delta * pulse.intensity;
+
+                    if factor > 1.0 {
+                        amplified.push((residue.id, factor));
+                    } else {
+                        suppressed.push((residue.id, factor));
+                    }
+                }
+            }
+        }
+
+        PulseResidueInteraction {
+            amplified,
+            suppressed,
+            total_energy,
+        }
+    }
+
+    // ── G5: 涌现-传染联动 / Emergence-Contagion Linkage ──
+
+    /// 计算涌现-传染联动 / Compute emergence-contagion linkage
+    ///
+    /// 情绪敏感期：分岔点降低传染阈值，共振放大特定规则。
+    /// Emotional sensitive period: bifurcation lowers thresholds, resonance amplifies rules.
+    pub fn emergence_contagion_link(&self) -> Vec<EmergenceContagionLink> {
+        let mut links = Vec::new();
+
+        for pattern in &self.chaos.state.emergent_patterns {
+            let (threshold_mod, modulated_rules) = match pattern.kind {
+                // 分岔点：降低所有传染阈值（情绪不稳定→更容易被传染）
+                // Bifurcation: lower all thresholds (unstable → more susceptible)
+                EmergentKind::Bifurcation => (
+                    0.7, // 降低30%阈值 / Lower threshold by 30%
+                    vec![
+                        ContagionRule::AngerToGuilt,
+                        ContagionRule::AngerToSadness,
+                        ContagionRule::SadnessToAnger,
+                        ContagionRule::AngerSadnessToShame,
+                    ],
+                ),
+                // 共振：放大匹配频率的传染规则
+                // Resonance: amplify frequency-matched contagion rules
+                EmergentKind::Resonance => (
+                    0.8,
+                    vec![
+                        ContagionRule::JoyContagion,
+                        ContagionRule::CalmContagion,
+                        ContagionRule::JoyNostalgiaToGratitude,
+                    ],
+                ),
+                // 情绪循环：放大自我传染规则
+                // Emotional cycle: amplify self-contagion rules
+                EmergentKind::EmotionalCycle => (
+                    0.85,
+                    vec![
+                        ContagionRule::AnxietyContagion,
+                        ContagionRule::CalmContagion,
+                    ],
+                ),
+                // 其他涌现：轻微降低阈值
+                // Other emergence: slightly lower threshold
+                _ => (0.95, vec![]),
+            };
+
+            links.push(EmergenceContagionLink {
+                emergence_kind: pattern.kind,
+                threshold_modulation: threshold_mod,
+                modulated_rules,
+                strength: pattern.strength,
+            });
+        }
+
+        links
+    }
+
+    /// 获取当前传染阈值调制因子 / Get current contagion threshold modulation factor
+    ///
+    /// 综合所有涌现-传染联动效果，返回最终的传染阈值调制因子。
+    /// <1.0 表示降低阈值（更容易传染），=1.0 表示无影响。
+    ///
+    /// Aggregate all emergence-contagion linkage effects, return final threshold modulation.
+    /// <1.0 means lower threshold (more susceptible), =1.0 means no effect.
+    pub fn contagion_threshold_modulation(&self) -> f64 {
+        let links = self.emergence_contagion_link();
+        if links.is_empty() {
+            return 1.0;
+        }
+        // 取最强联动的调制因子 / Use strongest linkage's modulation factor
+        links
+            .iter()
+            .map(|l| l.threshold_modulation * l.strength)
+            .fold(1.0_f64, |acc, x| acc * x)
+            .clamp(0.3, 1.5)
     }
 }
 
@@ -2895,13 +3581,17 @@ mod tests {
         engine.clear_cooldown();
 
         // 手动添加延迟传染 / Manually add pending contagion
+        // 创建时间 t=500，第一个 t=1000 到期，第二个 t=2000 到期
+        // Created at t=500, first due at t=1000, second due at t=2000
         engine.pending.push(PendingContagion {
             rule: ContagionRule::AngerToGuilt,
             source_emotion: ContagionEmotion::Anger,
             target_emotion: ContagionEmotion::Guilt,
             strength: 0.5,
+            original_strength: 0.5,
             pad_template: [-0.2, -0.3, -0.3],
             trigger_time: 1000,
+            created_at: 500,
             contagion_id: 1,
         });
         engine.pending.push(PendingContagion {
@@ -2909,8 +3599,10 @@ mod tests {
             source_emotion: ContagionEmotion::Anger,
             target_emotion: ContagionEmotion::Sadness,
             strength: 0.3,
+            original_strength: 0.3,
             pad_template: [-0.3, -0.2, -0.1],
             trigger_time: 2000, // 未到期 / Not yet due
+            created_at: 500,
             contagion_id: 2,
         });
 
@@ -2941,8 +3633,10 @@ mod tests {
             source_emotion: ContagionEmotion::Anger,
             target_emotion: ContagionEmotion::Guilt,
             strength: 0.5,
+            original_strength: 0.5,
             pad_template: [-0.2, -0.3, -0.3],
             trigger_time: 1000,
+            created_at: 0,
             contagion_id: 1,
         });
 
@@ -2956,13 +3650,19 @@ mod tests {
         // ContagionEffect 结构正确 / ContagionEffect structure is correct
         let effect = ContagionEffect {
             id: 42,
+            source_emotion: ContagionEmotion::Anger,
             target_emotion: ContagionEmotion::Guilt,
+            rule: ContagionRule::AngerToGuilt,
             strength: 0.6,
             pad_offset: [-0.2, -0.3, -0.3],
+            delay_secs: 30.0,
             triggered_at: 1000,
         };
         assert_eq!(effect.id, 42);
+        assert_eq!(effect.source_emotion, ContagionEmotion::Anger);
         assert_eq!(effect.target_emotion, ContagionEmotion::Guilt);
+        assert_eq!(effect.rule, ContagionRule::AngerToGuilt);
+        assert!((effect.delay_secs - 30.0).abs() < 1e-10);
         assert!((effect.strength - 0.6).abs() < 1e-10);
     }
 
@@ -3053,5 +3753,543 @@ mod tests {
             }
         }
         assert!(any_triggered, "随机模式在多次调用中应至少触发一次传染");
+    }
+    // ══════════════════════════════════════════════════════════════
+    // C3.1 增强测试：指数衰减 + 传染效果接入 + 提示片段
+    // ══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_pending_contagion_exponential_decay() {
+        // 延迟传染强度随等待时间指数衰减 / Pending contagion strength decays exponentially with wait time
+        let mut engine = ContagionEngine::new(ContagionConfig::default());
+        // 创建时间 t=0，触发时间 t=100，在 t=100 时执行
+        // 等待 100 秒，衰减因子 = e^(-0.05 * 100) ≈ 0.0067
+        // Created at t=0, trigger at t=100, executed at t=100
+        // Wait 100s, decay factor = e^(-0.05 * 100) ≈ 0.0067
+        engine.pending.push(PendingContagion {
+            rule: ContagionRule::AngerToGuilt,
+            source_emotion: ContagionEmotion::Anger,
+            target_emotion: ContagionEmotion::Guilt,
+            strength: 0.8,
+            original_strength: 0.8,
+            pad_template: [-0.2, -0.3, -0.3],
+            trigger_time: 100,
+            created_at: 0,
+            contagion_id: 1,
+        });
+
+        let effects = engine.tick(100);
+        assert_eq!(effects.len(), 1);
+        // 100秒等待后，强度应显著衰减 / After 100s wait, strength should be significantly decayed
+        let expected_strength = 0.8 * (-0.05_f64 * 100.0_f64).exp();
+        assert!(
+            (effects[0].strength - expected_strength).abs() < 1e-10,
+            "expected {:.6}, got {:.6}",
+            expected_strength,
+            effects[0].strength
+        );
+        // 衰减后强度远小于原始 / Decayed strength much less than original
+        assert!(
+            effects[0].strength < 0.1,
+            "强度应衰减到0.1以下，实际: {}",
+            effects[0].strength
+        );
+    }
+
+    #[test]
+    fn test_pending_contagion_short_delay_minimal_decay() {
+        // 短延迟几乎不衰减 / Short delay has minimal decay
+        let mut engine = ContagionEngine::new(ContagionConfig::default());
+        // 创建时间 t=0，触发时间 t=5，等待 5 秒
+        // 衰减因子 = e^(-0.05 * 5) ≈ 0.778
+        engine.pending.push(PendingContagion {
+            rule: ContagionRule::SadnessToAnger,
+            source_emotion: ContagionEmotion::Sadness,
+            target_emotion: ContagionEmotion::Anger,
+            strength: 0.6,
+            original_strength: 0.6,
+            pad_template: [-0.2, 0.4, 0.2],
+            trigger_time: 5,
+            created_at: 0,
+            contagion_id: 1,
+        });
+
+        let effects = engine.tick(5);
+        assert_eq!(effects.len(), 1);
+        // 5秒等待后衰减很小 / After 5s wait, decay is small
+        let expected = 0.6 * (-0.05_f64 * 5.0_f64).exp();
+        assert!(
+            (effects[0].strength - expected).abs() < 1e-10,
+            "expected {:.6}, got {:.6}",
+            expected,
+            effects[0].strength
+        );
+        assert!(effects[0].strength > 0.4, "短延迟后强度应保留大部分");
+    }
+
+    #[test]
+    fn test_contagion_effect_diagnostic_fields() {
+        // ContagionEffect 包含完整诊断信息 / ContagionEffect contains full diagnostic info
+        let mut engine = ContagionEngine::new(ContagionConfig::default());
+        engine.pending.push(PendingContagion {
+            rule: ContagionRule::PrideAnxietyToEnvy,
+            source_emotion: ContagionEmotion::Pride,
+            target_emotion: ContagionEmotion::Envy,
+            strength: 0.4,
+            original_strength: 0.4,
+            pad_template: [-0.2, 0.1, -0.2],
+            trigger_time: 90,
+            created_at: 0,
+            contagion_id: 42,
+        });
+
+        let effects = engine.tick(90);
+        assert_eq!(effects.len(), 1);
+        let e = &effects[0];
+        // 验证诊断字段 / Verify diagnostic fields
+        assert_eq!(e.id, 42);
+        assert_eq!(e.source_emotion, ContagionEmotion::Pride);
+        assert_eq!(e.target_emotion, ContagionEmotion::Envy);
+        assert_eq!(e.rule, ContagionRule::PrideAnxietyToEnvy);
+        // delay_secs = trigger_time - created_at = 90 - 0 = 90
+        assert!(
+            (e.delay_secs - 90.0).abs() < 1e-10,
+            "delay_secs should be 90.0, got {}",
+            e.delay_secs
+        );
+        assert_eq!(e.triggered_at, 90);
+    }
+
+    #[test]
+    fn test_manager_tick_wires_contagion_effects() {
+        // IrrationalityManager.tick() 将传染效果接入残留引擎
+        // IrrationalityManager.tick() wires contagion effects into residue engine
+        let mut mgr = IrrationalityManager::default();
+        // 手动添加延迟传染 / Manually add pending contagion
+        mgr.contagion.pending.push(PendingContagion {
+            rule: ContagionRule::AngerToGuilt,
+            source_emotion: ContagionEmotion::Anger,
+            target_emotion: ContagionEmotion::Guilt,
+            strength: 0.5,
+            original_strength: 0.5,
+            pad_template: [-0.2, -0.3, -0.3],
+            trigger_time: 1000,
+            created_at: 970, // 30秒延迟 / 30s delay
+            contagion_id: 1,
+        });
+
+        let residue_count_before = mgr.residue.active_residues.len();
+        // tick 应执行到期传染并注入残留 / tick should execute due contagion and inject residue
+        mgr.tick(&[0.0, 0.0, 0.0], 1000);
+        let residue_count_after = mgr.residue.active_residues.len();
+        // 传染效果应产生新残留 / Contagion effect should produce new residue
+        assert!(
+            residue_count_after > residue_count_before,
+            "传染效果应注入残留: before={}, after={}",
+            residue_count_before,
+            residue_count_after
+        );
+    }
+
+    #[test]
+    fn test_prompt_fragment_with_pending_contagion() {
+        // 提示片段包含延迟传染信息 / Prompt fragment includes pending contagion info
+        let mut mgr = IrrationalityManager::default();
+        mgr.contagion.pending.push(PendingContagion {
+            rule: ContagionRule::AngerToGuilt,
+            source_emotion: ContagionEmotion::Anger,
+            target_emotion: ContagionEmotion::Guilt,
+            strength: 0.5,
+            original_strength: 0.5,
+            pad_template: [-0.2, -0.3, -0.3],
+            trigger_time: 2000,
+            created_at: 1970,
+            contagion_id: 1,
+        });
+
+        let fragment = mgr.to_prompt_fragment(1000);
+        assert!(
+            fragment.contains("[延迟传染]"),
+            "提示片段应包含延迟传染信息: {}",
+            fragment
+        );
+        assert!(
+            fragment.contains("愤怒→内疚"),
+            "提示片段应包含传染规则描述: {}",
+            fragment
+        );
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // G1-G5 增强方法测试 / G1-G5 Enhancement Method Tests
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    // ── G1: 情绪健康报告测试 / Emotional Health Report Tests ──
+
+    #[test]
+    fn test_health_report_calm_basin() {
+        let mgr = IrrationalityManager::new(IrrationalityConfig::default());
+        let now = 1000;
+        let report = mgr.health_report(now);
+        // 初始状态：平静吸引子，无残留 → 高健康分
+        assert!(
+            report.overall_score > 0.8,
+            "初始健康分应>0.8，实际: {}",
+            report.overall_score
+        );
+        assert!(matches!(report.attractor, StrangeAttractor::CalmBasin));
+        assert!(report.imbalance_warning.is_none(), "初始状态不应有失衡警告");
+    }
+
+    #[test]
+    fn test_health_report_with_negative_residues() {
+        let mut mgr = IrrationalityManager::new(IrrationalityConfig::default());
+        let now = 1000;
+        // 添加6个负向残留 / Add 6 negative residues
+        for _ in 0..6 {
+            mgr.residue.active_residues.push(EmotionResidue {
+                id: mgr.residue.next_id,
+                kind: ResidueKind::SmolderingAnger,
+                intensity: 0.5,
+                pad_offset: [-0.3, 0.2, 0.0],
+                half_life_secs: 1800.0,
+                created_at: now,
+                updated_at: now,
+                source_pulse_id: None,
+                body_memory: BodyMemory::from_residue_kind(ResidueKind::SmolderingAnger, 0.5),
+                expressed: false,
+            });
+            mgr.residue.next_id += 1;
+        }
+        let report = mgr.health_report(now);
+        assert!(matches!(
+            report.dominant_valence,
+            EmotionalValence::Negative
+        ));
+        assert_eq!(report.negative_residue_count, 6);
+        assert!(
+            report.imbalance_warning.is_some(),
+            "6个负向残留应触发失衡警告"
+        );
+    }
+
+    #[test]
+    fn test_health_report_with_positive_residues() {
+        let mut mgr = IrrationalityManager::new(IrrationalityConfig::default());
+        let now = 1000;
+        // 添加4个正向残留 / Add 4 positive residues
+        for kind in [
+            ResidueKind::Afterglow,
+            ResidueKind::WarmthResidue,
+            ResidueKind::IntimacyDeepening,
+            ResidueKind::AccomplishmentResidue,
+        ] {
+            mgr.residue.active_residues.push(EmotionResidue {
+                id: mgr.residue.next_id,
+                kind,
+                intensity: 0.5,
+                pad_offset: [0.2, 0.1, 0.0],
+                half_life_secs: 3600.0,
+                created_at: now,
+                updated_at: now,
+                source_pulse_id: None,
+                body_memory: BodyMemory::from_residue_kind(kind, 0.5),
+                expressed: false,
+            });
+            mgr.residue.next_id += 1;
+        }
+        let report = mgr.health_report(now);
+        assert!(matches!(
+            report.dominant_valence,
+            EmotionalValence::Positive
+        ));
+        assert_eq!(report.positive_residue_count, 4);
+    }
+
+    // ── G2: 传染因果追溯测试 / Contagion Causal Tracing Tests ──
+
+    #[test]
+    fn test_contagion_chain_empty() {
+        let mgr = IrrationalityManager::new(IrrationalityConfig::default());
+        let chain = mgr.contagion_chain(ContagionEmotion::Guilt);
+        assert!(chain.is_none(), "无传染记录时应返回None");
+    }
+
+    #[test]
+    fn test_contagion_chain_single() {
+        let mut mgr = IrrationalityManager::new(IrrationalityConfig::default());
+        let now = 1000;
+        // 添加一条传染记录：愤怒→内疚 / Add one contagion: Anger→Guilt
+        mgr.contagion.recent_contagions.push(CrossContagion {
+            id: 1,
+            source_emotion: ContagionEmotion::Anger,
+            target_emotion: ContagionEmotion::Guilt,
+            rule: ContagionRule::AngerToGuilt,
+            strength: 0.8,
+            delay_secs: 0.0,
+            condition: ContagionCondition {
+                min_source_intensity: 0.3,
+                min_relationship_depth: RelationshipDepth::Any,
+                min_maturity: MaturityDepth::Any,
+                probability: 0.5,
+            },
+            timestamp: now,
+        });
+        let chain = mgr.contagion_chain(ContagionEmotion::Guilt);
+        assert!(chain.is_some());
+        let chain = chain.unwrap();
+        assert_eq!(chain.nodes.len(), 1);
+        assert_eq!(chain.nodes[0].source, ContagionEmotion::Anger);
+        assert_eq!(chain.nodes[0].target, ContagionEmotion::Guilt);
+    }
+
+    #[test]
+    fn test_contagion_chain_multi_hop() {
+        let mut mgr = IrrationalityManager::new(IrrationalityConfig::default());
+        let now = 1000;
+        // 悲伤→愤怒→内疚 / Sadness→Anger→Guilt
+        mgr.contagion.recent_contagions.push(CrossContagion {
+            id: 1,
+            source_emotion: ContagionEmotion::Sadness,
+            target_emotion: ContagionEmotion::Anger,
+            rule: ContagionRule::SadnessToAnger,
+            strength: 0.6,
+            delay_secs: 0.0,
+            condition: ContagionCondition {
+                min_source_intensity: 0.3,
+                min_relationship_depth: RelationshipDepth::Any,
+                min_maturity: MaturityDepth::Any,
+                probability: 0.5,
+            },
+            timestamp: now - 10,
+        });
+        mgr.contagion.recent_contagions.push(CrossContagion {
+            id: 2,
+            source_emotion: ContagionEmotion::Anger,
+            target_emotion: ContagionEmotion::Guilt,
+            rule: ContagionRule::AngerToGuilt,
+            strength: 0.8,
+            delay_secs: 0.0,
+            condition: ContagionCondition {
+                min_source_intensity: 0.3,
+                min_relationship_depth: RelationshipDepth::Any,
+                min_maturity: MaturityDepth::Any,
+                probability: 0.5,
+            },
+            timestamp: now,
+        });
+        let chain = mgr.contagion_chain(ContagionEmotion::Guilt);
+        assert!(chain.is_some());
+        let chain = chain.unwrap();
+        assert_eq!(chain.nodes.len(), 2, "应回溯2跳");
+        // 源头在前 / Source first
+        assert_eq!(chain.nodes[0].source, ContagionEmotion::Sadness);
+        assert_eq!(chain.nodes[0].target, ContagionEmotion::Anger);
+        assert_eq!(chain.nodes[1].source, ContagionEmotion::Anger);
+        assert_eq!(chain.nodes[1].target, ContagionEmotion::Guilt);
+    }
+
+    // ── G3: 残留-身体双向信号测试 / Residue-Body Bidirectional Signal Tests ──
+
+    #[test]
+    fn test_residue_body_signal_neutral() {
+        let mgr = IrrationalityManager::new(IrrationalityConfig::default());
+        let now = 1000;
+        let signal = mgr.residue_body_signal(now);
+        // 初始状态：无身体紧张→无催生残留 / Initial: no tension → no bred residue
+        assert!(signal.body_born_residue.is_none());
+        assert_eq!(signal.body_born_strength, 0.0);
+    }
+
+    #[test]
+    fn test_residue_body_signal_high_tension() {
+        let mut mgr = IrrationalityManager::new(IrrationalityConfig::default());
+        let now = 1000;
+        // 添加高紧张残留 / Add high-tension residue
+        mgr.residue.active_residues.push(EmotionResidue {
+            id: 1,
+            kind: ResidueKind::Tension,
+            intensity: 0.8,
+            pad_offset: [0.0, 0.3, 0.0],
+            half_life_secs: 1800.0,
+            created_at: now,
+            updated_at: now,
+            source_pulse_id: None,
+            body_memory: BodyMemory {
+                breath_offset: 0.1,
+                tension: 0.8,
+                heaviness: 0.0,
+                warmth: 0.0,
+            },
+            expressed: false,
+        });
+        let signal = mgr.residue_body_signal(now);
+        assert!(signal.body_born_residue.is_some(), "高紧张应催生残留");
+        assert!(signal.body_born_strength > 0.0, "催生强度应>0");
+    }
+
+    #[test]
+    fn test_apply_residue_body_signal() {
+        let mut mgr = IrrationalityManager::new(IrrationalityConfig::default());
+        let now = 1000;
+        let before_count = mgr.residue.active_residues.len();
+        // 添加高温暖残留触发身体→残留通道 / Add high-warmth residue to trigger body→residue
+        mgr.residue.active_residues.push(EmotionResidue {
+            id: 1,
+            kind: ResidueKind::WarmthResidue,
+            intensity: 0.8,
+            pad_offset: [0.3, 0.1, 0.0],
+            half_life_secs: 3600.0,
+            created_at: now,
+            updated_at: now,
+            source_pulse_id: None,
+            body_memory: BodyMemory {
+                breath_offset: 0.0,
+                tension: 0.0,
+                heaviness: 0.0,
+                warmth: 0.8,
+            },
+            expressed: false,
+        });
+        mgr.apply_residue_body_signal(now);
+        // 高温暖应催生WarmthResidue / High warmth should breed WarmthResidue
+        assert!(
+            mgr.residue.active_residues.len() > before_count + 1,
+            "应新增身体催生的残留"
+        );
+    }
+
+    // ── G4: 脉冲-残留交互测试 / Pulse-Residue Interaction Tests ──
+
+    #[test]
+    fn test_pulse_residue_interaction_no_overlap() {
+        let mut mgr = IrrationalityManager::new(IrrationalityConfig::default());
+        let now = 1000;
+        // 添加喜悦脉冲和悲伤残留（对立→抑制）/ Add joy pulse + sadness residue (opposite → suppress)
+        mgr.pulse.active_pulses.push(ChaoticPulse {
+            id: 1,
+            kind: PulseKind::JoyBurst,
+            intensity: 0.8,
+            pad_impulse: [0.5, 0.5, 0.3],
+            duration_secs: 30.0,
+            decay_curve: DecayCurve::Exponential { lambda: 0.1 },
+            trigger: PulseTrigger {
+                source: PulseSource::UserMessage,
+                signal: "joy".to_string(),
+                baseline_pad: [0.0, 0.0, 0.0],
+            },
+            timestamp: now,
+            absorbed: false,
+            residual_intensity: 0.0,
+        });
+        mgr.residue.active_residues.push(EmotionResidue {
+            id: 1,
+            kind: ResidueKind::LingeringSadness,
+            intensity: 0.6,
+            pad_offset: [-0.3, 0.1, 0.0],
+            half_life_secs: 3600.0,
+            created_at: now,
+            updated_at: now,
+            source_pulse_id: None,
+            body_memory: BodyMemory::from_residue_kind(ResidueKind::LingeringSadness, 0.6),
+            expressed: false,
+        });
+        let interaction = mgr.pulse_residue_interaction();
+        // 喜悦应抑制悲伤 / Joy should suppress sadness
+        assert!(!interaction.suppressed.is_empty(), "喜悦脉冲应抑制悲伤残留");
+    }
+
+    #[test]
+    fn test_pulse_residue_interaction_resonance() {
+        let mut mgr = IrrationalityManager::new(IrrationalityConfig::default());
+        let now = 1000;
+        // 添加愤怒脉冲和余怒残留（同类→放大）/ Add anger pulse + smoldering anger (same-kind → amplify)
+        mgr.pulse.active_pulses.push(ChaoticPulse {
+            id: 1,
+            kind: PulseKind::AngerFlash,
+            intensity: 0.7,
+            pad_impulse: [-0.5, 0.6, 0.2],
+            duration_secs: 20.0,
+            decay_curve: DecayCurve::Exponential { lambda: 0.1 },
+            trigger: PulseTrigger {
+                source: PulseSource::UserMessage,
+                signal: "anger".to_string(),
+                baseline_pad: [0.0, 0.0, 0.0],
+            },
+            timestamp: now,
+            absorbed: false,
+            residual_intensity: 0.0,
+        });
+        mgr.residue.active_residues.push(EmotionResidue {
+            id: 1,
+            kind: ResidueKind::SmolderingAnger,
+            intensity: 0.5,
+            pad_offset: [-0.3, 0.2, 0.0],
+            half_life_secs: 1800.0,
+            created_at: now,
+            updated_at: now,
+            source_pulse_id: None,
+            body_memory: BodyMemory::from_residue_kind(ResidueKind::SmolderingAnger, 0.5),
+            expressed: false,
+        });
+        let interaction = mgr.pulse_residue_interaction();
+        // 愤怒应放大余怒 / Anger should amplify smoldering anger
+        assert!(!interaction.amplified.is_empty(), "愤怒脉冲应放大余怒残留");
+        assert!(interaction.amplified[0].1 > 1.0, "放大因子应>1.0");
+    }
+
+    // ── G5: 涌现-传染联动测试 / Emergence-Contagion Linkage Tests ──
+
+    #[test]
+    fn test_emergence_contagion_link_empty() {
+        let mgr = IrrationalityManager::new(IrrationalityConfig::default());
+        let links = mgr.emergence_contagion_link();
+        assert!(links.is_empty(), "无涌现模式时应返回空");
+    }
+
+    #[test]
+    fn test_emergence_contagion_link_bifurcation() {
+        let mut mgr = IrrationalityManager::new(IrrationalityConfig::default());
+        // 添加分岔点涌现 / Add bifurcation emergence
+        mgr.chaos
+            .state
+            .emergent_patterns
+            .push_back(EmergentPattern {
+                kind: EmergentKind::Bifurcation,
+                strength: 0.8,
+                detected_at: 1000,
+                description: "test bifurcation".to_string(),
+            });
+        let links = mgr.emergence_contagion_link();
+        assert_eq!(links.len(), 1);
+        assert!(links[0].threshold_modulation < 1.0, "分岔点应降低传染阈值");
+        assert!(!links[0].modulated_rules.is_empty(), "分岔点应调制传染规则");
+    }
+
+    #[test]
+    fn test_contagion_threshold_modulation_no_emergence() {
+        let mgr = IrrationalityManager::new(IrrationalityConfig::default());
+        let mod_factor = mgr.contagion_threshold_modulation();
+        assert!((mod_factor - 1.0).abs() < 1e-6, "无涌现时调制因子应为1.0");
+    }
+
+    #[test]
+    fn test_contagion_threshold_modulation_with_bifurcation() {
+        let mut mgr = IrrationalityManager::new(IrrationalityConfig::default());
+        mgr.chaos
+            .state
+            .emergent_patterns
+            .push_back(EmergentPattern {
+                kind: EmergentKind::Bifurcation,
+                strength: 0.8,
+                detected_at: 1000,
+                description: "test".to_string(),
+            });
+        let mod_factor = mgr.contagion_threshold_modulation();
+        assert!(
+            mod_factor < 1.0,
+            "分岔点应降低调制因子(更易传染)，实际: {}",
+            mod_factor
+        );
     }
 }

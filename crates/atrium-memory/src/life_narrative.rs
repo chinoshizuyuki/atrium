@@ -2249,7 +2249,9 @@ impl ChapterWriter {
 pub struct ThemeWeaver {
     /// 已发现的跨弧主题 / Discovered cross-arc themes
     pub themes: Vec<CrossArcTheme>,
-    /// 下一个主题 ID / Next theme ID
+    // 主题 ID 生成器内部状态 — 当 LLM 深度分析接入后将被 consume
+    // Theme ID generator internal state — will be consumed once LLM deep analysis is integrated
+    #[allow(dead_code)]
     next_theme_id: u64,
 }
 
@@ -2879,7 +2881,9 @@ pub struct RetrospectiveBuilder {
     causal_chain: CausalChain,
     /// 主题编织器 / Theme weaver
     theme_weaver: ThemeWeaver,
-    /// 弧配置 / Arc configuration
+    // 弧配置 — Phase C LLM 深度分析接入后将驱动弧构造参数
+    // Arc configuration — will drive arc construction params once Phase C LLM analysis is integrated
+    #[allow(dead_code)]
     arc_config: ArcConfig,
 }
 
@@ -3365,7 +3369,9 @@ pub struct NarrativeWeeklyReport {
 /// 叙事周期任务执行器 — 实现 tick / daily / weekly 三级周期任务
 /// Narrative periodic task executor — implements tick / daily / weekly three-level periodic tasks.
 pub struct NarrativePeriodicTask {
-    /// 弧检测器 / Arc detector
+    // 弧检测器 — 周/月级弧演化检测时将被 consume
+    // Arc detector — will be consumed during weekly/monthly arc evolution detection
+    #[allow(dead_code)]
     arc_detector: ArcDetector,
     /// 主题编织器 / Theme weaver
     theme_weaver: ThemeWeaver,
@@ -3376,7 +3382,6 @@ pub struct NarrativePeriodicTask {
     /// 上次周终执行时间 / Last weekly execution time
     last_weekly_at: i64,
 }
-
 impl Default for NarrativePeriodicTask {
     fn default() -> Self {
         Self::new()

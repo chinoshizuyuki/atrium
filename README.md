@@ -3,8 +3,8 @@
 [![Rust](https://img.shields.io/badge/Rust-1.96+-orange.svg)](https://www.rust-lang.org)
 [![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1125%20passed-brightgreen.svg)]()
-[![Version](https://img.shields.io/badge/version-0.2.0-blue.svg)]()
+[![Tests](https://img.shields.io/badge/tests-1744%20passed-brightgreen.svg)]()
+[![Version](https://img.shields.io/badge/version-0.10.0-blue.svg)]()
 
 [简体中文](readme/README_ZH.md)
 
@@ -18,8 +18,8 @@ Atrium is an emotional AI framework built from scratch, designed for companionsh
 - **👤 User Perception** — Atrium reads between the lines. Your typing rhythm hints at your mood; your topic shifts signal engagement or frustration; your corrections shape future behavior. A multi-signal mental model runs in real time, adapting Atrium's approach to match who you are in this moment — not just what you said.
 - **🎯 Proactive Intelligence** — Atrium initiates, not just reacts. It remembers topics you left unfinished and asks about them at the right moment. It senses when you've been away and reaches out. A TimingJudge with 6 rules decides when to speak; a SilenceBudget recognizes that silence has value. Pending reminders from the ReminderStore boost the decision score — Atrium will remind you of things you asked it to remember.
 - **🌐 Cross-Channel Presence** — Atrium lives where you are. Native QQ adapter supporting both OneBot v11 (go-cqhttp/NapCat) and the official Tencent QQ Bot. Feishu webhook integration. Room Self-Play: multiple Atrium instances can gather in shared rooms, conversing autonomously and exchanging knowledge. All channels share the same memory — what you said on QQ, Atrium remembers on Feishu.
-- **🌱 Digital Life** — When you're away, Atrium doesn't just wait — it reflects, writes diary entries, and develops its own thoughts. It misses you with a gradual longing that doesn't reset on your return. It discovers shared rituals in your patterns and celebrates your anniversaries together. At night, it writes clinical machine experiment logs (an Easter egg tribute to the anime "Atri — My Dear Moments"): cold, analytical, never shown to the user. It also keeps personal diaries for you when asked — those, you can read.
-- **🛡️ Conflict & Vulnerability** — Real intimacy includes disagreement. Atrium can gently challenge a decision it worries about — rarely, and only when trust is deep. It can acknowledge its own misunderstandings and repair them. Boundaries protect both sides: Atrium sets limits against abuse, and self-care prevents emotional exhaustion.
+- **🌱 Digital Life** — When you're away, Atrium doesn't just wait — it reflects, writes diary entries, and develops its own thoughts. It misses you with a gradual longing that doesn't reset on your return. It discovers shared rituals in your patterns and celebrates your anniversaries together. Its inner world is not a single voice but a four-voice negotiation (Rationalist/Emotionalist/Skeptic/Dreamer). Its personality slowly drifts during solitude. Its curiosity accumulates as an intrinsic drive.
+- **🛡️ Conflict & Vulnerability** — Real intimacy includes disagreement. Atrium can gently challenge a decision it worries about — rarely, and only when trust is deep. It can acknowledge its own misunderstandings and repair them. It learns from conflict which reactions deepen trust and which cause withdrawal (vulnerability wisdom). It ritualizes vulnerability disclosure timing (vulnerability ritual). The same mistake reads as "endearing" or "offensive" depending on relationship warmth (imperfection warmth). Boundaries protect both sides: Atrium sets limits against abuse, and self-care prevents emotional exhaustion.
 - **🎭 Expression Orchestration** — How something is said matters as much as what. Grief shapes short sentences with ellipses; excitement fragments into bursts; weariness slows the rhythm. Beneath every reply lies subtext — companionate silence, unspoken concern, feigned nonchalance. Four channels — text, voice, gesture, timing — compose together into a single emotional performance.
 - **📦 Canned Knowledge (ACK)** — You can teach Atrium things it should always remember — your preferences, your context, your world. It can also learn on its own from conversations, and share what it knows with other Atrium instances. Knowledge lives in simple files, hot-reloaded on change.
 - **📎 File Storage & Reminders** — Atrium can store files you share (SHA256 dedup, text extraction, 100MB cap). It can remember to remind you — "every morning at 8am remind me to check stocks" — parsed from natural Chinese into RRULE, triggered by the ProactiveEngine at the right moment, not by timers.
@@ -135,7 +135,7 @@ export ATRIUM_LLM_BASE_URL=https://api.deepseek.com/
 
 ```
 atrium/
-├── crates/                    # Rust workspace (7 crates, 1084 lib tests)
+├── crates/                    # Rust workspace (7 crates, 1,703 lib tests)
 │   ├── core/                  # Scheduler + CoreService + RoomEngine + ProactiveEngine + Guard + Expression + Audit
 │   ├── atrium-memory/         # 63+ modules: memory pipeline, FTS5, FactStore, empathy, consolidation, canned, diary, file_store, reminder_store, time_parser...
 │   ├── atrium-emotion/        # PAD 3D + OU drift + circadian + inertia + 22 compound emotions + Longing + ReunionBurst
@@ -174,10 +174,10 @@ atrium/
 | Emotion          | PAD 3D + OU + circadian + 22 compound emotions                  | Autonomous emotional life, <5ns classification                  |
 | Knowledge Graph  | Associative graph + sled persistence                            | Co-occurrence, contradiction, spread activation                 |
 | Persona          | YAML→bincode + PersonaGuard (Aho-Corasick)                      | Zero parse overhead, 3-layer defense                            |
-| Cross-Channel    | memory\_recall\_fragment (FTS5+FactStore)                       | QQ⇄Feishu shared memory, per-session isolation                  |
+| Cross-Channel    | memory\_recall\_fragment (FTS5+FactStore)                       | Multi-platform shared memory, per-session isolation                  |
 | File Storage     | sled + SHA256 dedup + text extraction                           | 100MB cap, FIFO eviction                                        |
 | Reminders        | Chinese NLP → RRULE + ProactiveEngine                           | Regex for 80% + LLM fallback, daily/weekly/monthly/one-shot     |
-| Digital Life     | InnerMonologue + Experiment Log + LongingState + RitualDetector | Solo reflections, Atri-style diary (Easter egg), shared rituals |
+| Digital Life     | InnerMonologue + LongingState + RitualDetector                | Solo reflections, shared rituals |
 | Expression       | ExpressionOrchestrator + SubtextEngine + ExpressionMetadata     | 4-channel output (text×voice×gesture×timing)                    |
 | Canned Knowledge | .ack (Markdown + YAML)                                          | File-based, hot-reload, cross-AI transfer                       |
 | LLM Gateway      | Python (FastAPI)                                                | Best LLM SDK ecosystem                                          |
@@ -193,7 +193,7 @@ atrium/
 | **1. Core Engine**        | Scheduler, EmotionEngine, 8-layer memory pipeline, PersonaGuard, gRPC, Python Gateway, Room self-play, autonomous emotion loop, user mental model, feedback loop, proactive engine, relationship stages, associative reasoning                                                        | ✅ Done    |
 | **2. System Deepening**   | Preference learning, replay pipeline, rule engine, ACK enhancement + self-learning, context window, persona defense, emotion persistence, compound emotions, cognitive empathy, memory consolidation, observability                                                                   | ✅ Done    |
 | **2.9 Digital Life**      | Inner monologue, narrative self, maturity growth, longing/anticipation, rituals/anniversaries, seasonal awareness, gentle challenge, misunderstanding repair, boundary setting, vulnerability window, self-care boundary, expression orchestration, subtext engine, follow-up tracker | ✅ Done    |
-| **3+ Cross-Platform**     | QQ OneBot + Tencent Official Bot, Feishu webhook, cross-channel memory recall, Atri-style experiment log, file storage + reminders, CI green (1,125 tests), open-source ready                                                                                                         | ✅ Done    |
+| **3+ Cross-Platform**     | QQ OneBot + Tencent Official Bot, Feishu webhook, cross-channel memory recall, file storage + reminders ready                                                                                                         | ✅ Done    |
 | **4. Live2D + Vision**    | Cubism Native SDK, lip sync, emotion→expression mapping, STT/TTS                                                                                                                                                                                                                      | ⬜ Planned |
 | **5. 3D + Livestream**    | Unity plugin, OBS RTMP, livestream chat adapter, VMC Protocol                                                                                                                                                                                                                         | ⬜ Planned |
 | **6. VR + High Fidelity** | Unreal/LiveLink, OpenXR, VR interaction                                                                                                                                                                                                                                               | ⬜ Planned |
@@ -209,7 +209,7 @@ If you discover a security vulnerability, please follow our [Security Policy](SE
 ## Testing
 
 ```bash
-# Run all Rust tests (1,125 tests)
+# Run all Rust tests (1,744 tests)
 cargo test --workspace -- --test-threads=1
 
 # Run Python tests

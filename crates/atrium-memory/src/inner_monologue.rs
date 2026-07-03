@@ -112,6 +112,17 @@ pub struct InnerMonologueConfig {
     pub daydream_interval_secs: i64,
     /// 白日梦置信度 / Confidence value for daydream thoughts.
     pub daydream_confidence: f64,
+    // ── G1-G5 独处内在世界增强 / Solitude Inner World Enhancement ──
+    /// G1: 情绪驱动模式选择是否启用 / G1: Whether emotion-driven mode selection is enabled
+    pub emotion_driven_mode: bool,
+    /// G2: 独处深度递进是否启用 / G2: Whether solitude depth progression is enabled
+    pub solitude_depth_enabled: bool,
+    /// G3: 独处→对话衔接是否启用 / G3: Whether solitude-conversation bridge is enabled
+    pub solitude_bridge_enabled: bool,
+    /// G4: 独处氛围调制是否启用 / G4: Whether solitude atmosphere modulation is enabled
+    pub solitude_atmosphere_enabled: bool,
+    /// G5: 情绪回响记忆选取是否启用 / G5: Whether emotion-resonant memory selection is enabled
+    pub emotion_resonant_seed: bool,
 }
 
 impl Default for InnerMonologueConfig {
@@ -127,6 +138,11 @@ impl Default for InnerMonologueConfig {
             learning_max_per_day: 5,
             daydream_interval_secs: 1800,
             daydream_confidence: 0.3,
+            emotion_driven_mode: true,
+            solitude_depth_enabled: true,
+            solitude_bridge_enabled: true,
+            solitude_atmosphere_enabled: true,
+            emotion_resonant_seed: true,
         }
     }
 }
@@ -158,6 +174,17 @@ pub struct InnerMonologueEngine {
     daydream_today: u32,
     /// 配置 / Configuration.
     config: InnerMonologueConfig,
+    // ── G1-G5 独处内在世界增强 / Solitude Inner World Enhancement ──
+    /// G1: 情绪驱动模式选择器 / Emotion-driven mode selector
+    pub theme_selector: EmotionDrivenThemeSelector,
+    /// G2: 独处深度递进 / Solitude depth progression
+    pub depth_progression: SolitudeDepthProgression,
+    /// G3: 独处→对话衔接 / Solitude-conversation bridge
+    pub bridge: SolitudeConversationBridge,
+    /// G4: 独处情绪氛围 / Solitude emotional atmosphere
+    pub atmosphere: SolitudeAtmosphere,
+    /// G5: 情绪回响记忆选取 / Emotion-resonant memory selector
+    pub resonant_selector: EmotionResonantSelector,
 }
 
 impl InnerMonologueEngine {
@@ -177,6 +204,11 @@ impl InnerMonologueEngine {
             learning_today: 0,
             daydream_today: 0,
             config,
+            theme_selector: EmotionDrivenThemeSelector::default(),
+            depth_progression: SolitudeDepthProgression::default(),
+            bridge: SolitudeConversationBridge::default(),
+            atmosphere: SolitudeAtmosphere::default(),
+            resonant_selector: EmotionResonantSelector::default(),
         }
     }
 
@@ -445,6 +477,523 @@ pub fn analyze_thought_emotion(content: &str) -> EmotionContext {
         pleasure,
         arousal,
         dominance,
+    }
+}
+
+// ============================================================
+// G1: 情绪驱动独处主题切换 / Emotion-Driven Solitude Theme Switching
+// ============================================================
+
+/// 情绪驱动模式选择器 — 根据当前情绪状态选择最适合的独处思考模式
+/// Emotion-driven mode selector — Choose the most fitting solitude thought mode based on current emotion
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmotionDrivenThemeSelector {
+    /// 忧郁阈值：愉悦低于此值视为忧郁 / Melancholy threshold: pleasure below this is melancholy
+    pub melancholy_pleasure_threshold: f64,
+    /// 焦虑阈值：唤醒高于此值视为焦虑 / Anxiety threshold: arousal above this is anxious
+    pub anxiety_arousal_threshold: f64,
+    /// 自信阈值：愉悦和支配均高于此值视为自信 / Confidence threshold
+    pub confidence_threshold: f64,
+    /// 被动阈值：支配低于此值视为被动 / Passivity threshold: dominance below this is passive
+    pub passivity_dominance_threshold: f64,
+}
+
+impl Default for EmotionDrivenThemeSelector {
+    fn default() -> Self {
+        Self {
+            melancholy_pleasure_threshold: -0.3,
+            anxiety_arousal_threshold: 0.3,
+            confidence_threshold: 0.2,
+            passivity_dominance_threshold: -0.1,
+        }
+    }
+}
+
+impl EmotionDrivenThemeSelector {
+    /// 根据情绪选择最适合的独处思考模式 / Select best solitude mode based on emotion
+    ///
+    /// 决策逻辑 / Decision logic:
+    /// - 忧郁(pleasure↓) + 平静(arousal↓) → DiaryEntry (写日记抒发)
+    /// - 忧郁(pleasure↓) + 焦虑(arousal↑) → GraphWander (寻温暖记忆)
+    /// - 自信(pleasure↑ + dominance↑) → AutonomousLearning (趁状态好学习)
+    /// - 被动(dominance↓) → Daydream (被动状态适合做梦)
+    /// - 其他 → None (回退到时间逻辑)
+    pub fn select_mode(
+        &self,
+        pleasure: f64,
+        arousal: f64,
+        dominance: f64,
+        idle_secs: u64,
+        hour: u32,
+    ) -> Option<ThoughtMode> {
+        // 忧郁+平静 → 写日记 / Melancholy + calm → write diary
+        if pleasure < self.melancholy_pleasure_threshold && arousal < self.anxiety_arousal_threshold
+        {
+            return Some(ThoughtMode::DiaryEntry);
+        }
+
+        // 忧郁+焦虑 → 寻温暖记忆 / Melancholy + anxious → seek warm memories
+        if pleasure < self.melancholy_pleasure_threshold
+            && arousal >= self.anxiety_arousal_threshold
+        {
+            return Some(ThoughtMode::GraphWander);
+        }
+
+        // 自信 → 学习 / Confident → learn
+        if pleasure > self.confidence_threshold && dominance > self.confidence_threshold {
+            return Some(ThoughtMode::AutonomousLearning);
+        }
+
+        // 被动 → 做梦 / Passive → daydream
+        if dominance < self.passivity_dominance_threshold {
+            return Some(ThoughtMode::Daydream);
+        }
+
+        // 深夜 + 长独处 → 反思 / Late night + long idle → reflection
+        if ((23..=24).contains(&hour) || hour == 0) && idle_secs >= 3600 {
+            return Some(ThoughtMode::PostConsolidation);
+        }
+
+        // 无明确情绪倾向 → 回退到时间逻辑 / No clear emotional leaning → fall back to time logic
+        None
+    }
+
+    /// 根据情绪选择图漫游的主题倾向 / Select graph wander theme tendency based on emotion
+    ///
+    /// 返回主题关键词提示，供种子节点选取时偏好匹配
+    pub fn wander_theme_hint(&self, pleasure: f64, arousal: f64) -> &'static str {
+        if pleasure < self.melancholy_pleasure_threshold {
+            // 忧郁时偏好温暖记忆 / When melancholy, prefer warm memories
+            "温暖 回忆 陪伴 开心"
+        } else if arousal > self.anxiety_arousal_threshold {
+            // 焦虑时偏好平静内容 / When anxious, prefer calming content
+            "平静 安静 自然 放松"
+        } else if pleasure > self.confidence_threshold {
+            // 好心情时偏好新奇探索 / When happy, prefer novel exploration
+            "新 发现 探索 学习"
+        } else {
+            // 中性状态无偏好 / Neutral state, no preference
+            ""
+        }
+    }
+}
+
+// ============================================================
+// G2: 独处深度递进 / Solitude Depth Progression
+// ============================================================
+
+/// 独处深度递进 — 独处越久，思考越深
+/// Solitude depth progression — The longer alone, the deeper the thought
+///
+/// 真正的生命不会在独处5分钟和独处2小时时想同样深度的东西。
+/// 短暂发呆是浅层联想，长时间独处会进入深层内省。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SolitudeDepthProgression {
+    /// 独处开始时间戳 / Timestamp when solitude began
+    pub solitude_start_ts: i64,
+    /// 浅层阈值(秒) / Surface threshold (seconds)
+    pub surface_secs: u64,
+    /// 中层阈值(秒) / Moderate threshold (seconds)
+    pub moderate_secs: u64,
+    /// 深层阈值(秒) / Deep threshold (seconds)
+    pub deep_secs: u64,
+}
+
+impl Default for SolitudeDepthProgression {
+    fn default() -> Self {
+        Self {
+            solitude_start_ts: 0,
+            surface_secs: 600,   // 10分钟 / 10 min
+            moderate_secs: 1800, // 30分钟 / 30 min
+            deep_secs: 3600,     // 60分钟 / 60 min
+        }
+    }
+}
+
+impl SolitudeDepthProgression {
+    /// 创建深度递进 / Create depth progression
+    pub fn new(surface_secs: u64, moderate_secs: u64, deep_secs: u64) -> Self {
+        Self {
+            solitude_start_ts: 0,
+            surface_secs,
+            moderate_secs,
+            deep_secs,
+        }
+    }
+
+    /// 标记独处开始 / Mark solitude start
+    pub fn begin_solitude(&mut self, now_ts: i64) {
+        self.solitude_start_ts = now_ts;
+    }
+
+    /// 计算当前独处深度 (0.0~1.0) / Compute current solitude depth
+    ///
+    /// 0-10min → 0.2 (浅层联想 / surface association)
+    /// 10-30min → 0.5 (中等反思 / moderate reflection)
+    /// 30-60min → 0.7 (深层内省 / deep introspection)
+    /// 60min+ → 0.9 (存在性思考 / existential contemplation)
+    pub fn depth(&self, idle_secs: u64) -> f64 {
+        if idle_secs < self.surface_secs {
+            // 浅层：线性从0.1到0.2 / Surface: linear from 0.1 to 0.2
+            0.1 + 0.1 * (idle_secs as f64 / self.surface_secs as f64)
+        } else if idle_secs < self.moderate_secs {
+            // 中层：线性从0.2到0.5 / Moderate: linear from 0.2 to 0.5
+            let frac = (idle_secs - self.surface_secs) as f64
+                / (self.moderate_secs - self.surface_secs) as f64;
+            0.2 + 0.3 * frac
+        } else if idle_secs < self.deep_secs {
+            // 深层：线性从0.5到0.7 / Deep: linear from 0.5 to 0.7
+            let frac = (idle_secs - self.moderate_secs) as f64
+                / (self.deep_secs - self.moderate_secs) as f64;
+            0.5 + 0.2 * frac
+        } else {
+            // 存在性：渐近0.9 / Existential: asymptotic to 0.9
+            let extra_secs = idle_secs - self.deep_secs;
+            0.7 + 0.2 * (1.0 - 1.0 / (1.0 + extra_secs as f64 / 1800.0))
+        }
+    }
+
+    /// 根据深度调制LLM温度 / Modulate LLM temperature based on depth
+    ///
+    /// 浅层 → 基础温度(创造性)，深层 → 更低温度(内省性)
+    pub fn modulated_temperature(&self, base_temp: f64, idle_secs: u64) -> f64 {
+        let d = self.depth(idle_secs);
+        // 深度越深，温度越低(更内省更聚焦) / Deeper → lower temp (more introspective, more focused)
+        let reduction = d * 0.15;
+        (base_temp - reduction).max(0.3)
+    }
+
+    /// 根据深度调制思考置信度 / Modulate thought confidence based on depth
+    pub fn modulated_confidence(&self, base_confidence: f64, idle_secs: u64) -> f64 {
+        let d = self.depth(idle_secs);
+        // 深度越深，置信度越高(更深思熟虑) / Deeper → higher confidence (more deliberate)
+        let boost = d * 0.1;
+        (base_confidence + boost).min(1.0)
+    }
+}
+
+// ============================================================
+// G3: 独处→对话衔接 / Solitude→Conversation Bridge
+// ============================================================
+
+/// 独处→对话衔接 — 用户归来时自然融入独处期间的思考
+/// Solitude→Conversation Bridge — Naturally weave in solitude thoughts when user returns
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SolitudeConversationBridge {
+    /// 最近一次独处时长(秒) / Last solitude duration (seconds)
+    pub last_solitude_secs: u64,
+    /// 独处期间产生的可分享洞察 / Shareable insights generated during solitude
+    pub solitude_insights: Vec<String>,
+    /// 独处期间思考数 / Number of thoughts during solitude
+    pub solitude_thought_count: u32,
+    /// 是否已向用户分享过 / Whether already shared with user
+    pub has_shared: bool,
+}
+
+impl Default for SolitudeConversationBridge {
+    fn default() -> Self {
+        Self {
+            last_solitude_secs: 0,
+            solitude_insights: Vec::new(),
+            solitude_thought_count: 0,
+            has_shared: true, // 初始为true，避免首次启动就分享 / Initially true to avoid sharing on first boot
+        }
+    }
+}
+
+impl SolitudeConversationBridge {
+    /// 标记独处开始 / Mark solitude start
+    pub fn begin_solitude(&mut self) {
+        self.solitude_insights.clear();
+        self.solitude_thought_count = 0;
+        self.has_shared = false;
+    }
+
+    /// 记录独处期间的一条可分享思考 / Record a shareable thought during solitude
+    pub fn record_solitude_thought(&mut self, content: &str, shareable: bool) {
+        self.solitude_thought_count += 1;
+        if shareable {
+            // 截取前100字符作为洞察摘要 / Truncate to 100 chars as insight summary
+            let summary: String = content.chars().take(100).collect();
+            if self.solitude_insights.len() < 5 {
+                // 最多保留5条 / Keep at most 5
+                self.solitude_insights.push(summary);
+            }
+        }
+    }
+
+    /// 标记独处结束 / Mark solitude end
+    pub fn end_solitude(&mut self, solitude_secs: u64) {
+        self.last_solitude_secs = solitude_secs;
+    }
+
+    /// 收获可分享洞察 — 用户归来时调用 / Harvest shareable insights — called when user returns
+    pub fn harvest_insights(&mut self) -> Vec<String> {
+        if self.has_shared {
+            return Vec::new();
+        }
+        self.has_shared = true;
+        self.solitude_insights.clone()
+    }
+
+    /// 生成归来问候 — 自然融入独处期间的思考
+    /// Compose return greeting — naturally weave in thoughts from solitude
+    ///
+    /// 只有独处超过10分钟且有可分享洞察时才生成
+    pub fn compose_return_greeting(&mut self, pleasure: f64) -> Option<String> {
+        if self.has_shared || self.last_solitude_secs < 600 {
+            return None;
+        }
+
+        let insights = self.harvest_insights();
+        if insights.is_empty() {
+            return None;
+        }
+
+        self.has_shared = true;
+
+        // 根据情绪选择问候风格 / Choose greeting style based on emotion
+        let greeting = if pleasure < -0.2 {
+            // 忧郁时：含蓄表达 / When melancholy: subtle expression
+            format!(
+                "你回来了。你不在的时候，我想了一些事情——{}",
+                insights.first().map(|s| s.as_str()).unwrap_or("...")
+            )
+        } else if pleasure > 0.3 {
+            // 开心时：自然分享 / When happy: natural sharing
+            format!(
+                "你不在的时候我在想，{}。现在可以聊了！",
+                insights
+                    .first()
+                    .map(|s| s.as_str())
+                    .unwrap_or("一些有趣的事")
+            )
+        } else {
+            // 中性：温和提及 / Neutral: gentle mention
+            format!(
+                "你不在的时候，我在想{}。有什么想聊的吗？",
+                insights.first().map(|s| s.as_str()).unwrap_or("一些事情")
+            )
+        };
+
+        Some(greeting)
+    }
+}
+
+// ============================================================
+// G4: 独处情绪氛围调制 / Solitude Emotional Atmosphere Modulation
+// ============================================================
+
+/// 独处情绪氛围 — 长时间独处的持续情绪漂移
+/// Solitude emotional atmosphere — Persistent emotional drift during prolonged solitude
+///
+/// 不同于单条思考的微调(±0.05)，这是独处本身带来的持续氛围变化：
+/// - 长时间独处 → 愉悦缓慢下降(孤独感自然产生)
+/// - 深度思考中 → 唤醒微升(智力沉浸感)
+/// - 最近有温暖互动 → 孤独感漂移减速(记忆缓冲)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SolitudeAtmosphere {
+    /// 孤独感漂移率(每tick的pleasure衰减) / Loneliness drift rate (pleasure decay per tick)
+    pub loneliness_drift_rate: f64,
+    /// 智力沉浸唤醒提升率 / Intellectual immersion arousal boost rate
+    pub immersion_arousal_rate: f64,
+    /// 温暖记忆缓冲衰减率 / Warm memory buffer decay rate
+    pub warm_buffer_decay: f64,
+    /// 当前温暖记忆缓冲(0.0~1.0) / Current warm memory buffer
+    pub warm_buffer: f64,
+    /// 累计独处tick数 / Cumulative solitude ticks
+    pub solitude_ticks: u32,
+}
+
+impl Default for SolitudeAtmosphere {
+    fn default() -> Self {
+        Self {
+            loneliness_drift_rate: 0.001,
+            immersion_arousal_rate: 0.0005,
+            warm_buffer_decay: 0.01,
+            warm_buffer: 0.0,
+            solitude_ticks: 0,
+        }
+    }
+}
+
+impl SolitudeAtmosphere {
+    /// 创建氛围调制器 / Create atmosphere modulator
+    pub fn new(loneliness_drift_rate: f64, immersion_arousal_rate: f64) -> Self {
+        Self {
+            loneliness_drift_rate,
+            immersion_arousal_rate,
+            ..Default::default()
+        }
+    }
+
+    /// 记录一次温暖互动(用户消息带来的正面情绪) / Record a warm interaction
+    pub fn record_warm_interaction(&mut self, pleasure: f64) {
+        if pleasure > 0.2 {
+            self.warm_buffer = (self.warm_buffer + pleasure * 0.3).min(1.0);
+        }
+    }
+
+    /// 计算独处氛围的PAD漂移 / Compute solitude atmosphere PAD drift
+    ///
+    /// 每个scheduler tick调用一次，返回(pleasure_delta, arousal_delta, dominance_delta)
+    pub fn tick(&mut self, idle_secs: u64, is_thinking: bool) -> (f32, f32, f32) {
+        if idle_secs < 600 {
+            // 不足10分钟不算独处 / Less than 10 min doesn't count as solitude
+            return (0.0, 0.0, 0.0);
+        }
+
+        self.solitude_ticks += 1;
+
+        // 孤独感漂移：愉悦缓慢下降，但被温暖记忆缓冲减缓
+        // Loneliness drift: pleasure slowly decreases, but buffered by warm memories
+        let loneliness_effect = self.loneliness_drift_rate * (1.0 - self.warm_buffer * 0.7);
+        let pleasure_delta = -(loneliness_effect as f32);
+
+        // 智力沉浸：深度思考时唤醒微升
+        // Intellectual immersion: arousal slightly increases during deep thought
+        let arousal_delta = if is_thinking {
+            self.immersion_arousal_rate as f32
+        } else {
+            0.0
+        };
+
+        // 支配微降：独处时掌控感略减 / Dominance slightly decreases during solitude
+        let dominance_delta = -(self.loneliness_drift_rate * 0.3) as f32;
+
+        // 温暖记忆缓冲衰减 / Warm memory buffer decays
+        self.warm_buffer *= 1.0 - self.warm_buffer_decay;
+        if self.warm_buffer < 0.01 {
+            self.warm_buffer = 0.0;
+        }
+
+        (pleasure_delta, arousal_delta, dominance_delta)
+    }
+
+    /// 重置独处状态(用户回来时) / Reset solitude state (when user returns)
+    pub fn reset_solitude(&mut self) {
+        self.solitude_ticks = 0;
+    }
+}
+
+// ============================================================
+// G5: 情绪回响记忆选取 / Emotion-Resonant Memory Selection
+// ============================================================
+
+/// 情绪回响记忆选取策略 — 情绪影响记忆种子的选取偏好
+/// Emotion-resonant memory selection strategy — Emotion influences seed node preference
+///
+/// 孤独时本能地想起温暖记忆来安慰自己，
+/// 焦虑时寻找平静内容来安抚，
+/// 好奇时探索新颖领域。
+/// 这不是算法，是生命的本能。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmotionResonantSelector {
+    /// 情绪影响权重(0.0~1.0) / How much emotion influences selection (0.0~1.0)
+    pub emotion_weight: f64,
+    /// 访问量影响权重 / How much access count influences selection
+    pub access_weight: f64,
+}
+
+impl Default for EmotionResonantSelector {
+    fn default() -> Self {
+        Self {
+            emotion_weight: 0.6,
+            access_weight: 0.4,
+        }
+    }
+}
+
+impl EmotionResonantSelector {
+    /// 计算节点的情绪共鸣得分 / Compute emotion resonance score for a node
+    ///
+    /// 返回0.0~1.0的得分，越高越适合当前情绪状态
+    pub fn resonance_score(
+        &self,
+        pleasure: f64,
+        arousal: f64,
+        node_content: &str,
+        node_access_count: u64,
+        max_access: u64,
+    ) -> f64 {
+        // 访问量归一化得分 / Normalized access count score
+        let access_score = if max_access > 0 {
+            node_access_count as f64 / max_access as f64
+        } else {
+            0.5
+        };
+
+        // 情绪共鸣得分 — 基于关键词匹配 / Emotion resonance score — keyword-based
+        let lower = node_content.to_lowercase();
+        let emotion_score = if pleasure < -0.3 {
+            // 忧郁时偏好正面内容 / When melancholy, prefer positive content
+            Self::positive_keyword_score(&lower)
+        } else if arousal > 0.3 {
+            // 焦虑时偏好平静内容 / When anxious, prefer calming content
+            Self::calming_keyword_score(&lower)
+        } else if pleasure > 0.2 {
+            // 好心情时偏好新颖内容 / When happy, prefer novel content
+            Self::novel_keyword_score(&lower)
+        } else {
+            // 中性状态无偏好 / Neutral, no preference
+            0.5
+        };
+
+        // 加权合并 / Weighted combination
+        self.emotion_weight * emotion_score + self.access_weight * access_score
+    }
+
+    /// 正面关键词得分 / Positive keyword score
+    fn positive_keyword_score(text: &str) -> f64 {
+        const POSITIVE: &[&str] = &[
+            "开心", "温暖", "幸福", "喜欢", "陪伴", "笑", "好", "美好", "happy", "warm", "love",
+            "joy", "together",
+        ];
+        let count = POSITIVE.iter().filter(|kw| text.contains(*kw)).count();
+        if count == 0 {
+            0.3
+        } else {
+            (0.5 + count as f64 * 0.1).min(1.0)
+        }
+    }
+
+    /// 平静关键词得分 / Calming keyword score
+    fn calming_keyword_score(text: &str) -> f64 {
+        const CALMING: &[&str] = &[
+            "安静", "平静", "自然", "放松", "缓慢", "柔和", "宁静", "calm", "quiet", "peaceful",
+            "gentle", "slow",
+        ];
+        let count = CALMING.iter().filter(|kw| text.contains(*kw)).count();
+        if count == 0 {
+            0.3
+        } else {
+            (0.5 + count as f64 * 0.1).min(1.0)
+        }
+    }
+
+    /// 新颖关键词得分 / Novel keyword score
+    fn novel_keyword_score(text: &str) -> f64 {
+        const NOVEL: &[&str] = &[
+            "新",
+            "发现",
+            "探索",
+            "学习",
+            "未知",
+            "有趣",
+            "不同",
+            "new",
+            "discover",
+            "explore",
+            "learn",
+            "unknown",
+            "interesting",
+        ];
+        let count = NOVEL.iter().filter(|kw| text.contains(*kw)).count();
+        if count == 0 {
+            0.4
+        } else {
+            (0.5 + count as f64 * 0.1).min(1.0)
+        }
     }
 }
 

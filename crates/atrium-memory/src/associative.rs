@@ -31,7 +31,7 @@ pub enum NodeType {
 }
 
 /// 节点间关系类型
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum RelationType {
     SimilarTo,      // 语义相似（嵌入余弦 > 0.85）
     Causes,         // 因果
@@ -91,10 +91,30 @@ pub struct GraphStats {
 
 // ── 关联记忆图 ──
 
-/// 关联记忆图
+/// 关联记忆图 / Associative memory graph
+///
+/// 数字生命的记忆关联皮层——将事实构建为有向图，
+/// 通过扩散激活发现隐藏关联，实现"举一反三"的认知涌现。
+///
+/// The digital life's memory association cortex — builds facts into a directed graph,
+/// discovers hidden associations via spreading activation, enabling "inferring by analogy".
+///
+/// 性能优化：邻接表索引 + 边ID索引，将扩散激活从 O(E×hops) 降至 O(d×hops)。
+/// Performance: adjacency list + edge ID index, reducing spread activation from O(E×hops) to O(d×hops).
 pub struct AssociativeGraph {
+    // 节点表 / Node table
     nodes: HashMap<String, GraphNode>,
+    // 边表 / Edge table
     edges: Vec<GraphEdge>,
+
+    // 邻接表索引 / Adjacency list index
+    // node_id → Vec<(edge_idx, neighbor_id)>
+    // 包含出边和入边两个方向，支持无向遍历 / Bidirectional for undirected traversal
+    adjacency: HashMap<String, Vec<(usize, String)>>,
+
+    // 边ID索引 / Edge ID index
+    // edge_id → edge_idx in edges vec，用于 O(1) 边去重 / For O(1) edge dedup
+    edge_index: HashMap<String, usize>,
 }
 
 impl Default for AssociativeGraph {
@@ -108,17 +128,78 @@ impl AssociativeGraph {
         Self {
             nodes: HashMap::new(),
             edges: Vec::new(),
+            adjacency: HashMap::new(),
+            edge_index: HashMap::new(),
         }
     }
 
     /// 从已有的节点和边构建图（用于持久化加载）
+    /// Build graph from existing nodes and edges (for persistence loading).
+    ///
+    /// 自动重建邻接表和边ID索引，确保加载后即获得最优查询性能。
+    /// Automatically rebuilds adjacency list and edge ID index for optimal query performance.
     pub fn from_parts(nodes: HashMap<String, GraphNode>, edges: Vec<GraphEdge>) -> Self {
-        Self { nodes, edges }
+        let mut graph = Self {
+            nodes,
+            edges,
+            adjacency: HashMap::new(),
+            edge_index: HashMap::new(),
+        };
+        graph.rebuild_indices();
+        graph
     }
 
-    // ── 内部辅助 ──
+    // ── 内部辅助 / Internal helpers ──
 
-    /// 插入或更新节点
+    /// 全量重建邻接表和边ID索引 / Full rebuild of adjacency list and edge ID index
+    ///
+    /// 在 from_parts() 和 decay_and_prune() 后调用，确保索引与边表一致。
+    /// Called after from_parts() and decay_and_prune() to ensure index consistency.
+    fn rebuild_indices(&mut self) {
+        self.adjacency.clear();
+        self.edge_index.clear();
+
+        for (idx, edge) in self.edges.iter().enumerate() {
+            self.edge_index.insert(edge.id.clone(), idx);
+
+            // 出边：from → (idx, to) / Outgoing: from → (idx, to)
+            self.adjacency
+                .entry(edge.from.clone())
+                .or_default()
+                .push((idx, edge.to.clone()));
+
+            // 入边：to → (idx, from) / Incoming: to → (idx, from)
+            self.adjacency
+                .entry(edge.to.clone())
+                .or_default()
+                .push((idx, edge.from.clone()));
+        }
+    }
+
+    /// 内部辅助：添加边并更新索引 / Internal helper: add edge and update indices
+    ///
+    /// 返回新边在 edges 中的索引。调用方需确保 edge_id 不重复。
+    /// Returns the index of the new edge. Caller must ensure edge_id is unique.
+    fn add_edge_internal(&mut self, edge: GraphEdge) -> usize {
+        let idx = self.edges.len();
+        let from = edge.from.clone();
+        let to = edge.to.clone();
+
+        self.edges.push(edge);
+        self.edge_index.insert(self.edges[idx].id.clone(), idx);
+
+        // 出边 / Outgoing
+        self.adjacency
+            .entry(from.clone())
+            .or_default()
+            .push((idx, to.clone()));
+        // 入边 / Incoming
+        self.adjacency.entry(to).or_default().push((idx, from));
+
+        idx
+    }
+
+    /// 插入或更新节点 / Insert or update node
     fn insert_node(&mut self, id: String, node_type: NodeType, content: String, _confidence: f64) {
         let now = now_timestamp();
         let entry = self.nodes.entry(id.clone()).or_insert(GraphNode {
@@ -176,13 +257,14 @@ impl AssociativeGraph {
             fact.confidence,
         );
 
-        // 边去重：相同 edge_id 则更新权重
+        // 边去重：相同 edge_id 则更新权重 / Edge dedup: same edge_id → update weight
+        // O(1) 查找替代 O(E) 线性扫描 / O(1) lookup replaces O(E) linear scan
         let edge_id = format!("{}->{}:{}", subj_id, obj_id, fact.predicate);
-        if let Some(edge) = self.edges.iter_mut().find(|e| e.id == edge_id) {
-            edge.weight = edge.weight.max(fact.confidence);
-            edge.activation_count += 1;
+        if let Some(&idx) = self.edge_index.get(&edge_id) {
+            self.edges[idx].weight = self.edges[idx].weight.max(fact.confidence);
+            self.edges[idx].activation_count += 1;
         } else {
-            self.edges.push(GraphEdge {
+            self.add_edge_internal(GraphEdge {
                 id: edge_id,
                 from: subj_id,
                 to: obj_id,
@@ -228,8 +310,9 @@ impl AssociativeGraph {
 
             for node_id in matching {
                 let edge_id = format!("{}->{}:insight", insight_id, node_id);
-                if !self.edges.iter().any(|e| e.id == edge_id) {
-                    self.edges.push(GraphEdge {
+                // O(1) 边存在性检查替代 O(E) 线性扫描 / O(1) check replaces O(E) scan
+                if !self.edge_index.contains_key(&edge_id) {
+                    self.add_edge_internal(GraphEdge {
                         id: edge_id,
                         from: insight_id.clone(),
                         to: node_id,
@@ -252,8 +335,9 @@ impl AssociativeGraph {
         }
         let now = now_timestamp();
         let edge_id = format!("{}->{}:{:?}", from, to, relation);
-        if !self.edges.iter().any(|e| e.id == edge_id) {
-            self.edges.push(GraphEdge {
+        // O(1) 边存在性检查替代 O(E) 线性扫描 / O(1) check replaces O(E) scan
+        if !self.edge_index.contains_key(&edge_id) {
+            self.add_edge_internal(GraphEdge {
                 id: edge_id,
                 from: from.to_string(),
                 to: to.to_string(),
@@ -315,9 +399,13 @@ impl AssociativeGraph {
     }
 
     /// 扩散激活：从种子节点出发，沿边扩散到关联节点
+    /// Spreading activation: from seed node, spread along edges to associated nodes.
     ///
-    /// ：边权重参与激活计算
+    /// 边权重参与激活计算 / Edge weight participates in activation:
     /// `next_activation = activation * decay_rate * edge.weight`
+    ///
+    /// 性能：O(d × hops)，d = 平均邻居数。邻接表索引避免全边扫描。
+    /// Performance: O(d × hops), d = avg neighbors. Adjacency list avoids full edge scan.
     pub fn spread_activation(
         &mut self,
         seed: &str,
@@ -326,18 +414,18 @@ impl AssociativeGraph {
     ) -> Vec<ActivatedPath> {
         let now = now_timestamp();
 
-        // 重置所有节点激活值
+        // 重置所有节点激活值 / Reset all node activations
         for node in self.nodes.values_mut() {
             node.activation = 0.0;
         }
 
-        // BFS 扩散
+        // BFS 扩散 / BFS spread
         let mut queue: VecDeque<(String, u32, f64)> = VecDeque::new();
         let mut visited: HashSet<String> = HashSet::new();
         let seed_id = format!("O:{}", seed);
         let subject_seed = format!("S:{}", seed);
 
-        // 初始激活：种子节点
+        // 初始激活：种子节点 / Initial activation: seed nodes
         if let Some(node) = self.nodes.get_mut(&seed_id) {
             node.activation = 1.0;
             queue.push_back((seed_id.clone(), 0, 1.0));
@@ -356,38 +444,38 @@ impl AssociativeGraph {
                 continue;
             }
 
-            // 收集本轮需要更新的边和节点（避免同时借用 nodes 和 edges）
+            // 邻接表直接取邻居 O(d) / Get neighbors from adjacency list O(d)
+            let neighbors = match self.adjacency.get(&current) {
+                Some(n) => n,
+                None => continue,
+            };
+
+            // 收集本轮需要更新的边和节点 / Collect updates for this round
             let mut updates: Vec<(usize, String, f64)> = Vec::new();
 
-            for (i, edge) in self.edges.iter().enumerate() {
-                let next = if edge.from == current {
-                    &edge.to
-                } else if edge.to == current {
-                    &edge.from
-                } else {
+            for &(edge_idx, ref next) in neighbors {
+                if visited.contains(next) {
                     continue;
-                };
-
-                if !visited.contains(next) {
-                    // ：边权重参与激活计算
-                    let next_activation = activation * decay_rate * edge.weight;
-                    if next_activation >= 0.1 {
-                        updates.push((i, next.clone(), next_activation));
-                    }
+                }
+                let edge = &self.edges[edge_idx];
+                // 边权重参与激活计算 / Edge weight in activation
+                let next_activation = activation * decay_rate * edge.weight;
+                if next_activation >= 0.1 {
+                    updates.push((edge_idx, next.clone(), next_activation));
                 }
             }
 
-            // 应用所有更新
+            // 应用所有更新 / Apply all updates
             for (edge_idx, next, next_activation) in updates {
                 if !visited.insert(next.clone()) {
                     continue;
                 }
 
-                // 更新边的激活统计
+                // 更新边的激活统计 / Update edge activation stats
                 self.edges[edge_idx].activation_count += 1;
                 self.edges[edge_idx].last_activated = now;
 
-                // 更新目标节点
+                // 更新目标节点 / Update target node
                 if let Some(node) = self.nodes.get_mut(&next) {
                     node.activation = node.activation.max(next_activation);
                     node.access_count += 1;
@@ -414,17 +502,22 @@ impl AssociativeGraph {
     }
 
     /// 查询与某实体最相关的 Top-K 节点
+    /// Find Top-K nodes most related to an entity.
+    ///
+    /// 性能：O(d)，邻接表直接取邻居。替代原 O(E) 全边扫描。
+    /// Performance: O(d), adjacency list lookup. Replaces O(E) full edge scan.
     pub fn related(&self, entity: &str, top_k: usize) -> Vec<(String, f64)> {
         let mut results: Vec<(String, f64)> = Vec::new();
         let prefix_o = format!("O:{}", entity);
         let prefix_s = format!("S:{}", entity);
 
-        for edge in &self.edges {
-            if edge.from == prefix_o || edge.from == prefix_s {
-                results.push((edge.to.clone(), edge.weight));
-            }
-            if edge.to == prefix_o || edge.to == prefix_s {
-                results.push((edge.from.clone(), edge.weight));
+        // 邻接表直接取邻居 O(d) / Get neighbors from adjacency list O(d)
+        for prefix in &[&prefix_o, &prefix_s] {
+            if let Some(neighbors) = self.adjacency.get(*prefix) {
+                for &(edge_idx, ref neighbor) in neighbors {
+                    let weight = self.edges[edge_idx].weight;
+                    results.push((neighbor.clone(), weight));
+                }
             }
         }
 
@@ -434,24 +527,28 @@ impl AssociativeGraph {
     }
 
     /// 衰减边权重并清理弱边和孤立节点
+    /// Decay edge weights and prune weak edges + orphan nodes.
     ///
     /// - `decay_factor`: 每条边 weight *= decay_factor (e.g. 0.995)
     /// - `min_weight`: weight < min_weight 的边被移除
     /// - 移除边后无连接的孤立节点也被清理
+    /// - 衰减后全量重建邻接表和边ID索引 / Rebuilds indices after pruning
     pub fn decay_and_prune(&mut self, decay_factor: f64, min_weight: f64) {
-        // 1. 衰减所有边权重
+        // 1. 衰减所有边权重 / Decay all edge weights
         for edge in self.edges.iter_mut() {
             edge.weight *= decay_factor;
         }
-        // 2. 移除弱边
+        // 2. 移除弱边 / Remove weak edges
         self.edges.retain(|e| e.weight >= min_weight);
-        // 3. 移除孤立节点（无任何边连接）
+        // 3. 移除孤立节点（无任何边连接） / Remove orphan nodes
         let connected: HashSet<String> = self
             .edges
             .iter()
             .flat_map(|e| vec![e.from.clone(), e.to.clone()])
             .collect();
         self.nodes.retain(|id, _| connected.contains(id));
+        // 4. 重建索引（retain 后边索引已失效） / Rebuild indices (retain invalidates indices)
+        self.rebuild_indices();
     }
 
     /// 获取图统计信息
@@ -485,9 +582,207 @@ impl AssociativeGraph {
     pub fn edge_count(&self) -> usize {
         self.edges.len()
     }
+
+    // ── 新增能力 / New Capabilities ──
+
+    /// 多种子扩散激活 / Multi-seed spreading activation
+    ///
+    /// 数字生命同时从多个记忆锚点出发扩散，
+    /// 发现多个记忆域的交叉关联——模拟"联想多个事物"的认知过程。
+    /// Digital life activates from multiple memory anchors simultaneously,
+    /// discovering cross-domain associations — simulating "connecting multiple things".
+    ///
+    /// 对每个种子独立扩散，合并结果路径，按激活值排序。
+    /// Spreads from each seed independently, merges paths, sorts by activation.
+    pub fn spread_activation_multi(
+        &mut self,
+        seeds: &[&str],
+        decay_rate: f64,
+        max_hops: u32,
+    ) -> Vec<ActivatedPath> {
+        let mut all_paths = Vec::new();
+        for &seed in seeds {
+            let paths = self.spread_activation(seed, decay_rate, max_hops);
+            all_paths.extend(paths);
+        }
+        all_paths.sort_by(|a, b| {
+            b.activation
+                .partial_cmp(&a.activation)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        all_paths
+    }
+
+    /// 关系过滤扩散激活 / Relation-filtered spreading activation
+    ///
+    /// 仅沿指定关系类型扩散——数字生命沿特定认知维度"思考"。
+    /// 例如仅沿 Causes 关系追溯因果链，或仅沿 SimilarTo 探索相似网络。
+    /// Spreads only along specified relation types — digital life "thinks"
+    /// along specific cognitive dimensions.
+    /// E.g. only Causes for causal chains, only SimilarTo for similarity networks.
+    pub fn spread_activation_filtered(
+        &mut self,
+        seed: &str,
+        decay_rate: f64,
+        max_hops: u32,
+        allowed_relations: &[RelationType],
+    ) -> Vec<ActivatedPath> {
+        let now = now_timestamp();
+        let allowed_set: HashSet<&RelationType> = allowed_relations.iter().collect();
+
+        // 重置所有节点激活值 / Reset all node activations
+        for node in self.nodes.values_mut() {
+            node.activation = 0.0;
+        }
+
+        let mut queue: VecDeque<(String, u32, f64)> = VecDeque::new();
+        let mut visited: HashSet<String> = HashSet::new();
+        let seed_id = format!("O:{}", seed);
+        let subject_seed = format!("S:{}", seed);
+
+        if let Some(node) = self.nodes.get_mut(&seed_id) {
+            node.activation = 1.0;
+            queue.push_back((seed_id.clone(), 0, 1.0));
+            visited.insert(seed_id);
+        }
+        if let Some(node) = self.nodes.get_mut(&subject_seed) {
+            node.activation = 1.0;
+            queue.push_back((subject_seed.clone(), 0, 1.0));
+            visited.insert(subject_seed);
+        }
+
+        let mut paths = Vec::new();
+
+        while let Some((current, hops, activation)) = queue.pop_front() {
+            if hops >= max_hops {
+                continue;
+            }
+
+            let neighbors = match self.adjacency.get(&current) {
+                Some(n) => n,
+                None => continue,
+            };
+
+            let mut updates: Vec<(usize, String, f64)> = Vec::new();
+
+            for &(edge_idx, ref next) in neighbors {
+                if visited.contains(next) {
+                    continue;
+                }
+                let edge = &self.edges[edge_idx];
+                // 关系过滤：仅沿允许的关系类型扩散 / Relation filter
+                if !allowed_set.contains(&edge.relation) {
+                    continue;
+                }
+                let next_activation = activation * decay_rate * edge.weight;
+                if next_activation >= 0.1 {
+                    updates.push((edge_idx, next.clone(), next_activation));
+                }
+            }
+
+            for (edge_idx, next, next_activation) in updates {
+                if !visited.insert(next.clone()) {
+                    continue;
+                }
+                self.edges[edge_idx].activation_count += 1;
+                self.edges[edge_idx].last_activated = now;
+
+                if let Some(node) = self.nodes.get_mut(&next) {
+                    node.activation = node.activation.max(next_activation);
+                    node.access_count += 1;
+                    node.last_access = now;
+                }
+
+                queue.push_back((next.clone(), hops + 1, next_activation));
+                paths.push(ActivatedPath {
+                    from: current.clone(),
+                    to: next,
+                    predicate: self.edges[edge_idx].predicate.clone(),
+                    activation: next_activation,
+                    hops: hops + 1,
+                });
+            }
+        }
+
+        paths.sort_by(|a, b| {
+            b.activation
+                .partial_cmp(&a.activation)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        paths
+    }
+
+    /// 多种子共振扩散 / Multi-seed resonance spread
+    ///
+    /// 从多个种子同时扩散，检测激活波交汇的"共振节点"。
+    /// 共振节点代表多个记忆域的交叉点——数字生命的"顿悟时刻"。
+    /// Spreads from multiple seeds simultaneously, detecting "resonance nodes"
+    /// where activation waves intersect — the digital life's "aha moment".
+    ///
+    /// 共振强度 = 各种子对该节点激活值之和 / Resonance strength = sum of activations.
+    pub fn resonance_spread(
+        &mut self,
+        seeds: &[&str],
+        decay_rate: f64,
+        max_hops: u32,
+    ) -> ResonanceReport {
+        // 记录每个节点被哪些种子激活及其激活值 / Track which seeds activate each node
+        // node_id → (seed_idx, activation)
+        let mut node_activations: HashMap<String, Vec<(usize, f64)>> = HashMap::new();
+        let mut all_paths = Vec::new();
+
+        for (seed_idx, &seed) in seeds.iter().enumerate() {
+            let paths = self.spread_activation(seed, decay_rate, max_hops);
+            for path in &paths {
+                node_activations
+                    .entry(path.to.clone())
+                    .or_default()
+                    .push((seed_idx, path.activation));
+            }
+            all_paths.extend(paths);
+        }
+
+        // 检测共振节点：被 ≥2 个种子激活的节点 / Detect resonance: activated by ≥2 seeds
+        let mut resonance_nodes = Vec::new();
+        for (node_id, activations) in &node_activations {
+            let unique_seeds: HashSet<usize> = activations.iter().map(|(s, _)| *s).collect();
+            if unique_seeds.len() >= 2 {
+                let activating_seeds: Vec<String> = unique_seeds
+                    .iter()
+                    .map(|&idx| seeds[idx].to_string())
+                    .collect();
+                let activation_values: Vec<f64> = activations.iter().map(|(_, a)| *a).collect();
+                let resonance_strength: f64 = activation_values.iter().sum();
+                resonance_nodes.push(ResonanceNode {
+                    node_id: node_id.clone(),
+                    activating_seeds,
+                    activations: activation_values,
+                    resonance_strength,
+                });
+            }
+        }
+
+        // 按共振强度排序 / Sort by resonance strength
+        resonance_nodes.sort_by(|a, b| {
+            b.resonance_strength
+                .partial_cmp(&a.resonance_strength)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        all_paths.sort_by(|a, b| {
+            b.activation
+                .partial_cmp(&a.activation)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        ResonanceReport {
+            resonance_nodes,
+            paths: all_paths,
+        }
+    }
 }
 
-/// 激活路径
+/// 激活路径 / Activation path
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActivatedPath {
     pub from: String,
@@ -495,6 +790,36 @@ pub struct ActivatedPath {
     pub predicate: String,
     pub activation: f64,
     pub hops: u32,
+}
+
+/// 共振节点 / Resonance node
+///
+/// 被多个种子同时激活的节点——多个记忆域的交叉点。
+/// 代表数字生命的"顿悟时刻"：不同记忆痕迹在此交汇、涌现。
+/// A node activated by multiple seeds — an intersection of memory domains.
+/// Represents the digital life's "aha moment": different memory traces converge here.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResonanceNode {
+    /// 节点 ID / Node ID
+    pub node_id: String,
+    /// 激活该节点的种子列表 / Seeds that activated this node
+    pub activating_seeds: Vec<String>,
+    /// 各种子对该节点的激活值 / Activation values from each seed
+    pub activations: Vec<f64>,
+    /// 共振强度 = 激活值之和 / Resonance strength = sum of activations
+    pub resonance_strength: f64,
+}
+
+/// 共振检测报告 / Resonance detection report
+///
+/// 多种子扩散激活的结果，包含共振节点和所有激活路径。
+/// Result of multi-seed spreading activation, containing resonance nodes and all paths.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResonanceReport {
+    /// 共振节点（被 ≥2 个种子激活） / Resonance nodes (activated by ≥2 seeds)
+    pub resonance_nodes: Vec<ResonanceNode>,
+    /// 所有激活路径（合并，按激活值排序） / All activation paths (merged, sorted by activation)
+    pub paths: Vec<ActivatedPath>,
 }
 
 #[cfg(test)]
@@ -870,5 +1195,236 @@ mod tests {
         // 不同主体时，对比边建在 Subject 之间
         assert_eq!(contrast_edge.from, "S:主人");
         assert_eq!(contrast_edge.to, "S:小明");
+    }
+
+    // ── 索引正确性测试 / Index Correctness Tests ──
+
+    #[test]
+    fn test_adjacency_index_correctness() {
+        // 邻接表内容应与边表一致 / Adjacency list should match edge table
+        let mut g = AssociativeGraph::new();
+        g.add_fact(&Fact::new("A", "关联", "B").with_confidence(0.8));
+        g.add_fact(&Fact::new("B", "关联", "C").with_confidence(0.7));
+        g.link("O:B", "O:C", RelationType::CoOccurs, 0.5);
+
+        // 验证：每条边在邻接表中产生两个方向条目 / Each edge → two adjacency entries
+        for (idx, edge) in g.edges().iter().enumerate() {
+            // from 方向 / outgoing
+            let from_neighbors = g.adjacency.get(&edge.from).expect("from 应在邻接表中");
+            assert!(
+                from_neighbors
+                    .iter()
+                    .any(|(e_idx, n)| *e_idx == idx && n == &edge.to),
+                "边 {} 的 from→to 应在邻接表中",
+                edge.id
+            );
+            // to 方向 / incoming
+            let to_neighbors = g.adjacency.get(&edge.to).expect("to 应在邻接表中");
+            assert!(
+                to_neighbors
+                    .iter()
+                    .any(|(e_idx, n)| *e_idx == idx && n == &edge.from),
+                "边 {} 的 to→from 应在邻接表中",
+                edge.id
+            );
+        }
+    }
+
+    #[test]
+    fn test_edge_index_correctness() {
+        // 边ID索引应与边表一致 / Edge ID index should match edge table
+        let mut g = AssociativeGraph::new();
+        g.add_fact(&Fact::new("X", "关联", "Y").with_confidence(0.9));
+        g.add_fact(&Fact::new("Y", "关联", "Z").with_confidence(0.8));
+
+        for (idx, edge) in g.edges().iter().enumerate() {
+            let stored_idx = *g.edge_index.get(&edge.id).expect("边ID应在索引中");
+            assert_eq!(stored_idx, idx, "边ID索引应指向正确的边");
+        }
+    }
+
+    #[test]
+    fn test_rebuild_after_prune() {
+        // decay_and_prune 后索引应正确 / Indices correct after prune
+        let mut g = AssociativeGraph::new();
+        g.add_fact(&Fact::new("A", "强关联", "B").with_confidence(1.0));
+        g.add_fact(&Fact::new("C", "弱关联", "D").with_confidence(0.1));
+
+        g.decay_and_prune(0.5, 0.1);
+
+        // 弱边应被移除，索引不应包含它 / Weak edge removed, index should not contain it
+        assert_eq!(g.edge_count(), 1);
+        assert_eq!(g.edge_index.len(), 1);
+
+        // 邻接表不应包含已清理的节点 / Adjacency should not contain pruned nodes
+        assert!(!g.adjacency.contains_key("S:C"));
+        assert!(!g.adjacency.contains_key("O:D"));
+        // 应保留强边节点 / Should retain strong edge nodes
+        assert!(g.adjacency.contains_key("S:A"));
+        assert!(g.adjacency.contains_key("O:B"));
+    }
+
+    #[test]
+    fn test_rebuild_from_parts() {
+        // from_parts 后索引应正确 / Indices correct after from_parts
+        let mut g = AssociativeGraph::new();
+        g.add_fact(&Fact::new("A", "关联", "B").with_confidence(0.8));
+        g.add_fact(&Fact::new("B", "关联", "C").with_confidence(0.7));
+
+        let nodes = g.nodes().clone();
+        let edges = g.edges().to_vec();
+        let g2 = AssociativeGraph::from_parts(nodes, edges);
+
+        // 验证索引重建 / Verify index rebuild
+        assert_eq!(g2.edge_index.len(), g2.edge_count());
+        // 验证邻接表 / Verify adjacency
+        assert!(g2.adjacency.contains_key("S:A"));
+        assert!(g2.adjacency.contains_key("O:B"));
+        assert!(g2.adjacency.contains_key("O:C"));
+    }
+
+    // ── 新能力测试 / New Capability Tests ──
+
+    #[test]
+    fn test_multi_seed_activation() {
+        // 多种子扩散应覆盖各种子的邻居 / Multi-seed covers each seed's neighbors
+        let mut g = AssociativeGraph::new();
+        g.add_fact(&Fact::new("主人", "喜欢", "Rust").with_confidence(0.9));
+        g.add_fact(&Fact::new("主人", "学习", "AI").with_confidence(0.8));
+        g.add_fact(&Fact::new("小明", "喜欢", "Go").with_confidence(0.7));
+
+        let paths = g.spread_activation_multi(&["主人", "小明"], 0.5, 2);
+
+        // 应有从"主人"和"小明"扩散的路径 / Should have paths from both seeds
+        assert!(!paths.is_empty(), "多种子扩散应有结果");
+        // 应包含 Rust（从主人扩散）和 Go（从小明扩散）
+        let targets: Vec<&String> = paths.iter().map(|p| &p.to).collect();
+        assert!(
+            targets.iter().any(|t| t == &"O:Rust"),
+            "应包含从主人扩散的 Rust"
+        );
+        assert!(
+            targets.iter().any(|t| t == &"O:Go"),
+            "应包含从小明扩散的 Go"
+        );
+    }
+
+    #[test]
+    fn test_filtered_activation() {
+        // 关系过滤仅沿允许类型扩散 / Filter only spreads along allowed relations
+        let mut g = AssociativeGraph::new();
+        g.add_fact(&Fact::new("A", "关联", "B").with_confidence(0.9)); // SubjectObject: S:A → O:B
+        g.link("S:A", "O:B", RelationType::CoOccurs, 0.8); // CoOccurs: S:A ↔ O:B
+
+        // 仅允许 CoOccurs / Only allow CoOccurs
+        let paths_co = g.spread_activation_filtered("A", 0.5, 3, &[RelationType::CoOccurs]);
+
+        // 仅允许 SubjectObject / Only allow SubjectObject
+        let paths_so = g.spread_activation_filtered("A", 0.5, 3, &[RelationType::SubjectObject]);
+
+        // 两种过滤都应有结果（S:A 有两种关系的边到 O:B） / Both should have results
+        // CoOccurs 边: S:A ↔ O:B
+        assert!(!paths_co.is_empty(), "CoOccurs 过滤应有结果");
+        // SubjectObject 边: S:A → O:B
+        assert!(!paths_so.is_empty(), "SubjectObject 过滤应有结果");
+    }
+
+    #[test]
+    fn test_filtered_activation_empty_relations() {
+        // 空关系列表 = 无扩散 / Empty relations = no spread
+        let mut g = AssociativeGraph::new();
+        g.add_fact(&Fact::new("A", "关联", "B").with_confidence(0.9));
+
+        let paths = g.spread_activation_filtered("A", 0.5, 3, &[]);
+        assert!(paths.is_empty(), "空关系列表不应产生扩散");
+    }
+
+    #[test]
+    fn test_resonance_basic() {
+        // 两个种子的共同邻居应被识别为共振节点 / Common neighbor = resonance node
+        let mut g = AssociativeGraph::new();
+        // A → C, B → C，C 是 A 和 B 的共同邻居
+        g.add_fact(&Fact::new("A", "关联", "C").with_confidence(0.9));
+        g.add_fact(&Fact::new("B", "关联", "C").with_confidence(0.8));
+
+        let report = g.resonance_spread(&["A", "B"], 0.5, 3);
+
+        // 应有共振节点 / Should have resonance nodes
+        assert!(
+            !report.resonance_nodes.is_empty(),
+            "应有共振节点（A 和 B 的共同邻居 C）"
+        );
+        // 共振节点应包含 O:C / Resonance should include O:C
+        let has_c = report.resonance_nodes.iter().any(|rn| rn.node_id == "O:C");
+        assert!(has_c, "O:C 应为共振节点");
+    }
+
+    #[test]
+    fn test_resonance_no_overlap() {
+        // 无交集时共振节点为空 / No overlap → no resonance
+        let mut g = AssociativeGraph::new();
+        g.add_fact(&Fact::new("A", "关联", "B").with_confidence(0.9));
+        g.add_fact(&Fact::new("C", "关联", "D").with_confidence(0.8));
+
+        let report = g.resonance_spread(&["A", "C"], 0.5, 2);
+
+        // A 和 C 的邻居不重叠（B ≠ D） / No common neighbors
+        // 注意：P:关联 是共享的 Concept 节点，可能产生共振
+        // 验证共振节点中不包含 O:B 或 O:D / Verify no O:B or O:D in resonance
+        let non_resonance = report
+            .resonance_nodes
+            .iter()
+            .filter(|rn| rn.node_id == "O:B" || rn.node_id == "O:D")
+            .count();
+        assert_eq!(non_resonance, 0, "O:B 和 O:D 不应是共振节点");
+    }
+
+    #[test]
+    fn test_resonance_strength() {
+        // 共振强度 = 各种子激活值之和 / Strength = sum of activations
+        let mut g = AssociativeGraph::new();
+        g.add_fact(&Fact::new("A", "关联", "C").with_confidence(1.0));
+        g.add_fact(&Fact::new("B", "关联", "C").with_confidence(1.0));
+
+        let report = g.resonance_spread(&["A", "B"], 0.5, 2);
+
+        let c_resonance = report
+            .resonance_nodes
+            .iter()
+            .find(|rn| rn.node_id == "O:C")
+            .expect("O:C 应为共振节点");
+
+        // 两个种子各贡献 0.5 的激活值（1.0 * 0.5 * 1.0） / Each seed contributes 0.5
+        assert!(
+            c_resonance.resonance_strength > 0.0,
+            "共振强度应 > 0, got {}",
+            c_resonance.resonance_strength
+        );
+        assert_eq!(c_resonance.activating_seeds.len(), 2, "应由 2 个种子激活");
+    }
+
+    #[test]
+    fn test_resonance_three_seeds() {
+        // 三种子交汇点共振强度更高 / Three seeds → higher resonance
+        let mut g = AssociativeGraph::new();
+        g.add_fact(&Fact::new("A", "关联", "X").with_confidence(1.0));
+        g.add_fact(&Fact::new("B", "关联", "X").with_confidence(1.0));
+        g.add_fact(&Fact::new("C", "关联", "X").with_confidence(1.0));
+
+        let report = g.resonance_spread(&["A", "B", "C"], 0.5, 2);
+
+        let x_resonance = report
+            .resonance_nodes
+            .iter()
+            .find(|rn| rn.node_id == "O:X")
+            .expect("O:X 应为共振节点");
+
+        assert_eq!(x_resonance.activating_seeds.len(), 3, "应由 3 个种子激活");
+        // 三种子的共振强度应 > 两种子 / 3-seed resonance > 2-seed
+        assert!(
+            x_resonance.resonance_strength > 0.5,
+            "三种子共振强度应 > 0.5, got {}",
+            x_resonance.resonance_strength
+        );
     }
 }

@@ -873,7 +873,7 @@ mod tests {
             ConflictType::BoundaryViolation,
         ];
         for (i, ct) in types.iter().enumerate() {
-            let sig = make_signal(ct.clone(), "trigger", 1000 + i as i64 * 100);
+            let sig = make_signal(*ct, "trigger", 1000 + i as i64 * 100);
             learner.learn(&[sig], &acquaintance(), 1000 + i as i64 * 100);
         }
         assert!(learner.patterns.len() <= 3);

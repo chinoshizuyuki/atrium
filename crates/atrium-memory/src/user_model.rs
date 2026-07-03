@@ -29,7 +29,7 @@ pub enum MoodTrend {
     Declining,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct UserMood {
     pub valence: f32,   // -1..1 (消极..积极)
     pub intensity: f32, // 0..1 (低..高)
@@ -161,7 +161,7 @@ pub enum LanguageHint {
     Mixed,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CommunicationStyle {
     pub avg_message_length: f32,
     pub formality: f32,      // 0..1
@@ -273,7 +273,7 @@ fn is_emoji(c: char) -> bool {
 // 参与度追踪
 // ════════════════════════════════════════════════════════════════════
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct EngagementTracker {
     pub messages_per_session: f32,
     pub avg_session_duration_ms: u64,
@@ -464,7 +464,7 @@ pub struct EmotionModulation {
 // 主结构: UserMentalModel
 // ════════════════════════════════════════════════════════════════════
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UserMentalModel {
     pub mood: UserMood,

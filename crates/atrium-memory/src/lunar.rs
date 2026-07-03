@@ -11,6 +11,8 @@
 //              位 (16-m) 表示第 m 月 (m=1..12)
 //   - 位 16:   闰月天数 (1=30天, 0=29天)
 
+use serde::{Deserialize, Serialize};
+
 /// 农历信息表 (1900-2100) / Lunar calendar data table
 ///
 /// 每个条目编码一年的农历信息，详见模块头部注释。
@@ -322,6 +324,437 @@ pub fn lunar_holidays_for_year(year: u32) -> Vec<(&'static str, u32, u32, &'stat
         .collect()
 }
 
+// ── 公历转农历 / Solar to Lunar Conversion ──
+
+/// 公历转农历 / Convert solar date to lunar date
+///
+/// # 参数 / Parameters
+/// - `solar_year`: 公历年份 (1900-2100) / Solar year
+/// - `solar_month`: 公历月份 (1-12) / Solar month
+/// - `solar_day`: 公历日期 (1-31) / Solar day
+///
+/// # 返回 / Returns
+/// - `Some((lunar_year, lunar_month, lunar_day, is_leap))` 转换成功 / Conversion success
+/// - `None` 输入无效 / Invalid input
+///
+/// # 示例 / Example
+/// ```no_run
+/// use atrium_memory::lunar::solar_to_lunar;
+/// // 2026-02-17 → 农历丙午年正月初一
+/// let result = solar_to_lunar(2026, 2, 17);
+/// assert_eq!(result, Some((2026, 1, 1, false)));
+/// ```
+pub fn solar_to_lunar(
+    solar_year: u32,
+    solar_month: u32,
+    solar_day: u32,
+) -> Option<(u32, u32, u32, bool)> {
+    // 参数校验 / Parameter validation
+    if !(1900..=2100).contains(&solar_year) {
+        return None;
+    }
+    if !(1..=12).contains(&solar_month) {
+        return None;
+    }
+    if solar_day == 0 || solar_day > 31 {
+        return None;
+    }
+
+    // 日数校验 / Day-of-month validation
+    let md = month_days_solar(solar_year);
+    if solar_day as i64 > md[(solar_month - 1) as usize] {
+        return None;
+    }
+
+    // 计算公历日期距 1900-01-31 的天数偏移 / Compute day offset from 1900-01-31
+    let mut offset = 0i64;
+
+    // 累加整年天数 / Accumulate full year days from 1900
+    for y in 1900..solar_year {
+        offset += if is_leap_solar(y) { 366i64 } else { 365i64 };
+    }
+
+    // 累加当年月天数 / Accumulate month days in current year
+    for &days in md.iter().take((solar_month - 1) as usize) {
+        offset += days;
+    }
+
+    // 加上当月天数偏移（1-based → 0-based）/ Add day offset (1-based → 0-based)
+    offset += (solar_day - 1) as i64;
+
+    // 1900-01-31 是农历 1900-01-01 的公历对应日
+    // 1900-01-31 is the solar date of lunar 1900-01-01
+    // 需要减去 30 天（1月1日到1月31日差 30 天）
+    // Subtract 30 days (Jan 1 to Jan 31 = 30 days)
+    offset -= 30;
+
+    if offset < 0 {
+        return None; // 1900-01-31 之前无法转换 / Cannot convert before 1900-01-31
+    }
+
+    // 遍历农历年，定位年份 / Walk lunar years to find the right year
+    let mut lunar_year = 1900u32;
+    loop {
+        let yd = year_days(lunar_year) as i64;
+        if offset < yd {
+            break;
+        }
+        offset -= yd;
+        lunar_year += 1;
+    }
+
+    // 遍历农历月，定位月份 / Walk lunar months to find the right month
+    let leap = leap_month(lunar_year);
+    let mut lunar_month = 1u32;
+    let mut is_leap_month = false;
+
+    for m in 1..=12u32 {
+        let mdays = month_days(lunar_year, m) as i64;
+        if offset < mdays {
+            lunar_month = m;
+            is_leap_month = false;
+            break;
+        }
+        offset -= mdays;
+
+        // 闰月紧跟正常月之后 / Leap month follows its normal month
+        if m == leap {
+            let ld = leap_days(lunar_year) as i64;
+            if offset < ld {
+                lunar_month = m;
+                is_leap_month = true;
+                break;
+            }
+            offset -= ld;
+        }
+
+        // 12月兜底 / December fallback
+        if m == 12 {
+            lunar_month = 12;
+            is_leap_month = false;
+        }
+    }
+
+    let lunar_day = (offset + 1) as u32;
+    Some((lunar_year, lunar_month, lunar_day, is_leap_month))
+}
+
+// ── 农历日期 / Lunar Date ──
+
+/// 农历日期 / Lunar date
+///
+/// 零依赖天文农历日期结构体，支持公历↔农历互转、中文格式化、节日检测。
+/// Zero-dependency astronomical lunar date struct with bidirectional conversion,
+/// Chinese formatting, and festival detection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct LunarDate {
+    /// 农历年 (1900-2100) / Lunar year
+    pub year: u32,
+    /// 农历月 (1-12) / Lunar month
+    pub month: u32,
+    /// 农历日 (1-30) / Lunar day
+    pub day: u32,
+    /// 是否闰月 / Whether this is a leap month
+    pub is_leap: bool,
+}
+
+impl LunarDate {
+    /// 从公历日期转换 / Convert from Gregorian date
+    pub fn from_gregorian(year: u32, month: u32, day: u32) -> Option<Self> {
+        solar_to_lunar(year, month, day).map(|(y, m, d, leap)| Self {
+            year: y,
+            month: m,
+            day: d,
+            is_leap: leap,
+        })
+    }
+
+    /// 转换为公历日期 / Convert to Gregorian date
+    pub fn to_gregorian(&self) -> Option<(u32, u32, u32)> {
+        lunar_to_solar(self.year, self.month, self.day, self.is_leap)
+    }
+
+    /// 从 epoch 秒转换 / Convert from epoch seconds
+    pub fn from_epoch(epoch_secs: i64) -> Option<Self> {
+        let (y, m, d) = epoch_to_ymd_internal(epoch_secs);
+        Self::from_gregorian(y as u32, m as u32, d as u32)
+    }
+
+    /// 中文月名 / Chinese month name
+    ///
+    /// 正月、二月、...、腊月，闰月前加"闰"。
+    pub fn month_name_zh(&self) -> &'static str {
+        /// 农历月名表 / Lunar month name table
+        const MONTH_NAMES: [&str; 12] = [
+            "正月", "二月", "三月", "四月", "五月", "六月", "七月", "八月", "九月", "十月", "冬月",
+            "腊月",
+        ];
+        // 闰月用特殊命名 / Leap month uses special naming
+        // 由于返回 &'static str，闰月用 "闰X" 格式需要运行时构造
+        // 这里返回基础月名，闰月标记由调用方通过 is_leap 判断
+        MONTH_NAMES.get((self.month - 1) as usize).unwrap_or(&"?")
+    }
+
+    /// 中文月名（含闰月标记）/ Chinese month name with leap marker
+    pub fn month_name_zh_full(&self) -> String {
+        let base = self.month_name_zh();
+        if self.is_leap {
+            format!("闰{}", base)
+        } else {
+            base.to_string()
+        }
+    }
+
+    /// 中文日名（初一、初二...三十）/ Chinese day name
+    pub fn day_name_zh(&self) -> &'static str {
+        /// 农历日名表 / Lunar day name table
+        const DAY_NAMES: [&str; 30] = [
+            "初一", "初二", "初三", "初四", "初五", "初六", "初七", "初八", "初九", "初十", "十一",
+            "十二", "十三", "十四", "十五", "十六", "十七", "十八", "十九", "二十", "廿一", "廿二",
+            "廿三", "廿四", "廿五", "廿六", "廿七", "廿八", "廿九", "三十",
+        ];
+        DAY_NAMES.get((self.day - 1) as usize).unwrap_or(&"?")
+    }
+
+    /// 完整中文日期 / Full Chinese date string
+    ///
+    /// 格式：丙午年正月初一
+    pub fn full_name_zh(&self) -> String {
+        format!(
+            "{}年{}{}",
+            self.year,
+            self.month_name_zh_full(),
+            self.day_name_zh()
+        )
+    }
+
+    /// 检测是否为农历节日 / Detect if this is a lunar festival
+    pub fn festival(&self) -> Option<LunarFestival> {
+        // 先查固定月日节日 / Check fixed month/day festivals first
+        if let Some(f) = LunarFestival::from_lunar(self.month, self.day, self.is_leap) {
+            return Some(f);
+        }
+        // 除夕需要年份信息 / New Year's Eve needs year info
+        LunarFestival::detect_new_years_eve(self.year, self.month, self.day, self.is_leap)
+    }
+}
+
+/// epoch 秒转公历年月日（内部辅助）/ Epoch seconds to Gregorian (year, month, day) — internal helper
+fn epoch_to_ymd_internal(epoch_secs: i64) -> (i32, i32, i32) {
+    let mut days = epoch_secs / 86400;
+    let mut year = 1970i64;
+    loop {
+        let days_in_year = if is_leap_solar(year as u32) { 366 } else { 365 };
+        if days < days_in_year {
+            break;
+        }
+        days -= days_in_year;
+        year += 1;
+    }
+    let leap = is_leap_solar(year as u32);
+    let month_days: [i64; 12] = if leap {
+        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    } else {
+        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    };
+    let mut month = 1i64;
+    for &md in &month_days {
+        if days < md {
+            break;
+        }
+        days -= md;
+        month += 1;
+    }
+    (year as i32, month as i32, (days + 1) as i32)
+}
+
+// ── 农历节日枚举 / Lunar Festival Enum ──
+
+/// 农历节日 / Lunar festival
+///
+/// 九大传统农历节日，覆盖春节、元宵、端午、七夕、中元、中秋、重阳、腊八、除夕。
+/// Nine traditional lunar festivals covering the major Chinese cultural dates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum LunarFestival {
+    /// 春节（正月初一）/ Spring Festival
+    SpringFestival,
+    /// 元宵节（正月十五）/ Lantern Festival
+    LanternFestival,
+    /// 端午节（五月初五）/ Dragon Boat Festival
+    DragonBoat,
+    /// 七夕（七月初七）/ Qixi Festival
+    Qixi,
+    /// 中元节（七月十五）/ Ghost Festival
+    GhostFestival,
+    /// 中秋节（八月十五）/ Mid-Autumn Festival
+    MidAutumn,
+    /// 重阳节（九月初九）/ Double Ninth Festival
+    DoubleNinth,
+    /// 腊八节（十二月初八）/ Laba Festival
+    Laba,
+    /// 除夕（腊月最后一天）/ Lunar New Year's Eve
+    NewYearsEve,
+}
+
+impl LunarFestival {
+    /// 中文标签 / Chinese label
+    pub fn label_zh(&self) -> &'static str {
+        match self {
+            Self::SpringFestival => "春节",
+            Self::LanternFestival => "元宵节",
+            Self::DragonBoat => "端午节",
+            Self::Qixi => "七夕",
+            Self::GhostFestival => "中元节",
+            Self::MidAutumn => "中秋节",
+            Self::DoubleNinth => "重阳节",
+            Self::Laba => "腊八节",
+            Self::NewYearsEve => "除夕",
+        }
+    }
+
+    /// 庆祝模板 / Celebration template
+    pub fn celebration_template(&self) -> &'static str {
+        match self {
+            Self::SpringFestival => "新年快乐！恭贺新禧！",
+            Self::LanternFestival => "元宵节快乐！",
+            Self::DragonBoat => "端午安康！",
+            Self::Qixi => "七夕快乐！",
+            Self::GhostFestival => "中元节，思念故人。",
+            Self::MidAutumn => "中秋快乐！月圆人团圆。",
+            Self::DoubleNinth => "重阳安康！",
+            Self::Laba => "腊八节快乐！",
+            Self::NewYearsEve => "除夕快乐！辞旧迎新！",
+        }
+    }
+
+    /// 情感签名（PAD 偏移）/ Emotional signature (PAD offset)
+    ///
+    /// 不同节日对数字生命情绪的不同影响：
+    /// - 春节：高愉悦 + 高唤醒（喜庆）/ Spring: high pleasure + high arousal
+    /// - 中秋：高愉悦 + 低唤醒（温馨）/ Mid-Autumn: high pleasure + low arousal
+    /// - 中元：低愉悦 + 低唤醒（肃穆）/ Ghost: low pleasure + low arousal
+    pub fn pad_offset(&self) -> [f32; 3] {
+        match self {
+            Self::SpringFestival => [0.35, 0.20, 0.05],
+            Self::LanternFestival => [0.25, 0.15, 0.02],
+            Self::DragonBoat => [0.15, 0.20, 0.00],
+            Self::Qixi => [0.20, 0.05, -0.05],
+            Self::GhostFestival => [-0.15, -0.10, -0.05],
+            Self::MidAutumn => [0.30, 0.05, 0.05],
+            Self::DoubleNinth => [0.10, -0.05, 0.00],
+            Self::Laba => [0.10, 0.00, 0.00],
+            Self::NewYearsEve => [0.25, 0.15, 0.05],
+        }
+    }
+
+    /// 从农历月日识别节日（固定日期）/ Detect from lunar month/day (fixed dates)
+    ///
+    /// 除夕需要年份信息，此方法不检测除夕。
+    /// New Year's Eve needs year info; this method does not detect it.
+    pub fn from_lunar(month: u32, day: u32, is_leap: bool) -> Option<Self> {
+        if is_leap {
+            return None; // 闰月无传统节日 / No traditional festivals in leap months
+        }
+        match (month, day) {
+            (1, 1) => Some(Self::SpringFestival),
+            (1, 15) => Some(Self::LanternFestival),
+            (5, 5) => Some(Self::DragonBoat),
+            (7, 7) => Some(Self::Qixi),
+            (7, 15) => Some(Self::GhostFestival),
+            (8, 15) => Some(Self::MidAutumn),
+            (9, 9) => Some(Self::DoubleNinth),
+            (12, 8) => Some(Self::Laba),
+            _ => None,
+        }
+    }
+
+    /// 检测除夕（需要年份信息）/ Detect New Year's Eve (needs year info)
+    ///
+    /// 除夕是腊月最后一天（大月三十，小月二十九）。
+    pub fn detect_new_years_eve(
+        lunar_year: u32,
+        month: u32,
+        day: u32,
+        is_leap: bool,
+    ) -> Option<Self> {
+        if month == 12 && !is_leap {
+            let last_day = month_days(lunar_year, 12);
+            if day == last_day {
+                return Some(Self::NewYearsEve);
+            }
+        }
+        None
+    }
+
+    /// 计算指定年份此节日的公历日期 / Compute solar date for this festival in a given year
+    pub fn solar_date_in_year(&self, lunar_year: u32) -> Option<(u32, u32, u32)> {
+        match self {
+            Self::NewYearsEve => {
+                // 除夕：腊月最后一天 / Last day of 12th month
+                let last_day = month_days(lunar_year, 12);
+                lunar_to_solar(lunar_year, 12, last_day, false)
+            }
+            Self::SpringFestival => lunar_to_solar(lunar_year, 1, 1, false),
+            Self::LanternFestival => lunar_to_solar(lunar_year, 1, 15, false),
+            Self::DragonBoat => lunar_to_solar(lunar_year, 5, 5, false),
+            Self::Qixi => lunar_to_solar(lunar_year, 7, 7, false),
+            Self::GhostFestival => lunar_to_solar(lunar_year, 7, 15, false),
+            Self::MidAutumn => lunar_to_solar(lunar_year, 8, 15, false),
+            Self::DoubleNinth => lunar_to_solar(lunar_year, 9, 9, false),
+            Self::Laba => lunar_to_solar(lunar_year, 12, 8, false),
+        }
+    }
+}
+
+/// 九大农历节日列表 / Nine major lunar festivals
+pub const LUNAR_FESTIVALS: [LunarFestival; 9] = [
+    LunarFestival::SpringFestival,
+    LunarFestival::LanternFestival,
+    LunarFestival::DragonBoat,
+    LunarFestival::Qixi,
+    LunarFestival::GhostFestival,
+    LunarFestival::MidAutumn,
+    LunarFestival::DoubleNinth,
+    LunarFestival::Laba,
+    LunarFestival::NewYearsEve,
+];
+
+/// 计算指定年份所有农历节日的公历日期 / Compute solar dates for all lunar festivals in a year
+///
+/// 返回 `Vec<(节日, 公历月, 公历日, 庆祝语)>`。
+/// Returns `Vec<(festival, solar_month, solar_day, greeting)>`.
+pub fn lunar_festivals_for_year(year: u32) -> Vec<(LunarFestival, u32, u32, &'static str)> {
+    LUNAR_FESTIVALS
+        .iter()
+        .filter_map(|&f| {
+            f.solar_date_in_year(year)
+                .map(|(_, sm, sd)| (f, sm, sd, f.celebration_template()))
+        })
+        .collect()
+}
+
+/// 公历年月日转 epoch 秒 / Gregorian (year, month, day) to epoch seconds
+///
+/// 用于将农历转公历后的日期转回 epoch 秒。
+/// Used to convert lunar→solar dates back to epoch seconds.
+pub fn ymd_to_epoch(year: i32, month: i32, day: i32) -> i64 {
+    let mut total_days = 0i64;
+    for y in 1970..year {
+        total_days += if is_leap_solar(y as u32) { 366 } else { 365 };
+    }
+    let leap = is_leap_solar(year as u32);
+    let month_days: [i64; 12] = if leap {
+        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    } else {
+        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    };
+    for &days in month_days.iter().take((month - 1) as usize) {
+        total_days += days;
+    }
+    total_days += (day - 1) as i64;
+    total_days * 86400
+}
+
 // ── 测试 / Tests ──
 
 #[cfg(test)]
@@ -464,5 +897,314 @@ mod tests {
         assert_eq!(holidays[0].0, "春节");
         assert_eq!(holidays[0].1, 1); // 月份 / month
         assert_eq!(holidays[0].2, 29); // 日期 / day
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // P2-1: solar_to_lunar + LunarDate + LunarFestival 测试
+    // ══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_solar_to_lunar_spring_2026() {
+        // 2026-02-17 → 农历正月初一 / Spring Festival 2026
+        let result = solar_to_lunar(2026, 2, 17);
+        assert_eq!(result, Some((2026, 1, 1, false)));
+    }
+
+    #[test]
+    fn test_solar_to_lunar_mid_autumn_2026() {
+        // 2026-09-25 → 农历八月十五 / Mid-Autumn 2026
+        let result = solar_to_lunar(2026, 9, 25);
+        assert_eq!(result, Some((2026, 8, 15, false)));
+    }
+
+    #[test]
+    fn test_solar_to_lunar_dragon_boat_2026() {
+        // 2026-06-19 → 农历五月初五 / Dragon Boat 2026
+        let result = solar_to_lunar(2026, 6, 19);
+        assert_eq!(result, Some((2026, 5, 5, false)));
+    }
+
+    #[test]
+    fn test_solar_to_lunar_qixi_2026() {
+        // 2026-08-19 → 农历七月初七 / Qixi 2026
+        let result = solar_to_lunar(2026, 8, 19);
+        assert_eq!(result, Some((2026, 7, 7, false)));
+    }
+
+    #[test]
+    fn test_solar_to_lunar_roundtrip_2026() {
+        // 公历→农历→公历 往返一致性 / Roundtrip: solar→lunar→solar
+        for (sm, sd) in [(1, 15), (3, 8), (6, 20), (9, 25), (12, 31)] {
+            let lunar = solar_to_lunar(2026, sm, sd).expect("solar_to_lunar failed");
+            let solar =
+                lunar_to_solar(lunar.0, lunar.1, lunar.2, lunar.3).expect("lunar_to_solar failed");
+            assert_eq!(solar, (2026, sm, sd), "roundtrip failed for {}/{}", sm, sd);
+        }
+    }
+
+    #[test]
+    fn test_solar_to_lunar_invalid() {
+        assert_eq!(solar_to_lunar(1899, 1, 1), None);
+        assert_eq!(solar_to_lunar(2101, 1, 1), None);
+        assert_eq!(solar_to_lunar(2026, 0, 1), None);
+        assert_eq!(solar_to_lunar(2026, 13, 1), None);
+        assert_eq!(solar_to_lunar(2026, 2, 30), None); // 2026年2月无30日
+    }
+
+    #[test]
+    fn test_lunar_date_from_gregorian() {
+        let ld = LunarDate::from_gregorian(2026, 2, 17).unwrap();
+        assert_eq!(ld.year, 2026);
+        assert_eq!(ld.month, 1);
+        assert_eq!(ld.day, 1);
+        assert!(!ld.is_leap);
+    }
+
+    #[test]
+    fn test_lunar_date_to_gregorian() {
+        let ld = LunarDate {
+            year: 2026,
+            month: 8,
+            day: 15,
+            is_leap: false,
+        };
+        let (y, m, d) = ld.to_gregorian().unwrap();
+        assert_eq!((y, m, d), (2026, 9, 25));
+    }
+
+    #[test]
+    fn test_lunar_date_month_name_zh() {
+        let ld = LunarDate {
+            year: 2026,
+            month: 1,
+            day: 1,
+            is_leap: false,
+        };
+        assert_eq!(ld.month_name_zh(), "正月");
+        assert_eq!(ld.month_name_zh_full(), "正月");
+
+        let ld_leap = LunarDate {
+            year: 2023,
+            month: 2,
+            day: 1,
+            is_leap: true,
+        };
+        assert_eq!(ld_leap.month_name_zh_full(), "闰二月");
+    }
+
+    #[test]
+    fn test_lunar_date_day_name_zh() {
+        let ld1 = LunarDate {
+            year: 2026,
+            month: 1,
+            day: 1,
+            is_leap: false,
+        };
+        assert_eq!(ld1.day_name_zh(), "初一");
+
+        let ld15 = LunarDate {
+            year: 2026,
+            month: 1,
+            day: 15,
+            is_leap: false,
+        };
+        assert_eq!(ld15.day_name_zh(), "十五");
+
+        let ld30 = LunarDate {
+            year: 2026,
+            month: 1,
+            day: 30,
+            is_leap: false,
+        };
+        assert_eq!(ld30.day_name_zh(), "三十");
+
+        let ld21 = LunarDate {
+            year: 2026,
+            month: 1,
+            day: 21,
+            is_leap: false,
+        };
+        assert_eq!(ld21.day_name_zh(), "廿一");
+    }
+
+    #[test]
+    fn test_lunar_date_full_name_zh() {
+        let ld = LunarDate {
+            year: 2026,
+            month: 1,
+            day: 1,
+            is_leap: false,
+        };
+        assert_eq!(ld.full_name_zh(), "2026年正月初一");
+    }
+
+    #[test]
+    fn test_lunar_date_festival() {
+        let spring = LunarDate {
+            year: 2026,
+            month: 1,
+            day: 1,
+            is_leap: false,
+        };
+        assert_eq!(spring.festival(), Some(LunarFestival::SpringFestival));
+
+        let mid_autumn = LunarDate {
+            year: 2026,
+            month: 8,
+            day: 15,
+            is_leap: false,
+        };
+        assert_eq!(mid_autumn.festival(), Some(LunarFestival::MidAutumn));
+
+        let normal = LunarDate {
+            year: 2026,
+            month: 3,
+            day: 10,
+            is_leap: false,
+        };
+        assert_eq!(normal.festival(), None);
+    }
+
+    #[test]
+    fn test_lunar_festival_label_zh() {
+        assert_eq!(LunarFestival::SpringFestival.label_zh(), "春节");
+        assert_eq!(LunarFestival::MidAutumn.label_zh(), "中秋节");
+        assert_eq!(LunarFestival::NewYearsEve.label_zh(), "除夕");
+        assert_eq!(LunarFestival::Laba.label_zh(), "腊八节");
+        assert_eq!(LunarFestival::GhostFestival.label_zh(), "中元节");
+    }
+
+    #[test]
+    fn test_lunar_festival_from_lunar() {
+        assert_eq!(
+            LunarFestival::from_lunar(1, 1, false),
+            Some(LunarFestival::SpringFestival)
+        );
+        assert_eq!(
+            LunarFestival::from_lunar(8, 15, false),
+            Some(LunarFestival::MidAutumn)
+        );
+        assert_eq!(
+            LunarFestival::from_lunar(12, 8, false),
+            Some(LunarFestival::Laba)
+        );
+        assert_eq!(
+            LunarFestival::from_lunar(7, 15, false),
+            Some(LunarFestival::GhostFestival)
+        );
+        // 闰月无节日 / No festival in leap month
+        assert_eq!(LunarFestival::from_lunar(1, 1, true), None);
+    }
+
+    #[test]
+    fn test_lunar_festival_detect_new_years_eve() {
+        // 2026年腊月：查表确认最后一天 / Check last day of 12th month in 2026
+        let last_day_12 = month_days(2026, 12);
+        let result = LunarFestival::detect_new_years_eve(2026, 12, last_day_12, false);
+        assert_eq!(result, Some(LunarFestival::NewYearsEve));
+        // 非最后一天不是除夕 / Not last day → not New Year's Eve
+        assert_eq!(
+            LunarFestival::detect_new_years_eve(2026, 12, 1, false),
+            None
+        );
+    }
+
+    #[test]
+    fn test_lunar_festival_solar_date_in_year() {
+        // 2026年春节公历日期 / Spring Festival 2026 solar date
+        let (y, m, d) = LunarFestival::SpringFestival
+            .solar_date_in_year(2026)
+            .unwrap();
+        assert_eq!((y, m, d), (2026, 2, 17));
+
+        // 2026年中秋公历日期 / Mid-Autumn 2026 solar date
+        let (y, m, d) = LunarFestival::MidAutumn.solar_date_in_year(2026).unwrap();
+        assert_eq!((y, m, d), (2026, 9, 25));
+    }
+
+    #[test]
+    fn test_lunar_festival_pad_offset() {
+        // 春节应为正愉悦 / Spring Festival should have positive pleasure
+        let pad = LunarFestival::SpringFestival.pad_offset();
+        assert!(pad[0] > 0.0, "Spring pleasure should be positive");
+
+        // 中元节应为负愉悦 / Ghost Festival should have negative pleasure
+        let pad = LunarFestival::GhostFestival.pad_offset();
+        assert!(pad[0] < 0.0, "Ghost pleasure should be negative");
+
+        // 中秋应为正愉悦低唤醒 / Mid-Autumn should have positive pleasure, low arousal
+        let pad = LunarFestival::MidAutumn.pad_offset();
+        assert!(pad[0] > 0.0, "Mid-Autumn pleasure should be positive");
+        assert!(
+            pad[1] < LunarFestival::SpringFestival.pad_offset()[1],
+            "Mid-Autumn arousal should be lower than Spring"
+        );
+    }
+
+    #[test]
+    fn test_lunar_festivals_for_year_2026() {
+        let festivals = lunar_festivals_for_year(2026);
+        assert_eq!(festivals.len(), 9, "Should have 9 lunar festivals");
+
+        // 春节 / Spring Festival
+        assert_eq!(festivals[0].0, LunarFestival::SpringFestival);
+        assert_eq!(festivals[0].1, 2); // month
+        assert_eq!(festivals[0].2, 17); // day
+
+        // 中秋 / Mid-Autumn
+        let mid_autumn = festivals
+            .iter()
+            .find(|f| f.0 == LunarFestival::MidAutumn)
+            .unwrap();
+        assert_eq!(mid_autumn.1, 9);
+        assert_eq!(mid_autumn.2, 25);
+    }
+
+    #[test]
+    fn test_ymd_to_epoch() {
+        // 1970-01-01 = epoch 0
+        assert_eq!(ymd_to_epoch(1970, 1, 1), 0);
+
+        // 1970-01-02 = 86400
+        assert_eq!(ymd_to_epoch(1970, 1, 2), 86400);
+
+        // 2000-01-01 应为正数 / Should be positive
+        assert!(ymd_to_epoch(2000, 1, 1) > 0);
+    }
+
+    #[test]
+    fn test_lunar_date_from_epoch() {
+        // 2026-02-17 = 春节 / Spring Festival 2026
+        let epoch = ymd_to_epoch(2026, 2, 17);
+        let ld = LunarDate::from_epoch(epoch).unwrap();
+        assert_eq!(ld.month, 1);
+        assert_eq!(ld.day, 1);
+        assert!(!ld.is_leap);
+    }
+
+    #[test]
+    fn test_solar_to_lunar_leap_month_2023() {
+        // 2023年闰二月 / 2023 has leap 2nd month
+        // 2023-03-22 = 闰二月初一 / 2023-03-22 = leap 2/1
+        let result = solar_to_lunar(2023, 3, 22);
+        assert!(result.is_some());
+        let (_, m, d, is_leap) = result.unwrap();
+        assert_eq!(m, 2);
+        assert_eq!(d, 1);
+        assert!(is_leap, "Should be leap month");
+    }
+
+    #[test]
+    fn test_solar_to_lunar_spring_2024() {
+        // 2024年春节：公历 2月10日 / Spring Festival 2024: solar Feb 10
+        let result = solar_to_lunar(2024, 2, 10);
+        assert_eq!(result, Some((2024, 1, 1, false)));
+    }
+
+    #[test]
+    fn test_solar_to_lunar_spring_2025() {
+        // 2025年春节：公历 1月29日 / Spring Festival 2025: solar Jan 29
+        let result = solar_to_lunar(2025, 1, 29);
+        assert_eq!(result, Some((2025, 1, 1, false)));
     }
 }

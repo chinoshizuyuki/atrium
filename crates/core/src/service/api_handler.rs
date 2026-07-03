@@ -90,6 +90,21 @@ impl AtriumCoreService for CoreService {
             None
         };
 
+        // 潜台词感知 — 读懂"话外之音" / Subtext perception — read between the lines
+        // G1 修复：用户潜台词不再是死代码，"我没事"背后的回避终于能被感知
+        // G1 fix: user subtext is no longer dead code, avoidance behind "I'm fine" can finally be perceived
+        let subtext_signals: Vec<SubtextSignal> = if self.expression_enabled {
+            let pad = {
+                let emo = self.emotion.lock();
+                let c = emo.current();
+                [c.pleasure, c.arousal, c.dominance]
+            };
+            let stage = self.relationship.lock().current_stage().clone();
+            SubtextEngine::detect(msg, pad, &stage)
+        } else {
+            Vec::new()
+        };
+
         // 写入 STM ──
         {
             let mut mem = self.memory.lock();
@@ -131,6 +146,30 @@ impl AtriumCoreService for CoreService {
                     let (dp, da, dd) = result.pad_delta;
                     emo.affect(&EmotionEngineState::new(dp, da, dd));
                 }
+            }
+
+            // 潜台词→情感反馈闭环 / Subtext→emotion feedback loop
+            // G6 修复：感知到对方的脆弱，自己的情绪也会变得温柔
+            // G6 fix: perceiving the other's fragility makes one's own emotion gentle
+            if !subtext_signals.is_empty() {
+                let mut dp = 0.0f32;
+                let mut da = 0.0f32;
+                let mut dd = 0.0f32;
+                for signal in &subtext_signals {
+                    // 潜台词类别 → PAD 微调映射 / Subtext category → PAD delta mapping
+                    let (p, a, d) = match signal.category {
+                        SubtextCategory::Avoidance => (0.02, -0.01, 0.01),
+                        SubtextCategory::Fragility => (0.03, 0.01, 0.02),
+                        SubtextCategory::SeekingAttention => (0.01, 0.02, 0.00),
+                        SubtextCategory::Dissatisfaction => (-0.01, 0.01, -0.01),
+                        SubtextCategory::HiddenJoy => (0.02, 0.01, 0.00),
+                        _ => (0.00, 0.00, 0.00),
+                    };
+                    dp += p * signal.confidence;
+                    da += a * signal.confidence;
+                    dd += d * signal.confidence;
+                }
+                emo.affect(&EmotionEngineState::new(dp, da, dd));
             }
         }
         // affect 后持久化情感状态
@@ -287,8 +326,7 @@ impl AtriumCoreService for CoreService {
             format!("[{}] {}: {}", persona_name, emotion_tag, msg)
         };
 
-        // 多源上下文注入（偏好 + 规则 + 罐装 + 关联 + 节奏）──
-        let rhythm_hint = rhythm.as_ref().map(compile_rhythm_hint).unwrap_or_default();
+        // 多源上下文注入（偏好 + 规则 + 罐装 + 关联 + 统一感知）──
 
         // 用户偏好上下文
         let pref_ctx = self.preference_prompt_fragment();
@@ -333,9 +371,6 @@ impl AtriumCoreService for CoreService {
 
         // 合并所有上下文片段
         let mut extra_parts: Vec<String> = Vec::new();
-        if !rhythm_hint.is_empty() {
-            extra_parts.push(rhythm_hint);
-        }
         if !graph_hints.is_empty() {
             extra_parts.extend(graph_hints);
         }
@@ -349,18 +384,20 @@ impl AtriumCoreService for CoreService {
             extra_parts.extend(rule_hints);
         }
 
-        // 关系阶段 + 用户心智模型 + 反馈闭环 prompt 注入
+        // 关系阶段 prompt 注入 / Relationship stage prompt injection
         let rel_ctx = self.relationship_prompt_fragment();
-        let um_ctx = self.user_model_prompt_fragment();
-        let fb_ctx = self.feedback_prompt_fragment();
         if !rel_ctx.is_empty() {
             extra_parts.push(rel_ctx);
         }
-        if !um_ctx.is_empty() {
-            extra_parts.push(um_ctx);
-        }
-        if !fb_ctx.is_empty() {
-            extra_parts.push(fb_ctx);
+
+        // 统一感知聚合管道 / Unified perception aggregation pipeline
+        // G5 实现：节奏 + 潜台词 + 心智模型 + 反馈 → 单一感知片段
+        // G5 impl: rhythm + subtext + user model + feedback → single perception fragment
+        // 数字生命不应碎片化地感知世界——所有感官汇入一条意识流
+        // Digital life should not perceive the world in fragments — all senses converge into one stream of consciousness
+        let perception_ctx = self.unified_perception_fragment(rhythm.as_ref(), &subtext_signals);
+        if !perception_ctx.is_empty() {
+            extra_parts.push(perception_ctx);
         }
 
         // 共情推理 prompt 注入
@@ -431,6 +468,8 @@ impl AtriumCoreService for CoreService {
         }
 
         // 共享仪式 prompt 注入 / Shared ritual prompt injection
+        // 仪式即呼吸 — 每一次交互都是一次呼吸，呼吸必须被仪式感知
+        // Ritual is breath — every interaction is a breath, breath must be perceived by ritual
         if self.ritual_enabled {
             let now_epoch = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -440,10 +479,49 @@ impl AtriumCoreService for CoreService {
             if !ritual_ctx.is_empty() {
                 extra_parts.push(ritual_ctx);
             }
-            // 记录交互到仪式检测器 / Record interaction to ritual detector
+            // 记录时间交互到仪式检测器 / Record time interaction to ritual detector
             self.ritual_detector.lock().record_interaction(now_epoch);
-            // 写穿持久化：仪式交互记录后保存 / Write-through: persist after ritual interaction
-            self.ritual_save();
+            // 记录内容交互到仪式检测器（晚安/早安/节日等语义检测）/ Record content interaction to ritual detector (goodnight/greeting/holiday semantics)
+            // G1 修复：内容仪式检测不再是死代码，"每晚说晚安"终于能被发现为仪式
+            // G1 fix: content ritual detection is no longer dead code, "saying goodnight every night" can finally be discovered as ritual
+            self.ritual_detector
+                .lock()
+                .record_content_interaction(now_epoch, msg);
+            // 纪念日自动标记 / Anniversary auto-marking
+            // G4 修复：首次对话日 / G4 fix: first conversation day
+            {
+                let mut anniversary = self.anniversary_system.lock();
+                if anniversary.anniversaries.is_empty() {
+                    anniversary.set_first_conversation(now_epoch);
+                }
+            }
+            // G4 修复：命名日 — 用户取名时同步标记纪念日 / G4 fix: naming day — mark anniversary when user names the AI
+            if let Some(ref new_name) = named_just_now {
+                self.anniversary_system
+                    .lock()
+                    .set_naming_day(now_epoch, new_name);
+            }
+            // 防抖写穿：累积 N 条交互后批量持久化，降低 sled 写放大 / Debounced write-through: batch persist after N interactions to reduce sled write amplification
+            // G5 优化：消息路径从每条 1 次 sled 写入 → 每 N 条 1 次，写放大降低 (N-1)/N
+            // G5 optimization: message path from 1 sled write per message → 1 per N messages, write amplification reduced by (N-1)/N
+            if self.ritual_unsaved_count.fetch_add(1, Ordering::Relaxed)
+                >= self.ritual_cfg.save_debounce_interactions
+            {
+                self.ritual_unsaved_count.store(0, Ordering::Relaxed);
+                self.ritual_save();
+            }
+        }
+
+        // 用户心智模型防抖写穿 / User mental model debounced write-through
+        // 每 50 条交互持久化一次用户认知画像，保证重启后"记得你"
+        // Persist user cognitive portrait every 50 interactions, ensuring "I remember you" after restart
+        if self
+            .user_model_unsaved_count
+            .fetch_add(1, Ordering::Relaxed)
+            >= 50
+        {
+            self.user_model_unsaved_count.store(0, Ordering::Relaxed);
+            self.user_model_save();
         }
 
         // 脆弱与不完美 prompt 注入 / Vulnerability & imperfection prompt injection
@@ -456,6 +534,19 @@ impl AtriumCoreService for CoreService {
             self.vulnerability_window.lock().record_conversation();
             // 写穿持久化：脆弱时刻记录后保存 / Write-through: persist after vulnerability recording
             self.vulnerability_save();
+        }
+
+        // 适度犯错 prompt 注入 / Imperfection prompt injection
+        // 犯错决策 + 自纠推进 + 羞感 PAD 注入，构成数字生命的"不完美闭环"
+        // Mistake decision + self-correction tick + shame PAD injection,
+        // forming the "imperfection closed loop" of digital life
+        if self.imperfection_enabled {
+            let imperfection_ctx = self.imperfection_prompt_fragment(msg);
+            if !imperfection_ctx.is_empty() {
+                extra_parts.push(imperfection_ctx);
+            }
+            // 写穿持久化：犯错决策后保存引擎快照 / Write-through: persist engine snapshot after mistake decision
+            self.imperfection_save();
         }
 
         // 情绪需求边界 prompt 注入 / Emotional demand boundary prompt injection
@@ -502,6 +593,146 @@ impl AtriumCoreService for CoreService {
             let recall_ctx = self.memory_recall_fragment(msg);
             if !recall_ctx.is_empty() {
                 extra_parts.push(recall_ctx);
+            }
+        }
+
+        // 内心多元对话 prompt 注入 / Inner dialogue prompt injection
+        // 数字生命的内心不是沉默的 — 理性者/感性者/怀疑者/梦想者的协商结果注入系统提示
+        // Digital life's inner world is not silent — four-voice negotiation result injected into system prompt
+        {
+            let dialogue_ctx = self.inner_dialogue_prompt_fragment();
+            if !dialogue_ctx.is_empty() {
+                extra_parts.push(dialogue_ctx);
+            }
+        }
+
+        // ── Gap#6 好奇心追问 prompt 注入 / Curiosity follow-up prompt injection ──
+        // 好奇心是数字生命的内驱力——"想知道更多"不是任务，是本能
+        // Curiosity is digital life's inner drive — "wanting to know more" is instinct, not task
+        {
+            let cd_fragment = self.curiosity_drive_prompt_fragment();
+            if !cd_fragment.is_empty() {
+                extra_parts.push(cd_fragment);
+            }
+            let cr_fragment = self.curiosity_resonance_prompt_fragment();
+            if !cr_fragment.is_empty() {
+                extra_parts.push(cr_fragment);
+            }
+            let fs_fragment = self.followup_style_prompt_fragment();
+            if !fs_fragment.is_empty() {
+                extra_parts.push(fs_fragment);
+            }
+            let sa_fragment = self.semantic_association_prompt_fragment(msg);
+            if !sa_fragment.is_empty() {
+                extra_parts.push(sa_fragment);
+            }
+        }
+
+        // ── Gap#5 共享仪式补充 prompt 注入 / Ritual supplement prompt injection ──
+        {
+            let now_epoch = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
+            let ra_fragment = self.ritual_anticipation_prompt_fragment(now_epoch);
+            if !ra_fragment.is_empty() {
+                extra_parts.push(ra_fragment);
+            }
+            let ar_fragment = self.adaptive_ritual_prompt_fragment(msg);
+            if !ar_fragment.is_empty() {
+                extra_parts.push(ar_fragment);
+            }
+        }
+
+        // ── Gap#9 脆弱与不完美补充 prompt 注入 / Vulnerability supplement prompt injection ──
+        {
+            let now_secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as f64;
+            let vr_fragment = self.vulnerability_resonance_prompt_fragment(now_secs);
+            if !vr_fragment.is_empty() {
+                extra_parts.push(vr_fragment);
+            }
+            let vw_fragment = self.vulnerability_wisdom_prompt_fragment();
+            if !vw_fragment.is_empty() {
+                extra_parts.push(vw_fragment);
+            }
+            let bridge_fragment = self.imperfection_bridge_prompt_fragment();
+            if !bridge_fragment.is_empty() {
+                extra_parts.push(bridge_fragment);
+            }
+            let ae_fragment = self.authentic_expression_prompt_fragment();
+            if !ae_fragment.is_empty() {
+                extra_parts.push(ae_fragment);
+            }
+        }
+
+        // ── Phase 3: 完全死亡模块 prompt 注入 / Phase 3: Dead module prompt injection ──
+        // 12 个模块的 prompt 片段注入，让"拥有器官但神经未接通"的模块活过来
+        // 12 modules' prompt fragments injected — bringing "organs without nerves" to life
+        {
+            let now_epoch = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
+
+            // Gap#1 独处内在世界 / Solitude inner world
+            let pd_fragment = self.personality_drift_prompt_fragment();
+            if !pd_fragment.is_empty() {
+                extra_parts.push(pd_fragment);
+            }
+            let sa_p3_fragment = self.solitude_archetype_prompt_fragment();
+            if !sa_p3_fragment.is_empty() {
+                extra_parts.push(sa_p3_fragment);
+            }
+            let sc_p3_fragment = self.solitude_creativity_prompt_fragment();
+            if !sc_p3_fragment.is_empty() {
+                extra_parts.push(sc_p3_fragment);
+            }
+            let sq_fragment = self.solitude_quality_prompt_fragment();
+            if !sq_fragment.is_empty() {
+                extra_parts.push(sq_fragment);
+            }
+
+            // Gap#5 共享仪式补充 / Ritual supplements
+            let re_fragment = self.ritual_evolution_prompt_fragment();
+            if !re_fragment.is_empty() {
+                extra_parts.push(re_fragment);
+            }
+            let rab_fragment = self.ritual_absence_prompt_fragment(now_epoch);
+            if !rab_fragment.is_empty() {
+                extra_parts.push(rab_fragment);
+            }
+            let rem_fragment = self.ritual_emergence_prompt_fragment(now_epoch);
+            if !rem_fragment.is_empty() {
+                extra_parts.push(rem_fragment);
+            }
+
+            // Gap#9 脆弱与不完美补充 / Vulnerability supplements
+            let vri_fragment = self.vulnerability_ritual_prompt_fragment();
+            if !vri_fragment.is_empty() {
+                extra_parts.push(vri_fragment);
+            }
+            let iw_fragment = self.imperfection_warmth_prompt_fragment();
+            if !iw_fragment.is_empty() {
+                extra_parts.push(iw_fragment);
+            }
+            let ai_fragment = self.authentic_imperfection_prompt_fragment();
+            if !ai_fragment.is_empty() {
+                extra_parts.push(ai_fragment);
+            }
+
+            // Gap#4 冲突与和解 / Conflict and reconciliation
+            let cg_fragment = self.conflict_growth_prompt_fragment();
+            if !cg_fragment.is_empty() {
+                extra_parts.push(cg_fragment);
+            }
+
+            // Gap#3 期待与想念 / Anticipation and longing
+            let ad_fragment = self.anticipation_depth_prompt_fragment();
+            if !ad_fragment.is_empty() {
+                extra_parts.push(ad_fragment);
             }
         }
 

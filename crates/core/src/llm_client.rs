@@ -572,6 +572,7 @@ mod tests {
     fn test_trait_signature_accepts_option_system_prompt() {
         // P1-4: 验证 trait 签名接受 Option<&str> system_prompt
         // P1-4: Verify trait signature accepts Option<&str> system_prompt
+        #[allow(clippy::let_underscore_future)]
         fn _check_generate<T: LlmClientTrait>(client: &T) {
             let _ = client.generate(
                 LlmCallKind::RoomChat,

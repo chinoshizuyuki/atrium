@@ -383,15 +383,6 @@ mod tests {
         }
     }
 
-    fn deep() -> RelationshipStage {
-        RelationshipStage::Deep {
-            since: 0,
-            interactions: 1000,
-            shared_references: 30,
-            key_moments: 10,
-        }
-    }
-
     fn acq() -> RelationshipStage {
         RelationshipStage::Acquaintance {
             since: 0,

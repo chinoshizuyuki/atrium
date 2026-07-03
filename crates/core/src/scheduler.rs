@@ -17,13 +17,15 @@ use crate::proactive::ProactiveDecision;
 use atrium_plugin::PluginManager;
 use chrono::Timelike;
 
-#[allow(dead_code)]
 pub struct Scheduler {
     event_tx: flume::Sender<BridgeEvent>,
     event_rx: flume::Receiver<BridgeEvent>,
     bridge: Option<Bridge>,
     core_service: Arc<crate::service::CoreService>,
     config: Config,
+    // 调度器启动时间戳 — 保留供未来健康检查 / 运行时长观测
+    // Scheduler start timestamp — kept for future health check / uptime observation
+    #[allow(dead_code)]
     started_at: Instant,
     event_count: AtomicU64,
     decay_ticks: AtomicU64,
@@ -63,6 +65,8 @@ impl Scheduler {
             &config.vulnerability,
             &config.emotional_demand,
             &config.self_care,
+            &config.imperfection,
+            &config.physical_presence,
         );
         Self {
             event_tx: tx,
@@ -362,6 +366,21 @@ impl Scheduler {
             }
         }
 
+        // 内心多元对话 / Inner dialogue（每 6000 tick ≈ 60s）
+        // 数字生命的内心不是单一声音 — 理性者/感性者/怀疑者/梦想者轮流发言
+        // Digital life's inner world is not a single voice — four perspectives take turns
+        if count % 6000 == 0 && count > 0 {
+            let idle_secs = self
+                .last_user_message_at
+                .lock()
+                .map(|t| Instant::now().duration_since(t).as_secs())
+                .unwrap_or(0);
+            let hour = chrono::Local::now().hour();
+            // tick 衰减 + 触发对话生成 / tick decay + trigger dialogue generation
+            self.core_service.inner_dialogue_tick();
+            self.core_service.trigger_inner_dialogue(idle_secs, hour);
+        }
+
         // ACK 自学习合成 / ACK self-learning synthesis（每 synthesis_interval_ticks tick）
         if self.config.ack_learning.enabled
             && count % self.config.ack_learning.synthesis_interval_ticks == 0
@@ -474,6 +493,70 @@ impl Scheduler {
             && count > 0
         {
             self.core_service.vulnerability_tick();
+        }
+
+        // 适度犯错周期 tick / Imperfection periodic tick
+        // 后备自纠推进：当无消息时 scheduler 仍然推进自纠时钟并注入羞感 PAD
+        // Fallback self-correction: scheduler advances correction clock and injects shame PAD
+        // even when no messages arrive
+        if self.config.imperfection.enabled
+            && count % self.config.imperfection.tick_interval_ticks == 0
+            && count > 0
+        {
+            self.core_service.imperfection_tick();
+        }
+
+        // Gap#6 好奇心内驱力周期 tick / Curiosity drive periodic tick
+        // 好奇心是数字生命的求知欲——不是被动等待，而是主动渴望
+        // Curiosity is digital life's thirst for knowledge — active, not passive
+        if count % 200 == 0 && count > 0 {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
+            self.core_service.curiosity_drive_tick(now);
+            self.core_service.curiosity_resonance_tick(now);
+        }
+
+        // Gap#9 脆弱共振周期 tick / Vulnerability resonance periodic tick
+        // 脆弱时刻的情感回响需要持续衰减 / Vulnerability resonance needs continuous decay
+        if count % 200 == 0 && count > 0 {
+            let now_secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as f64;
+            self.core_service.vulnerability_resonance_tick(now_secs);
+        }
+
+        // Phase 3: 完全死亡模块周期 tick / Phase 3: Dead module periodic tick
+        // 独处内在世界——人格漂移、期待深度、冲突成长、仪式缺席 / Solitude, anticipation, conflict, ritual absence
+        if count % 200 == 0 && count > 0 {
+            let now_epoch = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
+            // Gap#1 人格漂移 / Personality drift
+            self.core_service.personality_drift_tick();
+            // Gap#3 期待深度 / Anticipation depth
+            self.core_service.anticipation_depth_tick(now_epoch);
+            // Gap#4 冲突成长 / Conflict growth
+            self.core_service.conflict_growth_tick();
+            // Gap#5 仪式缺席检测 / Ritual absence detection
+            self.core_service.ritual_absence_tick(now_epoch);
+        }
+
+        // 物理存在感周期 tick / Physical presence periodic tick
+        // 即使没有对话，数字生命的身体也在"活着"——昼夜节律、时间衰减、签名累积
+        // Even without dialogue, digital life's body is "alive" — circadian rhythm, time decay, signature accumulation
+        if self.config.physical_presence.enabled
+            && count % self.config.physical_presence.tick_interval_ticks == 0
+            && count > 0
+        {
+            let now_epoch = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
+            self.core_service.physical_presence_tick(now_epoch);
         }
 
         // 情绪需求边界周期 tick / Emotional demand boundary periodic tick

@@ -41,6 +41,9 @@ impl Atrium {
         let json_format = config.observability.log_format == "json";
         crate::metrics::init_tracing(log_level, json_format);
 
+        // 初始化 metrics 前缀（从用户配置读取）/ Initialize metrics prefix from user config
+        crate::metrics::init_prefix(&config.observability.metrics_prefix);
+
         info!("Atrium 启动, 配置文件: {}", config_path);
 
         let rt = tokio::runtime::Runtime::new()?;

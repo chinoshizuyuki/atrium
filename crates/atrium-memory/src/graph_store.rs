@@ -167,16 +167,6 @@ mod tests {
         GraphStore::new(path.to_str().unwrap()).unwrap()
     }
 
-    fn make_temp_store_with_path() -> (GraphStore, String) {
-        let id = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
-        let path =
-            std::env::temp_dir().join(format!("atrium_graph_test_{}_{}", std::process::id(), id));
-        let _ = std::fs::remove_dir_all(&path);
-        let path_str = path.to_str().unwrap().to_string();
-        let store = GraphStore::new(&path_str).unwrap();
-        (store, path_str)
-    }
-
     #[test]
     fn test_save_and_load() {
         let store = make_temp_store();

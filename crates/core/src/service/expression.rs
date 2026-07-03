@@ -41,7 +41,20 @@ impl CoreService {
             topic_gravity,
         );
         let expr = ExpressionOrchestrator::orchestrate(&ctx, user_msg, pad, 100);
-        ExpressionOrchestrator::build_system_prompt_injection(&expr)
+        let mut fragment = ExpressionOrchestrator::build_system_prompt_injection(&expr);
+
+        // 严格一致性模式：coherence 失败时附加强制修正指令
+        // Strict coherence mode: append mandatory correction directive when coherence fails
+        if self.expression_cfg.coherence_strict && !expr.coherence.is_coherent {
+            let warnings: Vec<&str> = expr.coherence.warnings.iter().map(|s| s.as_str()).collect();
+            fragment.push_str(&format!(
+                " [严格一致性/StrictCoherence] 检测到 {} 项不一致：{}，请务必修正表达方式使其与情绪状态一致。",
+                warnings.len(),
+                warnings.join("；")
+            ));
+        }
+
+        fragment
     }
 
     pub fn expression_post_process(&self, text: &str) -> String {
@@ -51,11 +64,101 @@ impl CoreService {
         LinguisticProfile::neutral().post_process(text)
     }
 
+    /// 风格记忆周期学习 / Style memory periodic learning
+    ///
+    /// 每 style_memory_interval_ticks tick 由 scheduler.rs 调用。
+    /// 从 FeedbackLoop 收集最近反馈信号，转化为 StyleOffset 更新并持久化。
+    /// 热路径：仅读 feedback.recent_signals() + 写 style_offset_cache，O(Signals) <1μs。
+    ///
+    /// Called every style_memory_interval_ticks ticks by scheduler.rs.
+    /// Collects recent feedback signals from FeedbackLoop, converts to StyleOffset
+    /// updates, and persists. Hot-path: only reads feedback.recent_signals() +
+    /// writes style_offset_cache, O(Signals) <1μs.
     pub fn tick_style_memory(&self) {
-        // 风格记忆周期学习：当前为占位实现
-        // 完整实现需要从反馈回路收集用户偏好信号，调用 StyleMemoryStore::apply_positive/negative_feedback_and_save
-        // 此方法由 scheduler.rs 每 style_memory_interval_ticks tick 调用一次
-        tracing::debug!("[Expression] StyleMemory tick (placeholder)");
+        use atrium_memory::style_modulator::StyleEmbedding;
+
+        // 1. 收集反馈信号 / Collect feedback signals
+        let signals = self.feedback.lock().recent_signals().to_vec();
+        if signals.is_empty() {
+            return;
+        }
+
+        // 2. 统计正/负反馈数量 / Count positive/negative feedback
+        let (positive_count, negative_count): (usize, usize) =
+            signals.iter().fold((0, 0), |(pos, neg), s| {
+                use atrium_memory::feedback::FeedbackSignal;
+                match s {
+                    FeedbackSignal::Praise { .. } | FeedbackSignal::Deepening { .. } => {
+                        (pos + 1, neg)
+                    }
+                    FeedbackSignal::Correction { .. } | FeedbackSignal::Frustration { .. } => {
+                        (pos, neg + 1)
+                    }
+                    _ => (pos, neg),
+                }
+            });
+
+        if positive_count == 0 && negative_count == 0 {
+            return;
+        }
+
+        // 3. 若无持久化存储，仅更新缓存 / If no persistent store, only update cache
+        if let Some(ref store) = self.style_memory_store {
+            // 当前情感 PAD → 风格嵌入（基于 PAD 调制零嵌入）/ Current PAD → style embedding (modulated from zero)
+            let pad = {
+                let emo = self.emotion.lock();
+                let c = emo.current();
+                [c.pleasure, c.arousal, c.dominance]
+            };
+            // 风格嵌入 = 零基 + PAD 调制：P→warmth, A→energy, D→formality
+            // Style embedding = zero-base + PAD modulation: P→warmth, A→energy, D→formality
+            let mut style_data = [0.0f32; atrium_memory::style_modulator::STYLE_DIM];
+            if style_data.len() >= 3 {
+                style_data[0] = pad[0] * 0.3; // 愉悦→温暖 / Pleasure→warmth
+                style_data[1] = pad[1] * 0.3; // 唤醒→能量 / Arousal→energy
+                style_data[2] = pad[2] * 0.2; // 优势→正式度 / Dominance→formality
+            }
+            let current_style = StyleEmbedding(style_data);
+
+            // 正反馈：偏移向当前风格方向 / Positive feedback: offset toward current style
+            if positive_count > 0 {
+                let target_style = current_style.clone();
+                if let Ok(new_offset) =
+                    store
+                        .lock()
+                        .apply_positive_and_save("default", &target_style, &current_style)
+                {
+                    *self.style_offset_cache.lock() = new_offset.clone();
+                    tracing::debug!(
+                        "[StyleMemory] 正反馈×{}: offset norm={:.4}",
+                        positive_count,
+                        new_offset.norm()
+                    );
+                }
+            }
+
+            // 负反馈：偏移远离当前风格方向 / Negative feedback: offset away from current style
+            if negative_count > 0 {
+                let rejected_style = current_style.clone();
+                if let Ok(new_offset) =
+                    store
+                        .lock()
+                        .apply_negative_and_save("default", &rejected_style, &current_style)
+                {
+                    *self.style_offset_cache.lock() = new_offset.clone();
+                    tracing::debug!(
+                        "[StyleMemory] 负反馈×{}: offset norm={:.4}",
+                        negative_count,
+                        new_offset.norm()
+                    );
+                }
+            }
+        }
+    }
+
+    /// 获取当前风格偏移缓存（零锁热路径读）/ Get current style offset cache (zero-lock hot-path read)
+    pub fn style_offset(&self) -> StyleOffset {
+        self.style_offset_cache.lock().clone()
     }
 
     pub fn expression_timing_urgency(&self) -> f32 {

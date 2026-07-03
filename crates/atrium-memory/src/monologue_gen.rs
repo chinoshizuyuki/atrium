@@ -19,7 +19,7 @@
 //!   → engine.add_thought(thought)
 //! ```
 
-use crate::inner_monologue::{InnerThought, ThoughtMode};
+use crate::inner_monologue::{EmotionResonantSelector, InnerThought, ThoughtMode};
 use crate::llm_client::{LlmCallKind, LlmClient, LlmError};
 use crate::maturity::EmotionContext;
 use crate::prompts;
@@ -546,6 +546,92 @@ pub fn get_neighbors_for_seed(
     top_k: usize,
 ) -> Vec<(String, f64)> {
     graph.related(seed_content, top_k)
+}
+
+// ── G5: 情绪回响种子选取 / Emotion-Resonant Seed Selection ──
+
+/// 情绪回响种子选取 — 情绪影响记忆种子的选取偏好
+/// Emotion-resonant seed selection — Emotion influences seed node preference.
+///
+/// 与 `pick_seed_node` 不同，此函数综合考虑情绪共鸣得分和访问量，
+/// 优先选取与当前情绪状态共鸣最强的节点。
+/// Unlike `pick_seed_node`, this function combines emotion resonance score
+/// with access count, preferring nodes that resonate most with the current emotion.
+///
+/// # 算法 / Algorithm
+/// 1. 计算每个候选节点的综合得分 = emotion_weight × emotion_score + access_weight × access_score
+/// 2. 按综合得分加权随机选择
+///
+/// # 性能 / Performance
+/// O(N) 遍历节点 + O(N) 加权选择，热路径无堆分配
+pub fn pick_emotion_resonant_seed(
+    nodes: &std::collections::HashMap<String, crate::associative::GraphNode>,
+    selector: &EmotionResonantSelector,
+    pleasure: f64,
+    arousal: f64,
+    rng: &mut impl rand::Rng,
+) -> Option<(String, String)> {
+    if nodes.is_empty() {
+        return None;
+    }
+
+    // 收集候选节点 / Collect candidate nodes
+    let candidates: Vec<_> = nodes
+        .iter()
+        .filter(|(_, node)| node.access_count > 0)
+        .collect();
+
+    if candidates.is_empty() {
+        // 所有节点访问量为 0，随机选一个 / All nodes have 0 access, pick randomly
+        let idx = rng.gen_range(0..nodes.len());
+        let node = nodes.values().nth(idx)?;
+        return Some((node.id.clone(), node.content.clone()));
+    }
+
+    // 计算最大访问量用于归一化 / Compute max access count for normalization
+    let max_access: u64 = candidates
+        .iter()
+        .map(|(_, n)| n.access_count)
+        .max()
+        .unwrap_or(1);
+
+    // 计算每个候选节点的综合得分 / Compute composite score for each candidate
+    // 得分 × 1000 转为整数权重，避免浮点加权随机 / Score × 1000 as integer weight
+    let weights: Vec<u64> = candidates
+        .iter()
+        .map(|(_, node)| {
+            let score = selector.resonance_score(
+                pleasure,
+                arousal,
+                &node.content,
+                node.access_count,
+                max_access,
+            );
+            // 映射到 [1, 1000] 避免零权重 / Map to [1, 1000] to avoid zero weight
+            ((score * 1000.0).round() as u64).max(1)
+        })
+        .collect();
+
+    let total_weight: u64 = weights.iter().sum();
+    if total_weight == 0 {
+        let idx = rng.gen_range(0..candidates.len());
+        let (id, node) = candidates[idx];
+        return Some((id.clone(), node.content.clone()));
+    }
+
+    // 加权随机选择 / Weighted random selection
+    let mut roll = rng.gen_range(0..total_weight);
+    for (i, w) in weights.iter().enumerate() {
+        if roll < *w {
+            let (id, node) = candidates[i];
+            return Some((id.clone(), node.content.clone()));
+        }
+        roll -= *w;
+    }
+
+    // 兜底 / Fallback
+    let (id, node) = candidates[0];
+    Some((id.clone(), node.content.clone()))
 }
 
 /// 从 InnerMonologueEngine 的最近思考中提取文本摘要

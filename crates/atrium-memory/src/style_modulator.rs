@@ -714,15 +714,6 @@ mod tests {
         }
     }
 
-    fn trusted() -> RelationshipStage {
-        RelationshipStage::Trusted {
-            since: 0,
-            interactions: 200,
-            shared_references: 15,
-            key_moments: 2,
-        }
-    }
-
     fn deep() -> RelationshipStage {
         RelationshipStage::Deep {
             since: 0,

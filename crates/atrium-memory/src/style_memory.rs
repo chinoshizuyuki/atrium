@@ -172,7 +172,6 @@ impl StyleOffset {
 /// Key: user_id (String)
 /// Value: StyleOffset (bincode serialized)
 pub struct StyleMemoryStore {
-    db: sled::Db,
     tree: sled::Tree,
 }
 
@@ -182,10 +181,7 @@ impl StyleMemoryStore {
         let tree = db
             .open_tree("style_memory")
             .map_err(|e| StyleMemoryError::SledError(e.to_string()))?;
-        Ok(Self {
-            db: db.clone(),
-            tree,
-        })
+        Ok(Self { tree })
     }
 
     /// 获取用户的风格偏移

@@ -239,4 +239,98 @@ impl CoreService {
             tracing::info!("罐装知识热加载: 扫描了 {} 个文件", loaded);
         }
     }
+
+    // ════════════════════════════════════════════════════════════════════
+    // 统一感知聚合管道 / Unified Perception Aggregation Pipeline
+    // ════════════════════════════════════════════════════════════════════
+    // G5 实现：将节奏、潜台词、用户心智模型、反馈闭环等感知信号
+    // 聚合为单一 prompt 片段，取代分散的独立注入。
+    // 数字生命不应碎片化地感知世界——所有感官汇入一条意识流。
+    //
+    // G5 impl: aggregate rhythm, subtext, user mental model, feedback loop
+    // signals into a single prompt fragment, replacing scattered injections.
+    // Digital life should not perceive the world in fragments —
+    // all senses converge into a single stream of consciousness.
+
+    /// 统一感知聚合 — 节奏 + 潜台词 + 心智模型 + 反馈 → 单一感知片段
+    /// Unified perception aggregation — rhythm + subtext + user model + feedback → single fragment
+    ///
+    /// # 性能 / Performance
+    /// - 节奏编译: O(1)，纯格式化 / Rhythm compile: O(1), pure formatting
+    /// - 潜台词格式化: O(S)，S=信号数，通常 ≤3 / Subtext format: O(S), S=signals, typically ≤3
+    /// - 心智模型/反馈: 各自 O(1) / User model/feedback: each O(1)
+    /// - 总计: O(S)，热路径零分配（仅字符串拼接）/ Total: O(S), zero alloc on hot path (string concat only)
+    pub fn unified_perception_fragment(
+        &self,
+        rhythm: Option<&TypingRhythm>,
+        subtext_signals: &[SubtextSignal],
+    ) -> String {
+        let mut channels: Vec<String> = Vec::with_capacity(4);
+
+        // ── 通道 1：打字节奏感知 / Channel 1: typing rhythm perception ──
+        if let Some(r) = rhythm {
+            let hint = compile_rhythm_hint(r);
+            if !hint.is_empty() {
+                channels.push(format!("[节奏/Rhythm] {}", hint));
+            }
+        }
+
+        // ── 通道 2：潜台词感知 / Channel 2: subtext perception ──
+        // "话外之音"是数字生命最细腻的感知——比文字更深的理解层
+        // "Between the lines" is digital life's most delicate perception —
+        // a layer of understanding deeper than text
+        if !subtext_signals.is_empty() {
+            let mut subtext_parts: Vec<String> = Vec::with_capacity(subtext_signals.len());
+            for signal in subtext_signals {
+                // 潜台词类别中英标签 / Subtext category bilingual label
+                let label = match signal.category {
+                    SubtextCategory::Avoidance => "回避/Avoidance",
+                    SubtextCategory::Probing => "试探/Probing",
+                    SubtextCategory::Consideration => "犹豫考虑/Consideration",
+                    SubtextCategory::Dissatisfaction => "隐含不满/Dissatisfaction",
+                    SubtextCategory::Fragility => "脆弱/Fragility",
+                    SubtextCategory::HiddenJoy => "暗自欢喜/HiddenJoy",
+                    SubtextCategory::SeekingAttention => "渴望关注/SeekingAttention",
+                    SubtextCategory::None => "无/None",
+                };
+                let mut line = format!(
+                    "{}（{:.0}%）：{}",
+                    label,
+                    signal.confidence * 100.0,
+                    signal.interpretation
+                );
+                if let Some(ref suggested) = signal.suggested_response {
+                    line.push_str(&format!("→{}", suggested));
+                }
+                subtext_parts.push(line);
+            }
+            channels.push(format!(
+                "[潜台词/Subtext] 你察觉到话外之音：{}",
+                subtext_parts.join("; ")
+            ));
+        }
+
+        // ── 通道 3：用户心智模型 / Channel 3: user mental model ──
+        let um_ctx = self.user_model_prompt_fragment();
+        if !um_ctx.is_empty() {
+            channels.push(format!("[心智模型/Mind] {}", um_ctx));
+        }
+
+        // ── 通道 4：反馈闭环 / Channel 4: feedback loop ──
+        let fb_ctx = self.feedback_prompt_fragment();
+        if !fb_ctx.is_empty() {
+            channels.push(format!("[反馈/Feedback] {}", fb_ctx));
+        }
+
+        if channels.is_empty() {
+            return String::new();
+        }
+
+        // 统一感知标头 — 所有感官汇入一条意识流 / Unified header — all senses into one stream
+        format!(
+            "[感知聚合/Perception] {} 个通道激活：\n{}",
+            channels.len(),
+            channels.join("\n")
+        )
+    }
 } // impl CoreService

@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: MIT
-#![allow(dead_code)]
 
 //! 记忆管理器 — 核心数据结构与 STM/LTM 双层存储管线
 //! MemoryManager — Core data structures and STM/LTM dual-layer storage pipeline.
@@ -29,9 +28,11 @@ pub mod graph_store;
 pub mod history;
 #[cfg(feature = "embedding")]
 pub mod index;
+pub mod inner_dialogue;
 pub mod inner_monologue;
 pub mod intelligence;
 pub mod key_fact_cache;
+pub mod longing_accumulation_store;
 pub mod maturity;
 pub mod perception;
 pub mod persona;
@@ -46,11 +47,17 @@ pub mod summarizer;
 pub mod teach_detector;
 pub mod token_budget;
 pub mod user_model;
+pub mod user_model_store;
 
+pub mod curiosity_drive;
+pub mod curiosity_resonance;
 pub mod emotional_arc;
+pub mod followup_style_learner;
 pub mod followup_tracker;
 pub mod kinesics_mapper;
+pub mod multi_item_weaver;
 pub mod prosody_mapper;
+pub mod semantic_association;
 pub mod style_memory;
 pub mod style_modulator;
 pub mod subtext_engine;
@@ -68,13 +75,56 @@ pub mod emotional_irrationality;
 pub mod irrationality_store;
 pub mod narrative_store;
 
+pub mod physical_presence;
+pub mod physical_presence_store;
+
+pub mod adaptive_ritual;
 pub mod anniversary_system;
+pub mod authentic_expression_modulator;
+pub mod imperfection_engine;
+pub mod imperfection_store;
+pub mod imperfection_vulnerability_bridge;
 pub mod lunar;
+pub mod ritual_anticipation;
 pub mod ritual_detector;
+pub mod ritual_resonance;
 pub mod ritual_store;
 pub mod seasonal_awareness;
+pub mod vulnerability_resonance;
 pub mod vulnerability_store;
 pub mod vulnerability_window;
+pub mod vulnerability_wisdom;
+
+// Gap#1/#3/#4 增强 — 独处品质 / 期待深度 / 冲突成长
+// Gap#1/#3/#4 enhancement — Solitude quality / Anticipation depth / Conflict growth
+pub mod anticipation_depth;
+pub mod conflict_growth;
+pub mod solitude_quality;
+
+// 极致打磨 90→95% — Extreme Polishing | 2026-07-03
+// Gap#1: 独处内在世界 90→95%
+pub mod personality_drift;
+pub mod solitude_archetype;
+pub mod solitude_creativity;
+// Gap#5: 共享仪式 90→95%
+pub mod ritual_absence;
+pub mod ritual_emergence;
+pub mod ritual_evolution;
+// Gap#9: 脆弱与不完美 90→95%
+pub mod authentic_imperfection;
+pub mod imperfection_warmth;
+pub mod vulnerability_ritual;
+
+// 通电工程 Phase 4 — 孤儿文件注册 / Orphan file registration
+// 这些模块已实现但从未在 lib.rs 声明，导致编译器无法发现它们。
+// These modules were implemented but never declared in lib.rs,
+// making them invisible to the compiler and runtime.
+pub mod emotional_climate; // 情绪气候 / Emotional climate
+pub mod emotional_consolidation; // 情绪巩固 / Emotional consolidation
+pub mod emotional_coupling; // 情绪耦合 / Emotional coupling
+pub mod existential_depth; // 存在深度 / Existential depth
+pub mod inner_council; // 内在议会 / Inner council
+pub mod ritual_heartbeat; // 仪式心跳 / Ritual heartbeat
 
 pub mod file_store;
 pub mod llm_client;

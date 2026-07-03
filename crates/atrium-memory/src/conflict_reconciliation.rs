@@ -1191,6 +1191,16 @@ pub struct ConflictManager {
     pub apology: ApologyEngine,
     /// 冲突状态 / Conflict state
     pub state: ConflictState,
+    /// 主动和解管线 (G1) / Proactive reconciler (G1)
+    pub proactive_reconciler: ProactiveReconciler,
+    /// 冲突↔情绪双向闭环 (G2) / Conflict↔emotion PAD bridge (G2)
+    pub pad_bridge: ConflictPadBridge,
+    /// 待写入叙事的修复事件 (G3) / Pending repair events for narrative (G3)
+    pub pending_repairs: Vec<RepairEvent>,
+    /// 冲突恢复曲线 (G4) / Conflict recovery curve (G4)
+    pub recovery_curve: RecoveryCurve,
+    /// 和解仪式 (G5) / Reconciliation ritual (G5)
+    pub ritual: Option<ReconciliationRitual>,
 }
 
 impl Default for ConflictManager {
@@ -1212,6 +1222,11 @@ impl ConflictManager {
             reconciliation: ReconciliationCraft::new(config.reconciliation),
             apology: ApologyEngine::new(),
             state: ConflictState::default(),
+            proactive_reconciler: ProactiveReconciler::default(),
+            pad_bridge: ConflictPadBridge::default(),
+            pending_repairs: Vec::new(),
+            recovery_curve: RecoveryCurve::default(),
+            ritual: None,
         }
     }
 
@@ -1240,6 +1255,8 @@ impl ConflictManager {
         } else {
             self.state.consecutive_turns += 1;
             self.state.total_conflicts += 1;
+            // G4: 冲突发生时衰减恢复曲线 / G4: Decay recovery curve on conflict
+            self.recovery_curve.on_conflict(self.state.max_intensity);
         }
         self.state.active_conflicts = all_signals.clone();
         self.state.refresh_max_intensity();
@@ -1249,10 +1266,48 @@ impl ConflictManager {
             .escalation
             .process(&all_signals, self.state.consecutive_turns);
 
+        // G2: 情绪改善触发降级 / G2: Emotion improvement triggers de-escalation
+        if self
+            .pad_bridge
+            .should_de_escalate(pleasure, arousal, self.state.in_conflict())
+        {
+            self.escalation.force_de_escalate();
+        }
+
         // 第四步：和解 / Step 4: Reconciliation
         let reconciliation =
             self.reconciliation
                 .reconcile(&all_signals, stage, self.state.consecutive_turns);
+
+        // G3: 和解发生时记录修复事件 / G3: Record repair event on reconciliation
+        if let Some(ref recon) = reconciliation {
+            let primary_type = all_signals
+                .iter()
+                .max_by(|a, b| a.intensity.cmp(&b.intensity))
+                .map(|s| s.conflict_type)
+                .unwrap_or(ConflictType::FactualDisagreement);
+            self.pending_repairs.push(RepairEvent::new(
+                primary_type,
+                recon.strategy,
+                escalated,
+                now_ts,
+            ));
+            // 更新和解时间戳 / Update reconciliation timestamp
+            self.state.last_reconciliation_ts = Some(now_ts);
+            // G4: 和解恢复健康度 / G4: Recover health on reconciliation
+            self.recovery_curve
+                .on_reconciliation(recon.expected_de_escalation);
+        }
+
+        // G5: 冲突发生时启动和解仪式 / G5: Start reconciliation ritual on conflict
+        if self.state.in_conflict() && self.ritual.is_none() {
+            let primary_type = all_signals
+                .iter()
+                .max_by(|a, b| a.intensity.cmp(&b.intensity))
+                .map(|s| s.conflict_type)
+                .unwrap_or(ConflictType::FactualDisagreement);
+            self.ritual = Some(ReconciliationRitual::new(primary_type, now_ts));
+        }
 
         // 第五步：道歉（仅高强度冲突） / Step 5: Apology (only for high-intensity conflicts)
         let apology = if escalated >= ConflictIntensity::Severe {
@@ -1293,56 +1348,131 @@ impl ConflictManager {
     /// 生成冲突感知的 Prompt 注入片段
     /// Generate conflict-aware prompt injection fragment
     pub fn to_prompt_fragment(&self) -> String {
-        if !self.state.in_conflict() {
+        if !self.state.in_conflict() && self.ritual.is_none() {
             return String::new();
         }
 
         let mut parts = Vec::new();
 
         // 当前冲突等级 / Current conflict level
-        parts.push(format!(
-            "[冲突状态/Conflict] 当前等级: {}",
-            self.state.max_intensity
-        ));
+        if self.state.in_conflict() {
+            parts.push(format!(
+                "[冲突状态/Conflict] 当前等级: {}",
+                self.state.max_intensity
+            ));
 
-        // 连续轮次 / Consecutive turns
-        if self.state.consecutive_turns > 0 {
-            parts.push(format!("连续冲突轮次: {}", self.state.consecutive_turns));
+            // 连续轮次 / Consecutive turns
+            if self.state.consecutive_turns > 0 {
+                parts.push(format!("连续冲突轮次: {}", self.state.consecutive_turns));
+            }
+
+            // 活跃冲突类型 / Active conflict types
+            let types: Vec<String> = self
+                .state
+                .active_conflicts
+                .iter()
+                .map(|s| format!("{:?}", s.conflict_type))
+                .collect();
+            if !types.is_empty() {
+                parts.push(format!("冲突类型: {}", types.join(", ")));
+            }
+
+            // 升级状态 / Escalation state
+            if self.escalation.is_escalated() {
+                parts.push("⚠ 冲突已升级，需要谨慎回应".to_string());
+            }
+
+            // G4: 关系健康度 / G4: Relationship health
+            if self.recovery_curve.is_fragile() {
+                parts.push(format!(
+                    "⚠ 关系脆弱(健康度: {:.0}%)，需要特别小心",
+                    self.recovery_curve.health_level() * 100.0
+                ));
+            }
+
+            // 行为指引 / Behavioral guidance
+            match self.state.max_intensity {
+                ConflictIntensity::Trivial | ConflictIntensity::Mild => {
+                    parts.push("建议: 保持温和，适度澄清".to_string());
+                }
+                ConflictIntensity::Moderate => {
+                    parts.push("建议: 主动寻找共同点，避免对抗".to_string());
+                }
+                ConflictIntensity::Severe => {
+                    parts.push("建议: 优先降级，表达理解，必要时道歉".to_string());
+                }
+                ConflictIntensity::Critical => {
+                    parts.push("建议: 立即道歉+退一步，保护关系".to_string());
+                }
+            }
         }
 
-        // 活跃冲突类型 / Active conflict types
-        let types: Vec<String> = self
-            .state
-            .active_conflicts
-            .iter()
-            .map(|s| format!("{:?}", s.conflict_type))
-            .collect();
-        if !types.is_empty() {
-            parts.push(format!("冲突类型: {}", types.join(", ")));
-        }
-
-        // 升级状态 / Escalation state
-        if self.escalation.is_escalated() {
-            parts.push("⚠ 冲突已升级，需要谨慎回应".to_string());
-        }
-
-        // 行为指引 / Behavioral guidance
-        match self.state.max_intensity {
-            ConflictIntensity::Trivial | ConflictIntensity::Mild => {
-                parts.push("建议: 保持温和，适度澄清".to_string());
-            }
-            ConflictIntensity::Moderate => {
-                parts.push("建议: 主动寻找共同点，避免对抗".to_string());
-            }
-            ConflictIntensity::Severe => {
-                parts.push("建议: 优先降级，表达理解，必要时道歉".to_string());
-            }
-            ConflictIntensity::Critical => {
-                parts.push("建议: 立即道歉+退一步，保护关系".to_string());
+        // G5: 和解仪式指引 / G5: Reconciliation ritual guidance
+        if let Some(ref ritual) = self.ritual {
+            if ritual.is_active() {
+                parts.push(ritual.to_prompt_fragment());
             }
         }
 
         parts.join("\n")
+    }
+
+    // ---- G1~G5 扩展方法 / G1~G5 extension methods ----
+
+    /// G1: 主动和解 / G1: Proactive reconciliation
+    pub fn proactive_reconcile(
+        &mut self,
+        stage: &RelationshipStage,
+        now_ts: i64,
+    ) -> Option<ReconciliationResult> {
+        self.proactive_reconciler
+            .proactive_reconcile(&self.state, stage, now_ts)
+    }
+
+    /// G2: 获取冲突对情绪的PAD增量 / G2: Get PAD delta from conflict
+    pub fn conflict_pad_delta(&self) -> (f32, f32, f32) {
+        self.pad_bridge.conflict_pad_delta(&self.state)
+    }
+
+    /// G3: 取出并清空待写入叙事的修复事件 / G3: Take and clear pending repair events
+    pub fn take_repair_events(&mut self) -> Vec<RepairEvent> {
+        std::mem::take(&mut self.pending_repairs)
+    }
+
+    /// G4: 恢复曲线周期 tick / G4: Recovery curve periodic tick
+    pub fn tick_recovery(&mut self, stage: &RelationshipStage, now_ts: i64) {
+        self.recovery_curve.tick(stage, now_ts);
+    }
+
+    /// G5: 推进和解仪式 / G5: Advance reconciliation ritual
+    pub fn advance_ritual(&mut self, now_ts: i64) -> bool {
+        if let Some(ref mut ritual) = self.ritual {
+            let advanced = ritual.try_advance(now_ts);
+            // 仪式完成后清除 / Clear when resolved
+            if ritual.phase.is_resolved() {
+                // 保留用于持久化，不立即清除
+            }
+            advanced
+        } else {
+            false
+        }
+    }
+
+    /// G5: 强制推进仪式（情绪显著改善时）/ G5: Force advance ritual (when emotion significantly improves)
+    pub fn force_advance_ritual(&mut self, now_ts: i64) {
+        if let Some(ref mut ritual) = self.ritual {
+            ritual.force_advance(now_ts);
+        }
+    }
+
+    /// G5: 获取当前仪式阶段 / G5: Get current ritual phase
+    pub fn ritual_phase(&self) -> Option<RitualPhase> {
+        self.ritual.as_ref().map(|r| r.phase)
+    }
+
+    /// G4: 获取关系健康度 / G4: Get relationship health level
+    pub fn relationship_health(&self) -> f64 {
+        self.recovery_curve.health_level()
     }
 }
 
@@ -1380,6 +1510,511 @@ impl ConflictProcessResult {
         }
 
         parts.join("\n")
+    }
+}
+
+// ============================================================
+// 第八部分：主动和解管线 / Part 8: Proactive Reconciliation Pipeline
+// ============================================================
+
+/// 主动和解管线配置 / Proactive reconciler configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProactiveReconcilerConfig {
+    /// 连续冲突N轮后触发主动和解 / Trigger after N consecutive conflict turns
+    pub unresolved_threshold_turns: u32,
+    /// 冲突后M秒仍无和解则主动 / Trigger if no reconciliation within M seconds
+    pub time_since_conflict_secs: i64,
+    /// 每会话最多主动和解次数 / Max proactive reconciliations per session
+    pub max_proactive_per_session: u32,
+}
+
+impl Default for ProactiveReconcilerConfig {
+    fn default() -> Self {
+        Self {
+            unresolved_threshold_turns: 3,
+            time_since_conflict_secs: 300,
+            max_proactive_per_session: 2,
+        }
+    }
+}
+
+/// 主动和解管线 — 在用户沉默时主动发起和解
+/// Proactive Reconciler — Initiates reconciliation when user is silent
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProactiveReconciler {
+    /// 配置 / Configuration
+    pub config: ProactiveReconcilerConfig,
+    /// 本会话已主动和解次数 / Proactive reconciliation count this session
+    pub proactive_count: u32,
+    /// 上次主动和解时间戳 / Last proactive reconciliation timestamp
+    pub last_proactive_ts: i64,
+}
+
+impl Default for ProactiveReconciler {
+    fn default() -> Self {
+        Self::new(ProactiveReconcilerConfig::default())
+    }
+}
+
+impl ProactiveReconciler {
+    /// 创建主动和解管线 / Create proactive reconciler
+    pub fn new(config: ProactiveReconcilerConfig) -> Self {
+        Self {
+            config,
+            proactive_count: 0,
+            last_proactive_ts: 0,
+        }
+    }
+
+    /// 检查是否应主动和解 / Check whether proactive reconciliation should trigger
+    ///
+    /// 条件：
+    /// 1. 连续冲突轮次 >= 阈值
+    /// 2. 或距上次冲突超过 time_since_conflict_secs 且无和解
+    /// 3. 且本会话主动和解次数未超限
+    pub fn should_proactive_reconcile(&self, state: &ConflictState, now_ts: i64) -> bool {
+        if self.proactive_count >= self.config.max_proactive_per_session {
+            return false;
+        }
+
+        // 条件1：连续冲突轮次超过阈值 / Condition 1: consecutive turns exceed threshold
+        if state.consecutive_turns >= self.config.unresolved_threshold_turns {
+            return true;
+        }
+
+        // 条件2：距最近冲突超过时间阈值且未和解 / Condition 2: time since conflict exceeds threshold
+        if let Some(last_recon) = state.last_reconciliation_ts {
+            let elapsed = now_ts - last_recon;
+            if elapsed > self.config.time_since_conflict_secs && state.in_conflict() {
+                return true;
+            }
+        } else if state.total_conflicts > 0 && state.in_conflict() {
+            // 有过冲突但从未和解 / Had conflicts but never reconciled
+            return true;
+        }
+
+        false
+    }
+
+    /// 执行主动和解 / Execute proactive reconciliation
+    ///
+    /// 返回和解结果，偏向保守策略（StepBack/AcknowledgeDifference）
+    pub fn proactive_reconcile(
+        &mut self,
+        state: &ConflictState,
+        stage: &RelationshipStage,
+        now_ts: i64,
+    ) -> Option<ReconciliationResult> {
+        if !self.should_proactive_reconcile(state, now_ts) {
+            return None;
+        }
+
+        self.proactive_count += 1;
+        self.last_proactive_ts = now_ts;
+
+        // 主动和解偏向保守 / Proactive reconciliation leans conservative
+        let (strategy, fragment) = if state.max_intensity >= ConflictIntensity::Severe {
+            (
+                ReconciliationStrategy::StepBack,
+                "我一直在想我们之前的分歧——如果你愿意，我想重新聊聊这件事。".to_string(),
+            )
+        } else {
+            (
+                ReconciliationStrategy::AcknowledgeDifference,
+                "我在想刚才的事，也许我们可以换个角度看看？".to_string(),
+            )
+        };
+
+        // 初识阶段更保守 / Even more conservative in early stages
+        if matches!(stage, RelationshipStage::Acquaintance { .. }) {
+            return Some(ReconciliationResult {
+                strategy: ReconciliationStrategy::StepBack,
+                reply_fragment: "如果你还想继续聊，我在这里。".to_string(),
+                expected_de_escalation: 0.15,
+                needs_confirmation: false,
+            });
+        }
+
+        Some(ReconciliationResult {
+            strategy,
+            reply_fragment: fragment,
+            expected_de_escalation: 0.2,
+            needs_confirmation: false,
+        })
+    }
+
+    /// 重置会话计数 / Reset session count
+    pub fn reset_session(&mut self) {
+        self.proactive_count = 0;
+    }
+}
+
+// ============================================================
+// 第九部分：冲突↔情绪双向闭环 / Part 9: Conflict↔Emotion Bidirectional Bridge
+// ============================================================
+
+/// 冲突↔情绪双向闭环 — 冲突注入PAD，情绪改善触发降级
+/// Conflict PAD Bridge — Conflict injects PAD, emotion improvement triggers de-escalation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConflictPadBridge {
+    /// 冲突→愉悦衰减系数 / Conflict→pleasure decay coefficient
+    pub pleasure_decay: f64,
+    /// 冲突→唤醒增强系数 / Conflict→arousal boost coefficient
+    pub arousal_boost: f64,
+    /// 冲突→支配衰减系数 / Conflict→dominance decay coefficient
+    pub dominance_decay: f64,
+    /// 情绪改善降级阈值(愉悦) / Emotion-improved de-escalation threshold (pleasure)
+    pub de_escalate_pleasure_threshold: f64,
+    /// 情绪改善降级阈值(唤醒) / Emotion-improved de-escalation threshold (arousal)
+    pub de_escalate_arousal_threshold: f64,
+}
+
+impl Default for ConflictPadBridge {
+    fn default() -> Self {
+        Self {
+            pleasure_decay: 0.15,
+            arousal_boost: 0.1,
+            dominance_decay: 0.1,
+            de_escalate_pleasure_threshold: 0.3,
+            de_escalate_arousal_threshold: 0.2,
+        }
+    }
+}
+
+impl ConflictPadBridge {
+    /// 计算冲突对情绪的PAD增量 / Compute PAD delta from conflict state
+    ///
+    /// 返回 (pleasure_delta, arousal_delta, dominance_delta)
+    /// 冲突越强，愉悦和支配越低，唤醒越高
+    pub fn conflict_pad_delta(&self, state: &ConflictState) -> (f32, f32, f32) {
+        if !state.in_conflict() {
+            return (0.0, 0.0, 0.0);
+        }
+
+        let intensity = state.max_intensity.as_f64();
+        // 连续冲突轮次增强效应 / Consecutive turns amplify the effect
+        let turn_factor = 1.0 + (state.consecutive_turns as f64 * 0.1).min(1.0);
+
+        let pleasure_delta = -(self.pleasure_decay * intensity * turn_factor) as f32;
+        let arousal_delta = (self.arousal_boost * intensity * turn_factor) as f32;
+        let dominance_delta = -(self.dominance_decay * intensity * turn_factor) as f32;
+
+        (pleasure_delta, arousal_delta, dominance_delta)
+    }
+
+    /// 情绪是否足够改善以触发冲突降级 / Whether emotion improved enough to trigger de-escalation
+    ///
+    /// 当愉悦高且唤醒低时，说明情绪已恢复，可以主动降级冲突
+    pub fn should_de_escalate(&self, pleasure: f64, arousal: f64, in_conflict: bool) -> bool {
+        in_conflict
+            && pleasure > self.de_escalate_pleasure_threshold
+            && arousal < self.de_escalate_arousal_threshold
+    }
+}
+
+// ============================================================
+// 第十部分：关系修复叙事 / Part 10: Relationship Repair Narrative
+// ============================================================
+
+/// 关系修复事件 — 记录一次和解的发生 / Relationship repair event
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RepairEvent {
+    /// 冲突类型 / Conflict type
+    pub conflict_type: ConflictType,
+    /// 采用的和解策略 / Reconciliation strategy used
+    pub strategy: ReconciliationStrategy,
+    /// 修复时的冲突强度 / Conflict intensity at time of repair
+    pub intensity_at_repair: ConflictIntensity,
+    /// 修复时间戳 / Repair timestamp
+    pub timestamp: i64,
+    /// 修复深度 (0.0~1.0) / Repair depth
+    ///
+    /// 由策略和道歉深度决定：
+    /// - Apologize/FindCommonGround → 0.8~1.0
+    /// - Clarify/AcknowledgeDifference → 0.5~0.7
+    /// - StepBack/Redirect → 0.2~0.4
+    /// - GentleBoundary/FirmBoundary → 0.3~0.5
+    pub repair_depth: f64,
+}
+
+impl RepairEvent {
+    /// 创建修复事件 / Create repair event
+    pub fn new(
+        conflict_type: ConflictType,
+        strategy: ReconciliationStrategy,
+        intensity: ConflictIntensity,
+        timestamp: i64,
+    ) -> Self {
+        let repair_depth = match strategy {
+            ReconciliationStrategy::Apologize => 0.9,
+            ReconciliationStrategy::FindCommonGround => 0.8,
+            ReconciliationStrategy::Clarify => 0.6,
+            ReconciliationStrategy::AcknowledgeDifference => 0.5,
+            ReconciliationStrategy::GentleBoundary => 0.4,
+            ReconciliationStrategy::FirmBoundary => 0.3,
+            ReconciliationStrategy::StepBack => 0.25,
+            ReconciliationStrategy::Redirect => 0.2,
+        };
+
+        Self {
+            conflict_type,
+            strategy,
+            intensity_at_repair: intensity,
+            timestamp,
+            repair_depth,
+        }
+    }
+
+    /// 生成修复叙事文本 / Generate repair narrative text
+    pub fn to_narrative_text(&self) -> String {
+        let type_str = match self.conflict_type {
+            ConflictType::FactualDisagreement => "事实分歧",
+            ConflictType::ValueConflict => "价值冲突",
+            ConflictType::ExpectationGap => "期望落差",
+            ConflictType::BoundaryViolation => "边界侵犯",
+            ConflictType::OverDemand => "过度索取",
+            ConflictType::Misunderstanding => "沟通误解",
+            ConflictType::EmotionalProjection => "情绪投射",
+            ConflictType::TrustBreach => "信任裂痕",
+        };
+        let strategy_str = match self.strategy {
+            ReconciliationStrategy::Clarify => "主动澄清",
+            ReconciliationStrategy::AcknowledgeDifference => "承认差异",
+            ReconciliationStrategy::FindCommonGround => "寻找共同点",
+            ReconciliationStrategy::GentleBoundary => "温和设界",
+            ReconciliationStrategy::FirmBoundary => "坚定设界",
+            ReconciliationStrategy::Apologize => "道歉",
+            ReconciliationStrategy::StepBack => "退一步",
+            ReconciliationStrategy::Redirect => "转移话题",
+        };
+        format!(
+            "经历了一次{}({})，通过{}尝试修复，修复深度{:.0}%",
+            type_str,
+            self.intensity_at_repair,
+            strategy_str,
+            self.repair_depth * 100.0
+        )
+    }
+}
+
+// ============================================================
+// 第十一部分：冲突恢复曲线 / Part 11: Conflict Recovery Curve
+// ============================================================
+
+/// 冲突恢复曲线 — 指数衰减模型的关系健康度
+/// Conflict Recovery Curve — Exponential decay model for relationship health
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecoveryCurve {
+    /// 关系健康度 (0.1~1.0) / Relationship health (0.1~1.0)
+    ///
+    /// 1.0 = 完全健康，0.1 = 最低(关系不完全断裂)
+    pub health: f64,
+    /// 基础恢复率 /tick / Base recovery rate per tick
+    pub base_recovery_rate: f64,
+    /// 冲突衰减率 / Conflict decay rate
+    pub conflict_decay_rate: f64,
+    /// 上次更新时间戳 / Last update timestamp
+    pub last_update_ts: i64,
+}
+
+impl Default for RecoveryCurve {
+    fn default() -> Self {
+        Self {
+            health: 1.0,
+            base_recovery_rate: 0.002,
+            conflict_decay_rate: 0.15,
+            last_update_ts: 0,
+        }
+    }
+}
+
+impl RecoveryCurve {
+    /// 创建恢复曲线 / Create recovery curve
+    pub fn new(base_recovery_rate: f64, conflict_decay_rate: f64) -> Self {
+        Self {
+            health: 1.0,
+            base_recovery_rate,
+            conflict_decay_rate,
+            last_update_ts: 0,
+        }
+    }
+
+    /// 冲突发生时衰减健康度 / Decay health on conflict
+    pub fn on_conflict(&mut self, intensity: ConflictIntensity) {
+        let decay = self.conflict_decay_rate * intensity.as_f64();
+        self.health = (self.health - decay).max(0.1);
+    }
+
+    /// 和解发生时恢复健康度 / Recover health on reconciliation
+    pub fn on_reconciliation(&mut self, repair_depth: f64) {
+        // 和解恢复量 = repair_depth * (1.0 - health) * 0.3
+        // 越不健康时和解效果越大，但不会一次完全恢复
+        let recovery = repair_depth * (1.0 - self.health) * 0.3;
+        self.health = (self.health + recovery).min(1.0);
+    }
+
+    /// 周期恢复 tick / Periodic recovery tick
+    ///
+    /// 健康度随时间自然恢复，速率受关系阶段调制
+    pub fn tick(&mut self, stage: &RelationshipStage, now_ts: i64) {
+        if self.last_update_ts == 0 {
+            self.last_update_ts = now_ts;
+            return;
+        }
+
+        // 关系阶段调制恢复速率 / Stage-modulated recovery rate
+        let stage_multiplier = match stage {
+            RelationshipStage::Deep { .. } => 1.5,
+            RelationshipStage::Trusted { .. } => 1.2,
+            RelationshipStage::Familiar { .. } => 1.0,
+            RelationshipStage::Acquaintance { .. } => 0.6,
+        };
+
+        // 指数恢复：越接近1.0恢复越慢 / Exponential recovery: slows near 1.0
+        let gap = 1.0 - self.health;
+        let recovery = self.base_recovery_rate * stage_multiplier * gap;
+        self.health = (self.health + recovery).min(1.0);
+        self.last_update_ts = now_ts;
+    }
+
+    /// 当前健康度 / Current health level
+    pub fn health_level(&self) -> f64 {
+        self.health
+    }
+
+    /// 关系是否处于脆弱状态 / Whether relationship is fragile
+    pub fn is_fragile(&self) -> bool {
+        self.health < 0.5
+    }
+}
+
+// ============================================================
+// 第十二部分：和解仪式状态机 / Part 12: Reconciliation Ritual State Machine
+// ============================================================
+
+/// 和解仪式阶段 / Reconciliation ritual phase
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum RitualPhase {
+    /// 未解决 / Unresolved
+    Unresolved,
+    /// 已承认 / Acknowledged
+    Acknowledged,
+    /// 已表达悔意 / Remorse expressed
+    RemorseExpressed,
+    /// 已做出承诺 / Promise made
+    PromiseMade,
+    /// 已解决 / Resolved
+    Resolved,
+}
+
+impl RitualPhase {
+    /// 推进到下一阶段 / Advance to next phase
+    pub fn advance(&self) -> Self {
+        match self {
+            Self::Unresolved => Self::Acknowledged,
+            Self::Acknowledged => Self::RemorseExpressed,
+            Self::RemorseExpressed => Self::PromiseMade,
+            Self::PromiseMade => Self::Resolved,
+            Self::Resolved => Self::Resolved,
+        }
+    }
+
+    /// 是否已完成 / Whether completed
+    pub fn is_resolved(&self) -> bool {
+        matches!(self, Self::Resolved)
+    }
+
+    /// 各阶段最小停留秒数 / Minimum duration per phase (seconds)
+    pub fn min_duration_secs(&self) -> i64 {
+        match self {
+            Self::Unresolved => 0,
+            Self::Acknowledged => 30,
+            Self::RemorseExpressed => 60,
+            Self::PromiseMade => 120,
+            Self::Resolved => 0,
+        }
+    }
+
+    /// 生成当前阶段的 prompt 指引 / Generate prompt guidance for current phase
+    pub fn to_prompt_guidance(&self) -> &'static str {
+        match self {
+            Self::Unresolved => "冲突尚未处理，需要首先承认问题的存在。",
+            Self::Acknowledged => "已承认冲突存在，下一步应表达对对方感受的理解和歉意。",
+            Self::RemorseExpressed => "已表达悔意，下一步应做出具体的改进承诺。",
+            Self::PromiseMade => "已做出承诺，等待行动验证，保持温和态度。",
+            Self::Resolved => "冲突已解决，恢复正常互动。",
+        }
+    }
+}
+
+/// 和解仪式 — 多步骤冲突修复状态机
+/// Reconciliation Ritual — Multi-step conflict repair state machine
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReconciliationRitual {
+    /// 当前阶段 / Current phase
+    pub phase: RitualPhase,
+    /// 关联的冲突类型 / Associated conflict type
+    pub conflict_type: ConflictType,
+    /// 仪式开始时间戳 / Ritual start timestamp
+    pub started_ts: i64,
+    /// 当前阶段进入时间戳 / Current phase entry timestamp
+    pub phase_entered_ts: i64,
+}
+
+impl ReconciliationRitual {
+    /// 创建新仪式 / Create new ritual
+    pub fn new(conflict_type: ConflictType, now_ts: i64) -> Self {
+        Self {
+            phase: RitualPhase::Unresolved,
+            conflict_type,
+            started_ts: now_ts,
+            phase_entered_ts: now_ts,
+        }
+    }
+
+    /// 尝试推进到下一阶段 / Try to advance to next phase
+    ///
+    /// 需满足最小停留时间 / Must satisfy minimum phase duration
+    pub fn try_advance(&mut self, now_ts: i64) -> bool {
+        if self.phase.is_resolved() {
+            return false;
+        }
+
+        let elapsed = now_ts - self.phase_entered_ts;
+        if elapsed >= self.phase.min_duration_secs() {
+            self.phase = self.phase.advance();
+            self.phase_entered_ts = now_ts;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// 强制推进（用于情绪显著改善等特殊情况）/ Force advance
+    pub fn force_advance(&mut self, now_ts: i64) {
+        if !self.phase.is_resolved() {
+            self.phase = self.phase.advance();
+            self.phase_entered_ts = now_ts;
+        }
+    }
+
+    /// 生成仪式感知的 prompt 注入 / Generate ritual-aware prompt injection
+    pub fn to_prompt_fragment(&self) -> String {
+        if self.phase.is_resolved() {
+            return String::new();
+        }
+
+        format!(
+            "[和解仪式/ReconciliationRitual] 阶段: {:?}, 冲突类型: {:?}\n指引: {}",
+            self.phase,
+            self.conflict_type,
+            self.phase.to_prompt_guidance()
+        )
+    }
+
+    /// 仪式是否活跃 / Whether ritual is active
+    pub fn is_active(&self) -> bool {
+        !self.phase.is_resolved()
     }
 }
 

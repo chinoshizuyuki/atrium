@@ -11,8 +11,9 @@ pub(crate) use crate::proactive::ProactiveEngine;
 pub(crate) use async_trait::async_trait;
 pub(crate) use atrium_bridge::grpc::AtriumCoreService;
 pub(crate) use atrium_emotion::{
-    CircadianModulator, DriftParams, EmotionEngine, EmotionState as EmotionEngineState,
-    EmotionalInertia, LongingParams, LongingState,
+    AnticipationPreLoader, CircadianModulator, DisappointmentHandler, DriftParams, EmotionEngine,
+    EmotionState as EmotionEngineState, EmotionalInertia, LongingExpressionChannel,
+    LongingNarrativeBridge, LongingParams, LongingState,
 };
 pub(crate) use atrium_memory::{
     associative::AssociativeGraph,
@@ -26,7 +27,9 @@ pub(crate) use atrium_memory::{
     fts5_index::Fts5Index,
     graph_store::GraphStore,
     history::ConversationHistory,
+    inner_dialogue::InnerDialogueEngine,
     key_fact_cache::KeyFactCache,
+    longing_accumulation_store::LongingAccumulationStore,
     perception::{compile_rhythm_hint, MessageEvent, TypingRhythm, TypingRhythmAnalyzer},
     persona::PersonaManager as RuntimePersonaManager,
     preference::PreferenceManager,
@@ -34,15 +37,18 @@ pub(crate) use atrium_memory::{
     relationship::RelationshipManager,
     replay::ReplayPipeline,
     rules::{RuleContext, RuleEngine},
+    style_memory::{StyleMemoryStore, StyleOffset},
+    subtext_engine::{SubtextCategory, SubtextEngine, SubtextSignal},
     summarizer::{ConversationSummarizer, SummaryConfig},
     token_budget::TokenBudget,
     user_model::UserMentalModel,
+    user_model_store::UserMentalModelStore,
     MemoryContent, MemoryEntry, MemoryManager, SledLtm, StmBuffer,
 };
 pub(crate) use atrium_persona::manager::PersonaManager;
 pub(crate) use chrono::Timelike;
 pub(crate) use std::collections::HashMap;
-pub(crate) use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+pub(crate) use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 pub(crate) use std::time::Instant;
 pub(crate) use tokio_stream;
 
@@ -123,6 +129,10 @@ pub struct CoreService {
     relationship: parking_lot::Mutex<RelationshipManager>,
     // ── 用户心智模型 / User Mental Model ──
     user_model: parking_lot::Mutex<UserMentalModel>,
+    /// 用户心智模型持久化存储 / User mental model persistence store
+    user_model_store: Option<UserMentalModelStore>,
+    /// 用户心智模型防抖写穿计数 / User model debounced write-through counter
+    user_model_unsaved_count: AtomicU32,
     // ── 实时反馈闭环 / Feedback Loop ──
     feedback: parking_lot::Mutex<FeedbackLoop>,
     // ── 主动决策引擎 / Proactive Decision Engine ──
@@ -150,31 +160,59 @@ pub struct CoreService {
     anticipation_store: Option<atrium_memory::anticipation_store::AnticipationStore>,
     // ── 想念引擎配置 / Longing Engine Config ──
     longing_cfg: crate::config::LongingCfg,
+    // ── Gap#3 期待与想念增强 / Gap#3 Anticipation & Longing Enhancement ──
+    /// G1: 想念→主动表达通道 / G1: Longing→proactive expression channel
+    longing_expression_channel: parking_lot::Mutex<LongingExpressionChannel>,
+    /// G2: 期待渐变预加载器 / G2: Anticipation progressive pre-loader
+    anticipation_preloader: AnticipationPreLoader,
+    /// G3: 期待失落处理器 / G3: Anticipation disappointment handler
+    disappointment_handler: parking_lot::Mutex<DisappointmentHandler>,
+    /// G4: 跨会话想念累积存储 / G4: Cross-session longing accumulation store
+    longing_accumulation_store: Option<LongingAccumulationStore>,
+    /// G5: 想念→叙事桥 / G5: Longing→narrative bridge
+    longing_narrative_bridge: parking_lot::Mutex<LongingNarrativeBridge>,
     // ── 成长管理器 / Maturity Manager ──
     maturity: parking_lot::Mutex<atrium_memory::maturity::MaturityManager>,
     // ── 内在独白引擎 / Inner Monologue Engine ──
     inner_monologue: parking_lot::Mutex<atrium_memory::inner_monologue::InnerMonologueEngine>,
+    // ── 内心多元对话引擎 / Inner Dialogue Engine ──
+    /// Gap#1 内心多元对话 — 理性者/感性者/怀疑者/梦想者四声音协商
+    /// Gap#1 Inner dialogue — Rationalist/Emotionalist/Skeptic/Dreamer four-voice negotiation
+    inner_dialogue: parking_lot::Mutex<InnerDialogueEngine>,
     // ── 数字日记 / Digital Diary ──
     diary_store: Option<atrium_memory::diary_store::DiaryStore>,
     /// 日记 markdown 输出目录 / Diary markdown output directory
     diary_dir: Option<String>,
     // ── 文件存储 / File Store ──
-    #[allow(dead_code)] // 供未来文件存储扩展 / For future file store extension
+    // build() 中构造，运行时尚未读取 — 供未来文件存储扩展接入
+    // Constructed in build(), not yet read at runtime — reserved for future file store integration
+    #[allow(dead_code)]
     file_store: parking_lot::Mutex<Option<atrium_memory::file_store::FileStore>>,
     // ── 定时提醒 / Reminder System ──
     reminder_store: parking_lot::Mutex<Option<atrium_memory::reminder_store::ReminderStore>>,
     // ── 表达系统 / Expression System ──
     expression_enabled: bool,
-    #[allow(dead_code)] // 供未来表达系统扩展使用
     expression_cfg: crate::config::ExpressionCfg,
     // ── 追问引擎 / Follow-Up Engine ──
     followup_enabled: bool,
     followup: parking_lot::Mutex<atrium_memory::followup_tracker::FollowUpTracker>,
-    #[allow(dead_code)] // 供未来追问引擎扩展使用
+    // build() 中消费，运行时不直接读取 — 保留用于配置热重载探测
+    // Consumed only in build(), not read at runtime — kept for config hot-reload detection
+    #[allow(dead_code)]
     followup_cfg: crate::config::FollowUpCfg,
+    // ── Gap#6 好奇心追问增强 / Curiosity enhancement engines ──
+    curiosity_drive: parking_lot::Mutex<atrium_memory::curiosity_drive::CuriosityDrive>,
+    followup_style_learner:
+        parking_lot::Mutex<atrium_memory::followup_style_learner::FollowUpStyleLearner>,
+    // 多事项编织器 — 引擎已实现但 CoreService 尚未接入调用（待通电）
+    // Multi-item weaver — engine implemented but not yet wired into CoreService (pending power-on)
+    #[allow(dead_code)]
+    multi_item_weaver: atrium_memory::multi_item_weaver::MultiItemWeaver,
+    curiosity_resonance: parking_lot::Mutex<atrium_memory::curiosity_resonance::CuriosityResonance>,
+    semantic_association:
+        parking_lot::Mutex<atrium_memory::semantic_association::SemanticAssociation>,
     // ── 叙事自我 / Narrative Self ──
     narrative_enabled: bool,
-    #[allow(dead_code)] // 供未来叙事系统扩展使用
     narrative_cfg: crate::config::NarrativeCfg,
     narrative_self: parking_lot::Mutex<atrium_memory::life_narrative::NarrativeSelf>,
     /// 转折点检测器 / Turning point detector
@@ -193,7 +231,9 @@ pub struct CoreService {
     narrative_store: Option<parking_lot::Mutex<atrium_memory::narrative_store::NarrativeSelfStore>>,
     // ── 冲突与和解 / Conflict & Reconciliation ──
     conflict_enabled: bool,
-    #[allow(dead_code)] // 供未来冲突系统扩展使用
+    // build() 中消费，运行时不直接读取 — 保留用于配置热重载探测
+    // Consumed only in build(), not read at runtime — kept for config hot-reload detection
+    #[allow(dead_code)]
     conflict_cfg: crate::config::ConflictCfg,
     conflict: parking_lot::Mutex<atrium_memory::conflict_reconciliation::ConflictManager>,
     /// 冲突持久化存储 / Conflict persistence store
@@ -206,7 +246,9 @@ pub struct CoreService {
         parking_lot::Mutex<atrium_memory::relationship_aware_boundary::RelationshipAwareBoundary>,
     // ── 情绪非理性 / Emotional Irrationality ──
     irrationality_enabled: bool,
-    #[allow(dead_code)] // 供未来非理性系统扩展使用
+    // build() 中消费，运行时不直接读取 — 保留用于配置热重载探测
+    // Consumed only in build(), not read at runtime — kept for config hot-reload detection
+    #[allow(dead_code)]
     irrationality_cfg: crate::config::IrrationalityCfg,
     irrationality: parking_lot::Mutex<atrium_memory::emotional_irrationality::IrrationalityManager>,
     /// 非理性持久化存储 / Irrationality persistence store
@@ -214,16 +256,28 @@ pub struct CoreService {
         Option<parking_lot::Mutex<atrium_memory::irrationality_store::IrrationalityStore>>,
     // ── 共享仪式 / Shared Ritual ──
     ritual_enabled: bool,
-    #[allow(dead_code)] // 供未来仪式系统扩展使用
     ritual_cfg: crate::config::RitualCfg,
     ritual_detector: parking_lot::Mutex<atrium_memory::ritual_detector::RitualDetector>,
     anniversary_system: parking_lot::Mutex<atrium_memory::anniversary_system::AnniversarySystem>,
     seasonal_awareness: parking_lot::Mutex<atrium_memory::seasonal_awareness::SeasonalAwareness>,
     /// 仪式持久化存储 / Ritual persistence store
     ritual_store: Option<parking_lot::Mutex<atrium_memory::ritual_store::RitualStore>>,
+    /// 仪式防抖写穿计数器：累积 N 条交互后批量持久化 / Ritual debounced write-through counter: batch persist after N interactions
+    ritual_unsaved_count: AtomicU32,
+    /// 仪式共振引擎 / Ritual resonance engine — PAD 情感脉冲
+    // 引擎已实现但 CoreService 尚未接入调用（待通电）— 仪式情感共振能力占位
+    // Engine implemented but not yet wired into CoreService (pending power-on) — placeholder for ritual emotional resonance
+    #[allow(dead_code)]
+    ritual_resonance: atrium_memory::ritual_resonance::RitualResonanceEngine,
+    /// 仪式预期引擎 / Ritual anticipation engine — 期待脉冲
+    ritual_anticipation: atrium_memory::ritual_anticipation::RitualAnticipation,
+    /// 自适应仪式发现 / Adaptive ritual discovery — 个性化仪式发现
+    adaptive_ritual: parking_lot::Mutex<atrium_memory::adaptive_ritual::AdaptiveRitualDiscovery>,
     // ── 脆弱与不完美 / Vulnerability & Imperfection ──
     vulnerability_enabled: bool,
-    #[allow(dead_code)] // 供未来脆弱系统扩展使用
+    // build() 中消费，运行时不直接读取 — 保留用于配置热重载探测
+    // Consumed only in build(), not read at runtime — kept for config hot-reload detection
+    #[allow(dead_code)]
     vulnerability_cfg: crate::config::VulnerabilityCfg,
     vulnerability_window:
         parking_lot::Mutex<atrium_memory::vulnerability_window::VulnerabilityWindow>,
@@ -232,21 +286,100 @@ pub struct CoreService {
         Option<parking_lot::Mutex<atrium_memory::vulnerability_store::VulnerabilityStore>>,
     // ── 情绪需求边界 / Emotional Demand Boundary ──
     emotional_demand_enabled: bool,
-    #[allow(dead_code)] // 供未来情绪需求边界扩展使用
+    // build() 中消费，运行时不直接读取 — 保留用于配置热重载探测
+    // Consumed only in build(), not read at runtime — kept for config hot-reload detection
+    #[allow(dead_code)]
     emotional_demand_cfg: crate::config::EmotionalDemandCfg,
     emotional_boundary:
         parking_lot::Mutex<atrium_memory::emotional_demand_boundary::EmotionalBoundary>,
     demand_boundary: parking_lot::Mutex<atrium_memory::emotional_demand_boundary::DemandBoundary>,
     // ── 自我关怀边界 / Self-Care Boundary ──
     self_care_enabled: bool,
-    #[allow(dead_code)] // 供未来自我关怀系统扩展使用
+    // build() 中消费，运行时不直接读取 — 保留用于配置热重载探测
+    // Consumed only in build(), not read at runtime — kept for config hot-reload detection
+    #[allow(dead_code)]
     self_care_cfg: crate::config::SelfCareCfg,
     self_care_boundary: parking_lot::Mutex<atrium_memory::self_care_boundary::SelfCareBoundary>,
     // ── 认知域保险库 / Cognitive Domain Vault ──
     /// 统一存储层 — 持有 4 个认知域 sled::Db 实例，维持 Tree 引用有效性
     /// Unified storage layer — owns 4 cognitive domain sled::Db instances, sustaining Tree reference validity
-    #[allow(dead_code)] // 供未来 Vault 扩展 / For future Vault extension
+    // build() 中消费（各 Store 从 vault 派生），运行时 CoreService 不直接读取 — 保留以维持 Db 生命周期
+    // Consumed in build() (each Store derives from vault), not read directly by CoreService at runtime — kept to sustain Db lifetime
+    #[allow(dead_code)]
     vault: Option<atrium_memory::atrium_vault::AtriumVault>,
+    // ── 适度犯错 / Imperfection Engine ──
+    imperfection_enabled: bool,
+    // build() 中消费，运行时不直接读取 — 保留用于配置热重载探测
+    // Consumed only in build(), not read at runtime — kept for config hot-reload detection
+    #[allow(dead_code)]
+    imperfection_cfg: crate::config::ImperfectionCfg,
+    imperfection: parking_lot::Mutex<atrium_memory::imperfection_engine::ImperfectionEngine>,
+    /// 犯错持久化存储 / Imperfection persistence store
+    imperfection_store:
+        Option<parking_lot::Mutex<atrium_memory::imperfection_store::ImperfectionStore>>,
+    // ── Gap#9 脆弱增强 / Vulnerability Enhancement ──
+    /// 脆弱情感共振引擎 / Vulnerability emotional resonance engine
+    vulnerability_resonance:
+        parking_lot::Mutex<atrium_memory::vulnerability_resonance::VulnerabilityResonance>,
+    /// 脆弱智慧学习引擎 / Vulnerability wisdom learning engine
+    vulnerability_wisdom:
+        parking_lot::Mutex<atrium_memory::vulnerability_wisdom::VulnerabilityWisdom>,
+    /// 犯错-脆弱桥接器 / Imperfection-vulnerability bridge
+    imperfection_vulnerability_bridge: parking_lot::Mutex<
+        atrium_memory::imperfection_vulnerability_bridge::ImperfectionVulnerabilityBridge,
+    >,
+    /// 真实表达调制器 / Authentic expression modulator
+    authentic_expression_modulator: parking_lot::Mutex<
+        atrium_memory::authentic_expression_modulator::AuthenticExpressionModulator,
+    >,
+    // ── 风格记忆 / Style Memory ──
+    /// 风格记忆持久化存储 / Style memory persistence store
+    style_memory_store: Option<parking_lot::Mutex<StyleMemoryStore>>,
+    /// 风格记忆偏移缓存（热路径零锁读）/ Style offset cache (hot-path zero-lock read)
+    style_offset_cache: parking_lot::Mutex<StyleOffset>,
+    // ── 物理存在感 / Physical Presence ──
+    physical_presence_enabled: bool,
+    // build() 中消费，运行时不直接读取 — 保留用于配置热重载探测
+    // Consumed only in build(), not read at runtime — kept for config hot-reload detection
+    #[allow(dead_code)]
+    physical_presence_cfg: crate::config::PhysicalPresenceCfg,
+    physical_presence: parking_lot::Mutex<atrium_memory::physical_presence::PhysicalPresenceEngine>,
+    /// 物理存在感持久化存储 / Physical presence persistence store
+    physical_presence_store:
+        Option<parking_lot::Mutex<atrium_memory::physical_presence_store::PhysicalPresenceStore>>,
+    // ── Phase 3: 完全死亡模块通电 / Phase 3: Dead module power-on ──
+    // Gap#1 独处内在世界 / Solitude inner world
+    /// 人格漂移引擎 / Personality drift engine — 独处如何重塑人格
+    personality_drift: parking_lot::Mutex<atrium_memory::personality_drift::PersonalityDrift>,
+    /// 独处原型追踪器 / Solitude archetype tracker — 思维风格分类
+    solitude_archetype: parking_lot::Mutex<atrium_memory::solitude_archetype::ArchetypeTracker>,
+    /// 独处创造力引擎 / Solitude creativity engine — 独处中的创造性产出
+    solitude_creativity: parking_lot::Mutex<atrium_memory::solitude_creativity::SolitudeCreativity>,
+    /// 独处质量引擎 / Solitude quality engine — 独处质量评估与对话种子
+    solitude_quality: parking_lot::Mutex<atrium_memory::solitude_quality::SolitudeQualityEngine>,
+    // Gap#5 共享仪式补充 / Ritual supplements
+    /// 仪式演化引擎 / Ritual evolution engine — 仪式成长阶段追踪
+    ritual_evolution: parking_lot::Mutex<atrium_memory::ritual_evolution::RitualEvolution>,
+    /// 仪式缺席检测器 / Ritual absence detector — 缺席的情感影响
+    ritual_absence: parking_lot::Mutex<atrium_memory::ritual_absence::RitualAbsence>,
+    /// 仪式涌现引擎 / Ritual emergence engine — 新仪式的自发发现
+    ritual_emergence: parking_lot::Mutex<atrium_memory::ritual_emergence::RitualEmergence>,
+    // Gap#9 脆弱与不完美补充 / Vulnerability supplements
+    /// 脆弱仪式引擎 / Vulnerability ritual engine — 脆弱展现的仪式化决策
+    vulnerability_ritual:
+        parking_lot::Mutex<atrium_memory::vulnerability_ritual::VulnerabilityRitual>,
+    /// 不完美温暖引擎 / Imperfection warmth engine — 犯错增加亲密感
+    imperfection_warmth: parking_lot::Mutex<atrium_memory::imperfection_warmth::ImperfectionWarmth>,
+    /// 真实不完美评估器 / Authentic imperfection assessor — 不完美的真实性评估
+    authentic_imperfection:
+        parking_lot::Mutex<atrium_memory::authentic_imperfection::AuthenticImperfection>,
+    // Gap#4 冲突与和解 / Conflict and reconciliation
+    /// 冲突成长引擎 / Conflict growth engine — 冲突后的成长学习
+    conflict_growth: parking_lot::Mutex<atrium_memory::conflict_growth::ConflictGrowthEngine>,
+    // Gap#3 期待与想念 / Anticipation and longing
+    /// 期待深度引擎 / Anticipation depth engine — 想念的深度调制
+    anticipation_depth:
+        parking_lot::Mutex<atrium_memory::anticipation_depth::AnticipationDepthEngine>,
 }
 
 /// Room 输出消息（Python 网关通过 health 轮询消费）
@@ -304,6 +437,8 @@ impl CoreService {
             &crate::config::VulnerabilityCfg::default(),
             &crate::config::EmotionalDemandCfg::default(),
             &crate::config::SelfCareCfg::default(),
+            &crate::config::ImperfectionCfg::default(),
+            &crate::config::PhysicalPresenceCfg::default(),
         )
     }
 
@@ -337,6 +472,8 @@ impl CoreService {
             &crate::config::VulnerabilityCfg::default(),
             &crate::config::EmotionalDemandCfg::default(),
             &crate::config::SelfCareCfg::default(),
+            &crate::config::ImperfectionCfg::default(),
+            &crate::config::PhysicalPresenceCfg::default(),
         )
     }
 
@@ -365,6 +502,8 @@ impl CoreService {
         vulnerability_cfg: &crate::config::VulnerabilityCfg,
         emotional_demand_cfg: &crate::config::EmotionalDemandCfg,
         self_care_cfg: &crate::config::SelfCareCfg,
+        imperfection_cfg: &crate::config::ImperfectionCfg,
+        physical_presence_cfg: &crate::config::PhysicalPresenceCfg,
     ) -> Self {
         let data_dir = std::env::var("ATRIUM_DATA_DIR").unwrap_or_else(|_| {
             let cwd = std::env::current_dir().unwrap_or_default();
@@ -395,6 +534,8 @@ impl CoreService {
             vulnerability_cfg,
             emotional_demand_cfg,
             self_care_cfg,
+            imperfection_cfg,
+            physical_presence_cfg,
         )
     }
 
@@ -423,6 +564,8 @@ impl CoreService {
             &crate::config::VulnerabilityCfg::default(),
             &crate::config::EmotionalDemandCfg::default(),
             &crate::config::SelfCareCfg::default(),
+            &crate::config::ImperfectionCfg::default(),
+            &crate::config::PhysicalPresenceCfg::default(),
         )
     }
 
@@ -483,6 +626,8 @@ impl CoreService {
         vulnerability_cfg: &crate::config::VulnerabilityCfg,
         emotional_demand_cfg: &crate::config::EmotionalDemandCfg,
         self_care_cfg: &crate::config::SelfCareCfg,
+        imperfection_cfg: &crate::config::ImperfectionCfg,
+        physical_presence_cfg: &crate::config::PhysicalPresenceCfg,
     ) -> Self {
         let persist = data_dir.is_some();
         let dir = data_dir.unwrap_or("");
@@ -571,6 +716,22 @@ impl CoreService {
         let vulnerability_store = vault.as_ref().and_then(|v| {
             atrium_memory::vulnerability_store::VulnerabilityStore::open(v.relational()).ok()
         });
+        // 适度犯错 → 情感中枢 / Imperfection → Limbic system
+        let imperfection_store = vault.as_ref().and_then(|v| {
+            atrium_memory::imperfection_store::ImperfectionStore::open(v.limbic()).ok()
+        });
+        // 物理存在感 → 情感中枢 / Physical presence → Limbic system
+        let physical_presence_store = vault.as_ref().and_then(|v| {
+            atrium_memory::physical_presence_store::PhysicalPresenceStore::open(v.limbic()).ok()
+        });
+        // 风格记忆 → 情感中枢 / Style memory → Limbic system
+        let style_memory_store = vault
+            .as_ref()
+            .and_then(|v| StyleMemoryStore::open(v.limbic()).ok());
+        // 用户心智模型 → 关系海马体 / User mental model → Relational hippocampus
+        let user_model_store = vault
+            .as_ref()
+            .and_then(|v| UserMentalModelStore::open(v.relational()).ok());
 
         let history = if persist {
             ConversationHistory::open(&format!("{}/conversations", dir)).unwrap_or_else(|_| {
@@ -650,7 +811,7 @@ impl CoreService {
         }
 
         // ── 仪式系统启动恢复 / Ritual systems startup recovery ──
-        let (ritual_detector_init, anniversary_init, seasonal_init) =
+        let (ritual_detector_init, mut anniversary_init, seasonal_init) =
             if let Some(ref store) = ritual_store {
                 if let Ok(snapshot) = store.load() {
                     tracing::info!("[Ritual] Restored from sled persistence");
@@ -662,17 +823,23 @@ impl CoreService {
                 } else {
                     (
                         atrium_memory::ritual_detector::RitualDetector::default_new(),
-                        atrium_memory::anniversary_system::AnniversarySystem::new(),
+                        atrium_memory::anniversary_system::AnniversarySystem::new_with_config(
+                            ritual_cfg.anniversary_remind_days,
+                        ),
                         atrium_memory::seasonal_awareness::SeasonalAwareness::new(),
                     )
                 }
             } else {
                 (
                     atrium_memory::ritual_detector::RitualDetector::default_new(),
-                    atrium_memory::anniversary_system::AnniversarySystem::new(),
+                    atrium_memory::anniversary_system::AnniversarySystem::new_with_config(
+                        ritual_cfg.anniversary_remind_days,
+                    ),
                     atrium_memory::seasonal_awareness::SeasonalAwareness::new(),
                 )
             };
+        // 用当前配置覆盖持久化的提醒天数 / Override persisted remind_days with current config
+        anniversary_init.update_remind_days(ritual_cfg.anniversary_remind_days);
 
         // ── 脆弱窗口启动恢复 / Vulnerability window startup recovery ──
         let vulnerability_init = if let Some(ref store) = vulnerability_store {
@@ -758,11 +925,23 @@ impl CoreService {
             } else {
                 RelationshipManager::new()
             }),
-            user_model: parking_lot::Mutex::new(UserMentalModel::with_config(
-                user_model_cfg.mood_ema_alpha,
-                user_model_cfg.style_ema_alpha,
-                user_model_cfg.topic_decay_hours,
-            )),
+            user_model: parking_lot::Mutex::new({
+                // 从 sled 恢复用户心智模型 / Restore user mental model from sled
+                let mut model = UserMentalModel::with_config(
+                    user_model_cfg.mood_ema_alpha,
+                    user_model_cfg.style_ema_alpha,
+                    user_model_cfg.topic_decay_hours,
+                );
+                if let Some(ref store) = user_model_store {
+                    if let Ok(restored) = store.load("default") {
+                        model = restored;
+                        tracing::info!("[UserModel] Restored from sled persistence");
+                    }
+                }
+                model
+            }),
+            user_model_store,
+            user_model_unsaved_count: AtomicU32::new(0),
             feedback: parking_lot::Mutex::new(FeedbackLoop::with_config(
                 feedback_cfg.satisfaction_ema_alpha,
                 feedback_cfg.signal_window,
@@ -803,6 +982,15 @@ impl CoreService {
                 None
             },
             longing_cfg: longing_cfg.clone(),
+            // ── Gap#3 期待与想念增强 / Gap#3 Anticipation & Longing Enhancement ──
+            longing_expression_channel: parking_lot::Mutex::new(LongingExpressionChannel::default()),
+            anticipation_preloader: AnticipationPreLoader::default(),
+            disappointment_handler: parking_lot::Mutex::new(DisappointmentHandler::default()),
+            // G4: 想念累积 → 关系海马体 / G4: Longing accumulation → Relational hippocampus
+            longing_accumulation_store: vault
+                .as_ref()
+                .and_then(|v| LongingAccumulationStore::open_default(v.relational()).ok()),
+            longing_narrative_bridge: parking_lot::Mutex::new(LongingNarrativeBridge::default()),
             maturity: parking_lot::Mutex::new(if maturity_cfg.enabled && persist {
                 atrium_memory::maturity::MaturityManager::open(
                     &format!("{}/maturity", dir),
@@ -826,9 +1014,19 @@ impl CoreService {
                     learning_max_per_day: inner_monologue_cfg.learning_max_per_day,
                     daydream_interval_secs: inner_monologue_cfg.daydream_interval_secs,
                     daydream_confidence: inner_monologue_cfg.daydream_confidence,
+                    // G1-G5: 独处内在世界增强(默认全启用) / Solitude inner world enhancement (all enabled by default)
+                    emotion_driven_mode: true,
+                    solitude_depth_enabled: true,
+                    solitude_bridge_enabled: true,
+                    solitude_atmosphere_enabled: true,
+                    emotion_resonant_seed: true,
                 };
                 atrium_memory::inner_monologue::InnerMonologueEngine::new(im_config)
             }),
+            // ── 内心多元对话引擎 / Inner Dialogue Engine ──
+            // 数字生命的内心不是单一声音，而是多个自我视角的对话
+            // Digital life's inner world is not a single voice, but a dialogue among multiple selves
+            inner_dialogue: parking_lot::Mutex::new(InnerDialogueEngine::default()),
             // ── 数字日记 / Digital Diary ──
             // 数字日记 → 叙事皮层 / Digital diary → Narrative cortex
             diary_store: if inner_monologue_cfg.enabled {
@@ -887,6 +1085,20 @@ impl CoreService {
                 )
             }),
             followup_cfg: followup_cfg.clone(),
+            // ── Gap#6 好奇心追问增强引擎初始化 / Curiosity enhancement engines init ──
+            curiosity_drive: parking_lot::Mutex::new(
+                atrium_memory::curiosity_drive::CuriosityDrive::default_new(),
+            ),
+            followup_style_learner: parking_lot::Mutex::new(
+                atrium_memory::followup_style_learner::FollowUpStyleLearner::default_new(),
+            ),
+            multi_item_weaver: atrium_memory::multi_item_weaver::MultiItemWeaver::default_new(),
+            curiosity_resonance: parking_lot::Mutex::new(
+                atrium_memory::curiosity_resonance::CuriosityResonance::default_new(),
+            ),
+            semantic_association: parking_lot::Mutex::new(
+                atrium_memory::semantic_association::SemanticAssociation::default_new(),
+            ),
             narrative_enabled: narrative_cfg.enabled,
             narrative_cfg: narrative_cfg.clone(),
             narrative_self: parking_lot::Mutex::new({
@@ -901,7 +1113,13 @@ impl CoreService {
                 model
             }),
             tp_detector: parking_lot::Mutex::new(
-                atrium_memory::life_narrative::TurningPointDetector::default_new(),
+                atrium_memory::life_narrative::TurningPointDetector::new(
+                    atrium_memory::life_narrative::TurningPointConfig {
+                        emotion_change_threshold: narrative_cfg.emotion_change_threshold,
+                        min_interval_secs: narrative_cfg.min_interval_secs,
+                        ..Default::default()
+                    },
+                ),
             ),
             arc_detector: parking_lot::Mutex::new(
                 atrium_memory::life_narrative::ArcDetector::default_new(),
@@ -920,8 +1138,10 @@ impl CoreService {
             conflict_enabled: conflict_cfg.enabled,
             conflict_cfg: conflict_cfg.clone(),
             conflict: parking_lot::Mutex::new({
+                // 构建冲突管理器内部配置 / Build conflict manager internal config
                 pub(crate) use atrium_memory::conflict_reconciliation::{
-                    ConflictConfig, EscalationConfig, ReconciliationConfig,
+                    ConflictConfig, ConflictPadBridge, EscalationConfig, ProactiveReconcilerConfig,
+                    ReconciliationConfig, RecoveryCurve,
                 };
                 let conflict_inner = ConflictConfig {
                     disagreement_sensitivity: conflict_cfg.disagreement_sensitivity,
@@ -939,6 +1159,32 @@ impl CoreService {
                 // 从 sled 恢复冲突状态 / Restore conflict state from sled
                 let mut mgr =
                     atrium_memory::conflict_reconciliation::ConflictManager::new(conflict_inner);
+
+                // G1: 主动和解管线配置 / G1: Proactive reconciler config
+                mgr.proactive_reconciler =
+                    atrium_memory::conflict_reconciliation::ProactiveReconciler::new(
+                        ProactiveReconcilerConfig {
+                            unresolved_threshold_turns: conflict_cfg.proactive_threshold_turns,
+                            time_since_conflict_secs: conflict_cfg.proactive_time_secs,
+                            max_proactive_per_session: conflict_cfg.proactive_max_per_session,
+                        },
+                    );
+
+                // G2: 冲突↔情绪PAD桥接配置 / G2: Conflict↔emotion PAD bridge config
+                mgr.pad_bridge = ConflictPadBridge {
+                    pleasure_decay: conflict_cfg.pleasure_decay,
+                    arousal_boost: conflict_cfg.arousal_boost,
+                    dominance_decay: conflict_cfg.dominance_decay,
+                    ..Default::default()
+                };
+
+                // G4: 恢复曲线配置 / G4: Recovery curve config
+                mgr.recovery_curve = RecoveryCurve::new(
+                    conflict_cfg.base_recovery_rate,
+                    conflict_cfg.conflict_decay_rate,
+                );
+
+                // 从 sled 恢复冲突状态（覆盖默认配置）/ Restore from sled (overrides defaults)
                 if let Some(ref store) = conflict_store {
                     if let Ok(restored) = store.load() {
                         mgr = restored;
@@ -1010,6 +1256,14 @@ impl CoreService {
             anniversary_system: parking_lot::Mutex::new(anniversary_init),
             seasonal_awareness: parking_lot::Mutex::new(seasonal_init),
             ritual_store: ritual_store.map(parking_lot::Mutex::new),
+            // 仪式防抖写穿计数器初始化 / Ritual debounced write-through counter init
+            ritual_unsaved_count: AtomicU32::new(0),
+            // Gap#5: 仪式共振/预期/自适应发现引擎初始化 / Ritual resonance/anticipation/adaptive init
+            ritual_resonance: atrium_memory::ritual_resonance::RitualResonanceEngine::new(),
+            ritual_anticipation: atrium_memory::ritual_anticipation::RitualAnticipation::new(),
+            adaptive_ritual: parking_lot::Mutex::new(
+                atrium_memory::adaptive_ritual::AdaptiveRitualDiscovery::new(),
+            ),
             vulnerability_enabled: vulnerability_cfg.enabled,
             vulnerability_cfg: vulnerability_cfg.clone(),
             vulnerability_window: parking_lot::Mutex::new(vulnerability_init),
@@ -1035,6 +1289,123 @@ impl CoreService {
                 atrium_memory::self_care_boundary::SelfCareBoundary::new(
                     atrium_memory::self_care_boundary::SelfCareConfig::default(),
                 ),
+            ),
+            // ── 适度犯错 / Imperfection Engine ──
+            imperfection_enabled: imperfection_cfg.enabled,
+            imperfection_cfg: imperfection_cfg.clone(),
+            imperfection: parking_lot::Mutex::new({
+                use atrium_memory::imperfection_engine::ImperfectionConfig;
+                let imp_config = ImperfectionConfig {
+                    enabled: imperfection_cfg.enabled,
+                    base_prob: imperfection_cfg.base_prob,
+                    max_prob: imperfection_cfg.max_prob,
+                    cognitive_load_threshold: imperfection_cfg.cognitive_load_threshold,
+                    fatigue_threshold: imperfection_cfg.fatigue_threshold,
+                    unfamiliar_threshold: imperfection_cfg.unfamiliar_threshold,
+                    emotion_activation_floor: imperfection_cfg.emotion_activation_floor,
+                    relationship_gate_min: imperfection_cfg.relationship_gate_min,
+                    maturity_gate_min: imperfection_cfg.maturity_gate_min,
+                    correction_delay_min_secs: imperfection_cfg.correction_delay_min_secs,
+                    correction_delay_max_secs: imperfection_cfg.correction_delay_max_secs,
+                    max_mistakes_per_turn: imperfection_cfg.max_mistakes_per_turn,
+                    cooldown_secs: imperfection_cfg.cooldown_secs,
+                    clean_streak_decay: imperfection_cfg.clean_streak_decay,
+                };
+                // 从 sled 恢复犯错引擎状态 / Restore imperfection engine from sled
+                let mut engine =
+                    atrium_memory::imperfection_engine::ImperfectionEngine::new(imp_config);
+                if let Some(ref store) = imperfection_store {
+                    if let Ok(restored) = store.load() {
+                        engine = restored;
+                        tracing::info!("[Imperfection] Restored from sled persistence");
+                    }
+                }
+                engine
+            }),
+            imperfection_store: imperfection_store.map(parking_lot::Mutex::new),
+            // ── Gap#9 脆弱增强引擎初始化 / Vulnerability enhancement engines init ──
+            vulnerability_resonance: parking_lot::Mutex::new(
+                atrium_memory::vulnerability_resonance::VulnerabilityResonance::default_new(),
+            ),
+            vulnerability_wisdom: parking_lot::Mutex::new(
+                atrium_memory::vulnerability_wisdom::VulnerabilityWisdom::default_new(),
+            ),
+            imperfection_vulnerability_bridge: parking_lot::Mutex::new(
+                atrium_memory::imperfection_vulnerability_bridge::ImperfectionVulnerabilityBridge::default_new(),
+            ),
+            authentic_expression_modulator: parking_lot::Mutex::new(
+                atrium_memory::authentic_expression_modulator::AuthenticExpressionModulator::default_new(),
+            ),
+            // ── 风格记忆 / Style Memory ──
+            style_memory_store: style_memory_store.map(parking_lot::Mutex::new),
+            style_offset_cache: parking_lot::Mutex::new(StyleOffset::zero()),
+            // ── 物理存在感 / Physical Presence ──
+            physical_presence_enabled: physical_presence_cfg.enabled,
+            physical_presence_cfg: physical_presence_cfg.clone(),
+            physical_presence: parking_lot::Mutex::new({
+                use atrium_memory::physical_presence::PhysicalPresenceConfig as PpConfig;
+                let pp_config = PpConfig {
+                    enabled: physical_presence_cfg.enabled,
+                    fatigue_half_life_secs: physical_presence_cfg.fatigue_half_life_secs,
+                    circadian_enabled: physical_presence_cfg.circadian_enabled,
+                    interaction_fatigue_enabled: physical_presence_cfg.interaction_fatigue_enabled,
+                    body_to_emotion_enabled: physical_presence_cfg.body_to_emotion_enabled,
+                    prompt_budget: physical_presence_cfg.prompt_budget,
+                    signature_ema_alpha: 0.01,
+                };
+                // 从 sled 恢复物理存在感状态 / Restore physical presence from sled
+                let mut engine =
+                    atrium_memory::physical_presence::PhysicalPresenceEngine::new(pp_config);
+                if let Some(ref store) = physical_presence_store {
+                    if let Ok(restored) = store.load() {
+                        engine = restored;
+                        tracing::info!("[PhysicalPresence] Restored from sled persistence");
+                    }
+                }
+                engine
+            }),
+            physical_presence_store: physical_presence_store.map(parking_lot::Mutex::new),
+            // ── Phase 3: 完全死亡模块初始化 / Phase 3: Dead module init ──
+            // Gap#1 独处内在世界 / Solitude inner world
+            personality_drift: parking_lot::Mutex::new(
+                atrium_memory::personality_drift::PersonalityDrift::new(),
+            ),
+            solitude_archetype: parking_lot::Mutex::new(
+                atrium_memory::solitude_archetype::ArchetypeTracker::new(),
+            ),
+            solitude_creativity: parking_lot::Mutex::new(
+                atrium_memory::solitude_creativity::SolitudeCreativity::new(),
+            ),
+            solitude_quality: parking_lot::Mutex::new(
+                atrium_memory::solitude_quality::SolitudeQualityEngine::new(),
+            ),
+            // Gap#5 共享仪式补充 / Ritual supplements
+            ritual_evolution: parking_lot::Mutex::new(
+                atrium_memory::ritual_evolution::RitualEvolution::new(),
+            ),
+            ritual_absence: parking_lot::Mutex::new(
+                atrium_memory::ritual_absence::RitualAbsence::new("daily_chat", 0, 86400),
+            ),
+            ritual_emergence: parking_lot::Mutex::new(
+                atrium_memory::ritual_emergence::RitualEmergence::new(),
+            ),
+            // Gap#9 脆弱与不完美补充 / Vulnerability supplements
+            vulnerability_ritual: parking_lot::Mutex::new(
+                atrium_memory::vulnerability_ritual::VulnerabilityRitual::new(),
+            ),
+            imperfection_warmth: parking_lot::Mutex::new(
+                atrium_memory::imperfection_warmth::ImperfectionWarmth::new(),
+            ),
+            authentic_imperfection: parking_lot::Mutex::new(
+                atrium_memory::authentic_imperfection::AuthenticImperfection::new(),
+            ),
+            // Gap#4 冲突与和解 / Conflict and reconciliation
+            conflict_growth: parking_lot::Mutex::new(
+                atrium_memory::conflict_growth::ConflictGrowthEngine::new(),
+            ),
+            // Gap#3 期待与想念 / Anticipation and longing
+            anticipation_depth: parking_lot::Mutex::new(
+                atrium_memory::anticipation_depth::AnticipationDepthEngine::new(),
             ),
         }
     }

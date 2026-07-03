@@ -13,6 +13,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::lunar::{lunar_to_solar, ymd_to_epoch, LunarDate, LunarFestival};
+
 // ── 纪念日类型 / Anniversary Kind ──
 
 /// 纪念日类型 / Anniversary type
@@ -65,6 +67,8 @@ pub struct Anniversary {
     pub description: String,
     /// 是否已庆祝（今年）/ Whether celebrated this year
     pub last_celebrated_year: i32,
+    /// 是否农历纪念日 / Whether this is a lunar anniversary
+    pub is_lunar: bool,
 }
 
 impl Anniversary {
@@ -85,12 +89,34 @@ impl Anniversary {
         (days / 365) as i32
     }
 
-    /// 判断今天是否是纪念日 / Check if today is the anniversary
+    /// 判断今天是否是纪念日（支持农历）/ Check if today is the anniversary (lunar-aware)
+    ///
+    /// 农历纪念日：转换到农历比较月日，每年农历日期对应不同的公历日期。
+    /// 公历纪念日：直接比较月日。
+    /// Lunar anniversaries: compare lunar month/day (shifts each solar year).
+    /// Gregorian anniversaries: compare solar month/day directly.
     pub fn is_today(&self, now_epoch_secs: i64) -> bool {
-        // 比较月和日 / Compare month and day
-        let (_, month_orig, day_orig) = epoch_to_ymd(self.date_epoch);
-        let (_, month_now, day_now) = epoch_to_ymd(now_epoch_secs);
-        month_orig == month_now && day_orig == day_now
+        if self.is_lunar {
+            // 农历模式：转换到农历比较月日 / Lunar mode: compare lunar month/day
+            let orig_lunar = LunarDate::from_epoch(self.date_epoch);
+            let now_lunar = LunarDate::from_epoch(now_epoch_secs);
+            match (orig_lunar, now_lunar) {
+                (Some(o), Some(n)) => {
+                    o.month == n.month && o.day == n.day && o.is_leap == n.is_leap
+                }
+                _ => {
+                    // 农历转换失败，回退公历 / Fallback to Gregorian on conversion failure
+                    let (_, month_orig, day_orig) = epoch_to_ymd(self.date_epoch);
+                    let (_, month_now, day_now) = epoch_to_ymd(now_epoch_secs);
+                    month_orig == month_now && day_orig == day_now
+                }
+            }
+        } else {
+            // 公历模式：原有逻辑 / Gregorian mode: original logic
+            let (_, month_orig, day_orig) = epoch_to_ymd(self.date_epoch);
+            let (_, month_now, day_now) = epoch_to_ymd(now_epoch_secs);
+            month_orig == month_now && day_orig == day_now
+        }
     }
 }
 
@@ -107,6 +133,14 @@ pub struct AnniversarySystem {
     pub(crate) next_id: u64,
     /// 首次对话日是否已设置 / Whether first conversation date is set
     pub(crate) first_conversation_set: bool,
+    /// 纪念日提醒提前天数 / Days ahead to start reminding about anniversaries
+    #[serde(default = "default_remind_days")]
+    pub(crate) remind_days: u32,
+}
+
+/// 默认提醒天数 / Default remind days
+fn default_remind_days() -> u32 {
+    7
 }
 
 impl AnniversarySystem {
@@ -115,7 +149,29 @@ impl AnniversarySystem {
             anniversaries: Vec::new(),
             next_id: 1,
             first_conversation_set: false,
+            remind_days: default_remind_days(),
         }
+    }
+
+    /// 使用配置创建 / Create with config
+    ///
+    /// 从 RitualCfg.anniversary_remind_days 传入提醒天数。
+    /// Pass remind_days from RitualCfg.anniversary_remind_days.
+    pub fn new_with_config(remind_days: u32) -> Self {
+        Self {
+            anniversaries: Vec::new(),
+            next_id: 1,
+            first_conversation_set: false,
+            remind_days: remind_days.max(1),
+        }
+    }
+
+    /// 更新提醒天数配置 / Update remind days config
+    ///
+    /// 从 sled 恢复后调用，用当前配置覆盖持久化的旧值。
+    /// Called after sled restore to override persisted value with current config.
+    pub fn update_remind_days(&mut self, remind_days: u32) {
+        self.remind_days = remind_days.max(1);
     }
 
     /// 设置首次对话日 / Set first conversation date
@@ -132,6 +188,7 @@ impl AnniversarySystem {
             date_epoch: epoch_secs,
             description: String::new(),
             last_celebrated_year: 0,
+            is_lunar: false,
         });
         self.next_id += 1;
     }
@@ -152,6 +209,7 @@ impl AnniversarySystem {
             date_epoch: epoch_secs,
             description: format!("你给我取名「{}」", name),
             last_celebrated_year: 0,
+            is_lunar: false,
         });
         self.next_id += 1;
     }
@@ -171,6 +229,7 @@ impl AnniversarySystem {
             date_epoch: epoch_secs,
             description: String::new(),
             last_celebrated_year: 0,
+            is_lunar: false,
         });
         self.next_id += 1;
     }
@@ -183,8 +242,81 @@ impl AnniversarySystem {
             date_epoch: epoch_secs,
             description,
             last_celebrated_year: 0,
+            is_lunar: false,
         });
         self.next_id += 1;
+    }
+
+    /// 添加农历自定义纪念日 / Add custom lunar anniversary
+    ///
+    /// 传入农历日期，自动转换为当年公历日期存储。
+    /// 每年农历纪念日会根据当年农历日期动态计算公历对应日。
+    pub fn add_custom_lunar(
+        &mut self,
+        lunar_year: u32,
+        lunar_month: u32,
+        lunar_day: u32,
+        is_leap: bool,
+        description: String,
+    ) {
+        // 农历转公历获取初始 epoch / Convert lunar to solar for initial epoch
+        if let Some((sy, sm, sd)) = lunar_to_solar(lunar_year, lunar_month, lunar_day, is_leap) {
+            let epoch = ymd_to_epoch(sy as i32, sm as i32, sd as i32);
+            self.anniversaries.push(Anniversary {
+                id: self.next_id,
+                kind: AnniversaryKind::Custom,
+                date_epoch: epoch,
+                description,
+                last_celebrated_year: 0,
+                is_lunar: true,
+            });
+            self.next_id += 1;
+        }
+    }
+
+    /// 检查今日农历节日 / Check today's lunar festivals
+    ///
+    /// 返回今日对应的农历节日列表（如有）。
+    /// Returns the list of lunar festivals that fall on today.
+    pub fn check_lunar_holidays(&self, now_epoch_secs: i64) -> Vec<LunarFestival> {
+        LunarDate::from_epoch(now_epoch_secs)
+            .and_then(|l| l.festival())
+            .into_iter()
+            .collect()
+    }
+
+    /// 生成农历节日 prompt 片段 / Generate lunar festival prompt fragment
+    ///
+    /// 当天若有农历节日，生成格式如 `[农历节日] 中秋节 — 月圆人团圆`。
+    pub fn lunar_festival_prompt_fragment(&self, now_epoch_secs: i64) -> String {
+        let festivals = self.check_lunar_holidays(now_epoch_secs);
+        if festivals.is_empty() {
+            return String::new();
+        }
+
+        let parts: Vec<String> = festivals
+            .iter()
+            .map(|f| format!("{} — {}", f.label_zh(), f.celebration_template()))
+            .collect();
+
+        format!("[农历节日] {}", parts.join("、"))
+    }
+
+    /// 计算即将到来的农历节日（remind_days 天内）/ Compute upcoming lunar festivals (within remind_days)
+    ///
+    /// 扫描未来 remind_days 天，返回即将到来的农历节日及其距今天数。
+    pub fn upcoming_lunar_festivals(&self, now_epoch_secs: i64) -> Vec<(LunarFestival, i64)> {
+        let mut upcoming = Vec::new();
+        // 检查今天及未来 remind_days 天 / Check today and next remind_days days
+        for delta in 0..=(self.remind_days as i64) {
+            let check_epoch = now_epoch_secs + delta * 86400;
+            if let Some(ld) = LunarDate::from_epoch(check_epoch) {
+                if let Some(f) = ld.festival() {
+                    upcoming.push((f, delta));
+                }
+            }
+        }
+        upcoming
     }
 
     /// 检查今日是否有纪念日 / Check if today has any anniversaries
@@ -223,36 +355,62 @@ impl AnniversarySystem {
         celebrations
     }
 
-    /// 生成纪念日 prompt 片段 / Generate anniversary prompt fragment
+    /// 生成纪念日 prompt 片段（含农历节日）/ Generate anniversary prompt fragment (with lunar festivals)
     pub fn prompt_fragment(&self, now_epoch_secs: i64) -> String {
+        let mut fragments = Vec::new();
+
+        // 纪念日片段 / Anniversary fragment
         let upcoming: Vec<_> = self
             .anniversaries
             .iter()
             .filter(|a| {
                 let days = a.days_from(now_epoch_secs);
-                // 即将到来（7天内）或刚过（1天内）/ Upcoming (within 7 days) or just passed (within 1 day)
+                // 即将到来（remind_days 天内）或当天 / Upcoming (within remind_days) or today
                 let days_to_next = 365 - (days % 365);
-                days_to_next <= 7 || days % 365 == 0
+                days_to_next <= self.remind_days as i64 || days % 365 == 0
             })
             .collect();
 
-        if upcoming.is_empty() {
-            return String::new();
+        if !upcoming.is_empty() {
+            let parts: Vec<String> = upcoming
+                .iter()
+                .map(|a| {
+                    let years = a.years_together(now_epoch_secs);
+                    if years > 0 {
+                        if a.is_lunar {
+                            format!("{}{}周年(农历)", a.kind.label_zh(), years)
+                        } else {
+                            format!("{}{}周年", a.kind.label_zh(), years)
+                        }
+                    } else {
+                        a.kind.label_zh().to_string()
+                    }
+                })
+                .collect();
+            fragments.push(format!("[纪念日] {}", parts.join("、")));
         }
 
-        let parts: Vec<String> = upcoming
-            .iter()
-            .map(|a| {
-                let years = a.years_together(now_epoch_secs);
-                if years > 0 {
-                    format!("{}{}周年", a.kind.label_zh(), years)
-                } else {
-                    a.kind.label_zh().to_string()
-                }
-            })
-            .collect();
+        // 农历节日片段 / Lunar festival fragment
+        let lunar_frag = self.lunar_festival_prompt_fragment(now_epoch_secs);
+        if !lunar_frag.is_empty() {
+            fragments.push(lunar_frag);
+        }
 
-        format!("[纪念日] {}", parts.join("、"))
+        // 即将到来的农历节日（非当天）/ Upcoming lunar festivals (not today)
+        let upcoming_lunar = self.upcoming_lunar_festivals(now_epoch_secs);
+        let future_lunar: Vec<_> = upcoming_lunar
+            .iter()
+            .filter(|(_, delta)| *delta > 0)
+            .collect();
+        if !future_lunar.is_empty() {
+            let parts: Vec<String> = future_lunar
+                .iter()
+                .map(|(f, delta)| format!("{}({}天后)", f.label_zh(), delta))
+                .collect();
+            fragments.push(format!("[即将农历节日] {}", parts.join("、")));
+        }
+
+        fragments.join("\n")
     }
 }
 
@@ -344,6 +502,7 @@ mod tests {
             date_epoch: 0,
             description: String::new(),
             last_celebrated_year: 0,
+            is_lunar: false,
         };
         let years = anniversary.years_together(365 * 86400);
         assert_eq!(years, 1);
@@ -358,6 +517,7 @@ mod tests {
             date_epoch: epoch,
             description: String::new(),
             last_celebrated_year: 0,
+            is_lunar: false,
         };
         // Same day should match
         assert!(anniversary.is_today(epoch + 3600)); // 1 hour later same day
@@ -397,5 +557,141 @@ mod tests {
     fn test_prompt_fragment_empty() {
         let sys = AnniversarySystem::new();
         assert!(sys.prompt_fragment(1751474400).is_empty());
+    }
+
+    #[test]
+    fn test_is_lunar_field_default_false() {
+        let mut sys = AnniversarySystem::new();
+        sys.set_first_conversation(1000 * 86400);
+        assert!(!sys.anniversaries[0].is_lunar);
+    }
+
+    #[test]
+    fn test_add_custom_lunar() {
+        let mut sys = AnniversarySystem::new();
+        // 农历五月初五（端午节）/ Lunar 5/5 (Dragon Boat)
+        sys.add_custom_lunar(2026, 5, 5, false, "农历生日".to_string());
+        assert_eq!(sys.anniversaries.len(), 1);
+        assert!(sys.anniversaries[0].is_lunar);
+        assert_eq!(sys.anniversaries[0].kind, AnniversaryKind::Custom);
+        assert_eq!(sys.anniversaries[0].description, "农历生日");
+    }
+
+    #[test]
+    fn test_check_lunar_holidays_mid_autumn() {
+        let sys = AnniversarySystem::new();
+        // 2026-09-25 = 中秋节 / 2026-09-25 = Mid-Autumn
+        let epoch = ymd_to_epoch(2026, 9, 25);
+        let festivals = sys.check_lunar_holidays(epoch);
+        assert!(
+            festivals.contains(&LunarFestival::MidAutumn),
+            "Should detect Mid-Autumn"
+        );
+    }
+
+    #[test]
+    fn test_check_lunar_holidays_normal_day() {
+        let sys = AnniversarySystem::new();
+        // 2026-06-30 = 非农历节日 / 2026-06-30 = not a lunar festival
+        let epoch = ymd_to_epoch(2026, 6, 30);
+        let festivals = sys.check_lunar_holidays(epoch);
+        assert!(
+            festivals.is_empty(),
+            "Normal day should have no lunar festivals"
+        );
+    }
+
+    #[test]
+    fn test_lunar_festival_prompt_fragment() {
+        let sys = AnniversarySystem::new();
+        // 2026-09-25 = 中秋节 / 2026-09-25 = Mid-Autumn
+        let epoch = ymd_to_epoch(2026, 9, 25);
+        let frag = sys.lunar_festival_prompt_fragment(epoch);
+        assert!(frag.contains("中秋节"), "Should contain Mid-Autumn");
+        assert!(
+            frag.starts_with("[农历节日]"),
+            "Should start with [农历节日]"
+        );
+    }
+
+    #[test]
+    fn test_lunar_festival_prompt_fragment_empty() {
+        let sys = AnniversarySystem::new();
+        // 2026-06-30 = 非农历节日 / 2026-06-30 = not a lunar festival
+        let epoch = ymd_to_epoch(2026, 6, 30);
+        let frag = sys.lunar_festival_prompt_fragment(epoch);
+        assert!(frag.is_empty());
+    }
+
+    #[test]
+    fn test_is_today_lunar_anniversary() {
+        // 创建农历纪念日，验证 is_today 在农历日期匹配时返回 true
+        // Create lunar anniversary, verify is_today returns true on lunar date match
+        let mut sys = AnniversarySystem::new();
+        // 农历五月初五（2026年对应公历6月19日）/ Lunar 5/5 (2026 solar June 19)
+        sys.add_custom_lunar(2026, 5, 5, false, "农历生日".to_string());
+        // 2026-06-19 = 农历五月初五 / 2026-06-19 = lunar 5/5
+        let now = ymd_to_epoch(2026, 6, 19);
+        assert!(
+            sys.anniversaries[0].is_today(now),
+            "Should match lunar anniversary"
+        );
+    }
+
+    #[test]
+    fn test_prompt_fragment_with_lunar_festival() {
+        let sys = AnniversarySystem::new();
+        // 2026-09-25 = 中秋节 / 2026-09-25 = Mid-Autumn
+        let epoch = ymd_to_epoch(2026, 9, 25);
+        let frag = sys.prompt_fragment(epoch);
+        assert!(
+            frag.contains("农历节日"),
+            "Should contain lunar festival section"
+        );
+        assert!(frag.contains("中秋节"), "Should mention Mid-Autumn");
+    }
+
+    #[test]
+    fn test_new_with_config_remind_days() {
+        // 验证配置传入的提醒天数 / Verify config-passed remind days
+        let sys = AnniversarySystem::new_with_config(14);
+        assert_eq!(sys.remind_days, 14);
+
+        // 最小值为 1 / Minimum is 1
+        let sys0 = AnniversarySystem::new_with_config(0);
+        assert_eq!(sys0.remind_days, 1);
+
+        // 默认构造仍为 7 / Default constructor still uses 7
+        let sys_default = AnniversarySystem::new();
+        assert_eq!(sys_default.remind_days, 7);
+    }
+
+    #[test]
+    fn test_remind_days_affects_prompt() {
+        // 验证 remind_days 影响 prompt 输出 / Verify remind_days affects prompt output
+        let mut sys = AnniversarySystem::new_with_config(3);
+        sys.set_first_conversation(0);
+
+        // 365 天后（1 周年）当天应出现 / On 1-year anniversary should appear
+        let now = 365 * 86400;
+        let frag = sys.prompt_fragment(now);
+        assert!(!frag.is_empty(), "Should show anniversary on the day");
+    }
+
+    #[test]
+    fn test_upcoming_lunar_festivals() {
+        let sys = AnniversarySystem::new();
+        // 在中秋节前3天检查 / Check 3 days before Mid-Autumn
+        let mid_autumn_epoch = ymd_to_epoch(2026, 9, 25);
+        let three_days_before = mid_autumn_epoch - 3 * 86400;
+        let upcoming = sys.upcoming_lunar_festivals(three_days_before);
+        // 应包含中秋节（3天后）/ Should include Mid-Autumn (3 days away)
+        let has_mid_autumn = upcoming
+            .iter()
+            .any(|(f, d)| *f == LunarFestival::MidAutumn && *d == 3);
+        assert!(
+            has_mid_autumn,
+            "Should detect upcoming Mid-Autumn in 3 days"
+        );
     }
 }
