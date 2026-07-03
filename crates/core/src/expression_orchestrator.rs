@@ -84,8 +84,7 @@ pub struct CoherenceReport {
     pub warnings: Vec<String>,
 }
 
-impl CoherenceReport {
-}
+impl CoherenceReport {}
 
 // ════════════════════════════════════════════════════════════════════
 // ExpressionOrchestrator — 表达编排器
