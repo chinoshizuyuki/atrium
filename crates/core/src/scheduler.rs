@@ -537,12 +537,35 @@ impl Scheduler {
                 .as_secs() as i64;
             // Gap#1 人格漂移 / Personality drift
             self.core_service.personality_drift_tick();
+            // R1 通电：独处品质/原型/创造力 tick 驱动 / R1 power-on: quality/archetype/creativity tick
+            self.core_service.solitude_quality_tick();
+            self.core_service.solitude_archetype_tick();
+            self.core_service.solitude_creativity_tick(0); // idle_secs=0 简化 / Simplified: no idle tracking yet
+                                                           // R1 通电：仪式演化/涌现 tick 驱动 / R1 power-on: ritual evolution/emergence tick
+            self.core_service.ritual_evolution_tick(now_epoch);
+            self.core_service.ritual_emergence_tick(now_epoch);
+            // R1 通电：脆弱智慧/桥接/仪式/温暖/真实不完美 tick / R1 power-on: vulnerability batch tick
+            self.core_service.vulnerability_wisdom_tick();
+            self.core_service.imperfection_bridge_tick();
+            self.core_service.vulnerability_ritual_tick();
+            self.core_service.imperfection_warmth_tick();
+            self.core_service.authentic_imperfection_tick();
+            // R1 通电：追问风格学习器 tick / R1 power-on: follow-up style learner tick
+            self.core_service.followup_style_learner_tick();
             // Gap#3 期待深度 / Anticipation depth
             self.core_service.anticipation_depth_tick(now_epoch);
             // Gap#4 冲突成长 / Conflict growth
-            self.core_service.conflict_growth_tick();
+            self.core_service.conflict_engine_tick();
             // Gap#5 仪式缺席检测 / Ritual absence detection
             self.core_service.ritual_absence_tick(now_epoch);
+
+            // R3 通电：6 个孤儿引擎 tick / R3 power-on: 6 orphan engine ticks
+            self.core_service.emotional_climate_tick(now_epoch);
+            self.core_service.emotional_consolidation_tick(now_epoch);
+            self.core_service.emotional_coupling_tick();
+            self.core_service.existential_depth_tick(now_epoch);
+            self.core_service.inner_council_tick();
+            self.core_service.ritual_heartbeat_tick();
         }
 
         // 物理存在感周期 tick / Physical presence periodic tick

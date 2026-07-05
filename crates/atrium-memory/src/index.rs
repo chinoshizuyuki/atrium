@@ -2,7 +2,7 @@
 //! Vector embedding index — Text-to-vector embedding and similarity search.
 
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
-use std::collections::VecDeque;
+use std::collections::HashMap;
 /// 向量化接口 文本 - 浮点向量
 pub trait Vectorizer: Send + Sync {
     fn embed(&self, text: &str) -> anyhow::Result<Vec<f32>>;
@@ -78,65 +78,186 @@ impl BruteForceIndex {
 }
 
 /// 语义缓存 - 缓存最近查询到的结果，避免重复嵌入 + 全盘扫描
+/// Semantic cache — Caches recent query results to avoid redundant embedding + full scan.
+///
+/// 使用索引化双向链表实现 O(1) LRU：
+/// Uses an index-based doubly-linked list for O(1) LRU operations:
+/// - `key_to_slot`: HashMap 提供 O(1) 键查找 / O(1) key lookup
+/// - `entries`: 槽位数组，prev/next 索引构成双向链表 / Slot array with prev/next indices
+/// - `head`/`tail`: LRU/MRU 端指针 / LRU/MRU end pointers
+/// - `free_list`: 回收已淘汰槽位，避免重复分配 / Recycled slots to avoid reallocation
 pub struct SemanticCache {
-    cache: VecDeque<(String, Vec<(u64, f32)>)>,
-    max_entries: usize,
+    /// 键 → 槽位索引 / Key to slot index mapping
+    key_to_slot: HashMap<String, usize>,
+    /// 槽位数组 / Slot array
+    entries: Vec<Slot>,
+    /// 空闲槽位回收链 / Free slot recycling list
+    free_list: Vec<usize>,
+    /// LRU 端（最久未用，下一个淘汰） / LRU end (least recently used, next to evict)
+    head: Option<usize>,
+    /// MRU 端（最近使用） / MRU end (most recently used)
+    tail: Option<usize>,
+    /// 当前条目数 / Current entry count
+    len: usize,
+    /// 容量上限 / Capacity limit
+    capacity: usize,
+}
+
+/// 缓存槽位 — 存储键值对及双向链表指针
+/// Cache slot — Stores key-value pair and doubly-linked list pointers.
+struct Slot {
+    /// 查询键 / Query key
+    key: String,
+    /// 搜索结果 / Search results
+    value: Vec<(u64, f32)>,
+    /// 前驱槽位索引 / Previous slot index
+    prev: Option<usize>,
+    /// 后继槽位索引 / Next slot index
+    next: Option<usize>,
 }
 
 impl SemanticCache {
     pub fn new(max_entries: usize) -> Self {
         Self {
-            cache: VecDeque::with_capacity(max_entries),
-            max_entries,
+            key_to_slot: HashMap::with_capacity(max_entries),
+            entries: Vec::with_capacity(max_entries),
+            free_list: Vec::new(),
+            head: None,
+            tail: None,
+            len: 0,
+            capacity: max_entries,
         }
     }
 
-    /// 命中返回 Some，并将该条目移到末尾（最近使用）
+    /// 从双向链表中摘除指定槽位 / Unlink a slot from the doubly-linked list.
+    fn unlink_slot(&mut self, slot_idx: usize) {
+        let prev = self.entries[slot_idx].prev;
+        let next = self.entries[slot_idx].next;
+
+        // 修复前驱的 next 指针 / Fix predecessor's next pointer
+        match prev {
+            Some(p) => self.entries[p].next = next,
+            None => self.head = next, // 摘除的是 head / Unlinking head
+        }
+
+        // 修复后继的 prev 指针 / Fix successor's prev pointer
+        match next {
+            Some(n) => self.entries[n].prev = prev,
+            None => self.tail = prev, // 摘除的是 tail / Unlinking tail
+        }
+
+        // 清除被摘除槽位的指针 / Clear unlinked slot's pointers
+        self.entries[slot_idx].prev = None;
+        self.entries[slot_idx].next = None;
+    }
+
+    /// 将槽位链接到 MRU 端（尾部） / Link a slot to the MRU end (tail).
+    fn link_tail(&mut self, slot_idx: usize) {
+        self.entries[slot_idx].next = None;
+        self.entries[slot_idx].prev = self.tail;
+
+        if let Some(t) = self.tail {
+            self.entries[t].next = Some(slot_idx);
+        } else {
+            // 链表为空，新槽位同时是 head / List is empty, new slot is also head
+            self.head = Some(slot_idx);
+        }
+        self.tail = Some(slot_idx);
+    }
+
+    /// 分配一个新槽位，优先复用已回收的 / Allocate a new slot, reusing recycled ones first.
+    fn alloc_slot(&mut self, key: String, value: Vec<(u64, f32)>) -> usize {
+        if let Some(idx) = self.free_list.pop() {
+            self.entries[idx] = Slot {
+                key,
+                value,
+                prev: None,
+                next: None,
+            };
+            idx
+        } else {
+            let idx = self.entries.len();
+            self.entries.push(Slot {
+                key,
+                value,
+                prev: None,
+                next: None,
+            });
+            idx
+        }
+    }
+
+    /// 淘汰 LRU 端（头部）槽位 / Evict the LRU end (head) slot.
+    fn evict_head(&mut self) {
+        if let Some(h) = self.head {
+            self.unlink_slot(h);
+            // 从索引中移除键 / Remove key from index
+            let key = std::mem::take(&mut self.entries[h].key);
+            self.key_to_slot.remove(&key);
+            // 回收槽位 / Recycle slot
+            self.free_list.push(h);
+            self.len -= 1;
+        }
+    }
+
+    /// 命中返回 Some，并将该条目移到 MRU 端（最近使用）
+    /// Returns cached result on hit, moving the entry to MRU end.
+    /// O(1): HashMap 查找 + 链表 unlink + link_tail
     pub fn get(&mut self, query: &str) -> Option<&Vec<(u64, f32)>> {
-        if let Some(pos) = self.cache.iter().position(|(q, _)| q.as_str() == query) {
-            let entry = self.cache.remove(pos).expect("index init");
-            self.cache.push_back(entry);
-            Some(&self.cache.back().expect("index init").1)
+        if let Some(&slot_idx) = self.key_to_slot.get(query) {
+            // 摘除并重新链接到尾部 / Unlink and re-link to tail
+            self.unlink_slot(slot_idx);
+            self.link_tail(slot_idx);
+            Some(&self.entries[slot_idx].value)
         } else {
             None
         }
     }
 
-    /// 写入缓存，超出上限时淘汰最久未用的（队首）
+    /// 写入缓存，超出上限时淘汰最久未用的（LRU 端）
+    /// Inserts/updates a cache entry, evicting LRU end if over capacity.
+    /// O(1): HashMap 查找 + 链表操作
     pub fn set(&mut self, query: String, results: Vec<(u64, f32)>) {
-        if let Some(pos) = self.cache.iter().position(|(q, _)| q.as_str() == query) {
-            self.cache.remove(pos);
+        if let Some(&slot_idx) = self.key_to_slot.get(&query) {
+            // 键已存在：更新值并移到尾部 / Key exists: update value and move to tail
+            self.unlink_slot(slot_idx);
+            self.entries[slot_idx].value = results;
+            self.link_tail(slot_idx);
+        } else {
+            // 新键：分配槽位并链接 / New key: allocate slot and link
+            if self.len >= self.capacity && self.capacity > 0 {
+                self.evict_head();
+            }
+            let slot_idx = self.alloc_slot(query.clone(), results);
+            self.key_to_slot.insert(query, slot_idx);
+            self.link_tail(slot_idx);
+            self.len += 1;
         }
-        if self.cache.len() >= self.max_entries {
-            self.cache.pop_front();
-        }
-        self.cache.push_back((query, results));
     }
 
-    /// 批量写入，单次淘汰避免多次 pop_front 的开销
+    /// 批量写入，每条 O(1) / Batch insert, each entry O(1).
+    /// 总复杂度 O(M) where M = entries.len()
     pub fn set_batch(&mut self, entries: Vec<(String, Vec<(u64, f32)>)>) {
         for (query, results) in entries {
-            if let Some(pos) = self.cache.iter().position(|(q, _)| q.as_str() == query) {
-                self.cache.remove(pos);
-            }
-            self.cache.push_back((query, results));
-        }
-        // 批量写入后一次性裁剪到容量上限
-        while self.cache.len() > self.max_entries {
-            self.cache.pop_front();
+            self.set(query, results);
         }
     }
 
     pub fn clear(&mut self) {
-        self.cache.clear();
+        self.key_to_slot.clear();
+        self.entries.clear();
+        self.free_list.clear();
+        self.head = None;
+        self.tail = None;
+        self.len = 0;
     }
 
     pub fn len(&self) -> usize {
-        self.cache.len()
+        self.len
     }
 
     pub fn is_empty(&self) -> bool {
-        self.cache.is_empty()
+        self.len == 0
     }
 }
 
@@ -287,5 +408,105 @@ mod tests {
         assert_eq!(cache.len(), 1);
         let result = cache.get("key").unwrap();
         assert_eq!(result[0].0, 2); // 新值
+    }
+
+    // ── O(1) 性能验证测试 / O(1) Performance Verification Tests ──
+
+    #[test]
+    fn test_cache_large_capacity_lru_correctness() {
+        // 验证大容量下 LRU 正确性 / Verify LRU correctness at scale
+        let n = 1000;
+        let mut cache = SemanticCache::new(n);
+
+        // 填满缓存 / Fill cache to capacity
+        for i in 0..n {
+            cache.set(format!("q{}", i), vec![(i as u64, 0.9)]);
+        }
+        assert_eq!(cache.len(), n);
+
+        // 访问前半部分，使其变为最近使用 / Access first half to make them recently used
+        for i in 0..n / 2 {
+            let result = cache.get(&format!("q{}", i));
+            assert!(result.is_some());
+            assert_eq!(result.unwrap()[0].0, i as u64);
+        }
+
+        // 插入 n/2 个新条目，应淘汰后半部分（最久未用）
+        // Insert n/2 new entries, should evict second half (least recently used)
+        for i in 0..n / 2 {
+            cache.set(format!("new{}", i), vec![(1000 + i as u64, 0.8)]);
+        }
+
+        // 前半部分应仍在缓存中 / First half should still be cached
+        for i in 0..n / 2 {
+            assert!(
+                cache.get(&format!("q{}", i)).is_some(),
+                "q{} should still be cached",
+                i
+            );
+        }
+
+        // 后半部分应已被淘汰 / Second half should be evicted
+        for i in n / 2..n {
+            assert!(
+                cache.get(&format!("q{}", i)).is_none(),
+                "q{} should have been evicted",
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn test_cache_zero_capacity() {
+        // 零容量缓存不应 panic / Zero-capacity cache should not panic
+        let mut cache = SemanticCache::new(0);
+        cache.set("q".into(), vec![(1, 1.0)]);
+        assert_eq!(cache.len(), 0);
+        assert!(cache.get("q").is_none());
+    }
+
+    #[test]
+    fn test_cache_batch_preserves_lru_order() {
+        // 批量写入后 LRU 顺序正确 / LRU order correct after batch insert
+        let mut cache = SemanticCache::new(4);
+        cache.set("a".into(), vec![(1, 1.0)]);
+        cache.set("b".into(), vec![(2, 1.0)]);
+
+        // 批量写入 c, d, e — 应淘汰 a, b, c 中最久的
+        // Batch insert c, d, e — should evict oldest among a, b, c
+        cache.set_batch(vec![
+            ("c".into(), vec![(3, 1.0)]),
+            ("d".into(), vec![(4, 1.0)]),
+            ("e".into(), vec![(5, 1.0)]),
+        ]);
+
+        assert_eq!(cache.len(), 4);
+        // a 和 b 应被淘汰 / a and b should be evicted
+        assert!(cache.get("a").is_none());
+        assert!(cache.get("b").is_none());
+        // c, d, e 应在缓存中 / c, d, e should be cached
+        assert!(cache.get("c").is_some());
+        assert!(cache.get("d").is_some());
+        assert!(cache.get("e").is_some());
+    }
+
+    #[test]
+    fn test_cache_repeated_get_keeps_entry() {
+        // 反复 get 不应导致条目丢失 / Repeated get should not lose entry
+        let mut cache = SemanticCache::new(2);
+        cache.set("a".into(), vec![(1, 1.0)]);
+        cache.set("b".into(), vec![(2, 1.0)]);
+
+        // 反复访问 a / Repeatedly access a
+        for _ in 0..100 {
+            assert!(cache.get("a").is_some());
+        }
+
+        // 插入 c，应淘汰 b（最久未用）而非 a
+        // Insert c, should evict b (LRU) not a
+        cache.set("c".into(), vec![(3, 1.0)]);
+        assert!(cache.get("a").is_some());
+        assert!(cache.get("b").is_none());
+        assert!(cache.get("c").is_some());
     }
 }

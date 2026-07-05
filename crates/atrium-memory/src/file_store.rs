@@ -138,11 +138,14 @@ impl FileStore {
         original_name: &str,
         mime_type: &str,
         session_id: &str,
-    ) -> Result<FileMeta, FileStoreError> {
+    ) -> Result<FileMeta, crate::store_core::StoreError> {
         use sha2::{Digest, Sha256};
 
         if data.len() as u64 > self.max_file_size {
-            return Err(FileStoreError::FileTooLarge(data.len()));
+            return Err(crate::store_core::StoreError::Io(format!(
+                "file too large: {} bytes",
+                data.len()
+            )));
         }
 
         // 哈希 / Hash computation
@@ -167,7 +170,8 @@ impl FileStore {
             .unwrap_or("bin");
         let disk_name = format!("{}.{}", &hash[..16], ext);
         let disk_path = self.files_dir.join(&disk_name);
-        std::fs::write(&disk_path, data).map_err(FileStoreError::Io)?;
+        std::fs::write(&disk_path, data)
+            .map_err(|e| crate::store_core::StoreError::Io(e.to_string()))?;
 
         // 文本提取（仅文本类）/ Text extraction (text files only)
         let (text_extracted, extracted_text) =
@@ -188,7 +192,7 @@ impl FileStore {
         let val = bincode::serialize(&meta).expect("file meta serialize");
         self.tree
             .insert(hash.as_bytes(), val)
-            .map_err(FileStoreError::Sled)?;
+            .map_err(|e| crate::store_core::StoreError::Sled(e.to_string()))?;
         self.tree.flush().ok();
 
         Ok(meta)
@@ -270,26 +274,7 @@ impl FileStore {
     }
 }
 
-/// 文件存储错误 / File store error
-#[derive(Debug)]
-pub enum FileStoreError {
-    /// 文件过大 / File too large
-    FileTooLarge(usize),
-    /// IO 错误 / IO error
-    Io(std::io::Error),
-    /// 数据库错误 / Sled database error
-    Sled(sled::Error),
-}
-
-impl std::fmt::Display for FileStoreError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::FileTooLarge(s) => write!(f, "文件过大: {} bytes", s),
-            Self::Io(e) => write!(f, "IO 错误: {}", e),
-            Self::Sled(e) => write!(f, "数据库错误: {}", e),
-        }
-    }
-}
+// 统一使用 store_core::StoreError / Unified StoreError from store_core
 
 #[cfg(test)]
 mod tests {

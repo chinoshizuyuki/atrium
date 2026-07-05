@@ -141,13 +141,13 @@ impl CoreService {
 
         // G5: 想念→叙事闭环 — "我等了你2小时"写入生命叙事 / G5: Longing→narrative bridge
         {
-            let mut bridge = self.longing_narrative_bridge.lock();
+            let mut bridge = self.longing.narrative_bridge.lock();
             if bridge.should_write(state.intensity, now) {
                 let narrative_text = bridge.compose_narrative(state.intensity, away_secs);
                 bridge.record_written(now);
                 drop(bridge);
                 if self.narrative_enabled {
-                    let mut model = self.narrative_self.lock();
+                    let mut model = self.narrative.self_narrative.lock();
                     model.relationship_narrative = if model.relationship_narrative.is_empty() {
                         narrative_text
                     } else {
@@ -245,7 +245,7 @@ impl CoreService {
                 );
             }
             // G3: 用户按时来了，重置连续失约 / G3: Reset consecutive no-shows on reunion
-            self.disappointment_handler.lock().reset_consecutive();
+            self.longing.disappointment.lock().reset_consecutive();
         }
 
         Some((expr.intensity as f32, hint))
@@ -257,7 +257,7 @@ impl CoreService {
     /// Infers reunion context from away duration, conflict state, and ritual time.
     fn infer_reunion_context(&self, away_secs: u64) -> atrium_emotion::ReunionContext {
         // 冲突后重逢检测 / After-conflict detection
-        let in_conflict = self.conflict.lock().state.in_conflict();
+        let in_conflict = self.conflict.engine.lock().state.in_conflict();
         if in_conflict {
             return atrium_emotion::ReunionContext::AfterConflict;
         }
@@ -270,7 +270,7 @@ impl CoreService {
         // 仪式时刻重逢检测 / At-ritual detection
         // 检查当前是否有活跃仪式 / Check if there's an active ritual
         {
-            let detector = self.ritual_detector.lock();
+            let detector = self.ritual.detector.lock();
             let rituals = detector.active_rituals();
             if !rituals.is_empty() {
                 return atrium_emotion::ReunionContext::AtRitual;
@@ -353,7 +353,7 @@ impl CoreService {
             .map(|e| e.description.clone())
             .collect();
         if !expired.is_empty() {
-            let mut handler = self.disappointment_handler.lock();
+            let mut handler = self.longing.disappointment.lock();
             if let Some(result) = handler.handle_expired(&expired, now) {
                 let pad_mod = EmotionEngineState::new(
                     result.pad_offset[0],
@@ -401,7 +401,7 @@ impl CoreService {
             .map(|s| s.away_secs)
             .unwrap_or(0);
 
-        let channel = self.longing_expression_channel.lock();
+        let channel = self.longing.expression_channel.lock();
         if channel.should_express(intensity, rel_ordinal, now) {
             let expr = channel.compose(intensity, rel_ordinal, away_secs);
             drop(channel);
@@ -415,7 +415,7 @@ impl CoreService {
             self.emotion.lock().affect(&pad_mod);
 
             // 记录已表达 / Record expression
-            self.longing_expression_channel.lock().record_expressed(now);
+            self.longing.expression_channel.lock().record_expressed(now);
 
             tracing::info!(
                 "[G1] 想念主动表达: intensity={:.2}, away={}s, phrase={} / Longing proactive expression",
@@ -461,7 +461,7 @@ impl CoreService {
         let stage = self.relationship.lock().current_stage().clone();
         let now_ts = chrono::Utc::now().timestamp();
         // 运行冲突检测管线 / Run conflict detection pipeline
-        let mut mgr = self.conflict.lock();
+        let mut mgr = self.conflict.engine.lock();
         let result = mgr.process(
             user_msg,
             emo_state.pleasure as f64,
@@ -478,7 +478,7 @@ impl CoreService {
                 let pad_mod = EmotionEngineState::new(p_delta, a_delta, d_delta);
                 drop(mgr);
                 self.emotion.lock().affect(&pad_mod);
-                mgr = self.conflict.lock();
+                mgr = self.conflict.engine.lock();
                 tracing::debug!(
                     "[G2] 冲突PAD注入: P={:.3} A={:.3} D={:.3} / Conflict PAD injection",
                     p_delta,
@@ -519,15 +519,15 @@ impl CoreService {
 
         // 冲突模式学习：从检测到的信号中学习 / Learn conflict patterns from detected signals
         if !result.signals.is_empty() {
-            let mut learner = self.conflict_learner.lock();
-            learner.learn(&result.signals, &stage, now_ts);
+            let mut engine = self.conflict_engine.lock();
+            engine.learn(&result.signals, &stage, now_ts);
         }
 
         // 冲突模式预测：预判潜在冲突 / Predict potential conflicts
         let learner_prompt = {
-            let mut learner = self.conflict_learner.lock();
-            let _predictions = learner.predict(user_msg, &stage);
-            learner.to_prompt_fragment(&stage)
+            let mut engine = self.conflict_engine.lock();
+            let _predictions = engine.predict(user_msg, &stage);
+            engine.to_pattern_prompt_fragment(&stage)
         };
 
         // 生成 prompt 注入 / Generate prompt injection
@@ -559,9 +559,9 @@ impl CoreService {
 
         // 写穿持久化：冲突检测管线修改状态后立即保存 / Write-through: persist immediately after conflict pipeline mutates state
         drop(mgr);
-        if let Some(ref store) = self.conflict_store {
+        if let Some(ref store) = self.conflict.store {
             let s = store.lock();
-            let mgr = self.conflict.lock();
+            let mgr = self.conflict.engine.lock();
             match s.save(&mgr) {
                 Ok(()) => tracing::debug!("[Conflict] State persisted after process()"),
                 Err(e) => tracing::warn!("[Conflict] Persist failed: {}", e),
@@ -570,7 +570,7 @@ impl CoreService {
 
         // G3: 修复事件写入叙事自我 / G3: Write repair events to narrative self
         if !repair_events.is_empty() && self.narrative_enabled {
-            let mut model = self.narrative_self.lock();
+            let mut model = self.narrative.self_narrative.lock();
             for repair in &repair_events {
                 let narrative_text = repair.to_narrative_text();
                 model.relationship_narrative = if model.relationship_narrative.is_empty() {
@@ -604,21 +604,21 @@ impl CoreService {
         // G4: 恢复曲线周期tick / G4: Recovery curve periodic tick
         {
             let stage = self.relationship.lock().current_stage().clone();
-            let mut mgr = self.conflict.lock();
+            let mut mgr = self.conflict.engine.lock();
             mgr.recovery_curve.tick(&stage, now_ts);
         }
 
         // 持久化当前冲突状态到 sled / Persist current conflict state to sled
-        if let Some(ref store) = self.conflict_store {
+        if let Some(ref store) = self.conflict.store {
             let s = store.lock();
-            let mgr = self.conflict.lock();
+            let mgr = self.conflict.engine.lock();
             match s.save(&mgr) {
                 Ok(()) => tracing::debug!("[Conflict] State persisted to sled"),
                 Err(e) => tracing::warn!("[Conflict] Persist failed: {}", e),
             }
         }
         // 冲突模式学习器衰减 + 修剪 / Pattern learner decay + pruning
-        self.conflict_learner.lock().tick(now_ts);
+        self.conflict_engine.lock().tick(now_ts);
     }
 
     pub fn emotional_demand_prompt_fragment(&self, pleasure: f32, arousal: f32) -> String {
@@ -669,7 +669,7 @@ impl CoreService {
         // 获取需求过载严重度（轻量检测，不修改状态）
         let demand_severity = 0.0; // 简化：需求严重度由 tick 检测
                                    // 获取脆弱窗口状态
-        let is_vulnerable = self.vulnerability_window.lock().is_in_vulnerable_state();
+        let is_vulnerable = self.vulnerability.window.lock().is_in_vulnerable_state();
         // 更新自我关怀边界
         let stage = self.relationship.lock().current_stage().clone();
         let mut sc = self.self_care_boundary.lock();

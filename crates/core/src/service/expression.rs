@@ -103,7 +103,7 @@ impl CoreService {
         }
 
         // 3. 若无持久化存储，仅更新缓存 / If no persistent store, only update cache
-        if let Some(ref store) = self.style_memory_store {
+        if let Some(ref store) = self.style.store {
             // 当前情感 PAD → 风格嵌入（基于 PAD 调制零嵌入）/ Current PAD → style embedding (modulated from zero)
             let pad = {
                 let emo = self.emotion.lock();
@@ -128,7 +128,7 @@ impl CoreService {
                         .lock()
                         .apply_positive_and_save("default", &target_style, &current_style)
                 {
-                    *self.style_offset_cache.lock() = new_offset.clone();
+                    *self.style.engine.lock() = new_offset.clone();
                     tracing::debug!(
                         "[StyleMemory] 正反馈×{}: offset norm={:.4}",
                         positive_count,
@@ -145,7 +145,7 @@ impl CoreService {
                         .lock()
                         .apply_negative_and_save("default", &rejected_style, &current_style)
                 {
-                    *self.style_offset_cache.lock() = new_offset.clone();
+                    *self.style.engine.lock() = new_offset.clone();
                     tracing::debug!(
                         "[StyleMemory] 负反馈×{}: offset norm={:.4}",
                         negative_count,
@@ -158,7 +158,7 @@ impl CoreService {
 
     /// 获取当前风格偏移缓存（零锁热路径读）/ Get current style offset cache (zero-lock hot-path read)
     pub fn style_offset(&self) -> StyleOffset {
-        self.style_offset_cache.lock().clone()
+        self.style.engine.lock().clone()
     }
 
     pub fn expression_timing_urgency(&self) -> f32 {

@@ -43,6 +43,7 @@ pub mod replay;
 pub mod rules;
 pub mod sanctuary;
 pub mod selfplay;
+pub mod store_core; // 统一存储错误与认知域存储接口 / Unified store error & DomainStore trait
 pub mod summarizer;
 pub mod teach_detector;
 pub mod token_budget;
@@ -57,13 +58,14 @@ pub mod followup_tracker;
 pub mod kinesics_mapper;
 pub mod multi_item_weaver;
 pub mod prosody_mapper;
+pub mod resonance_core;
 pub mod semantic_association;
 pub mod style_memory;
 pub mod style_modulator;
 pub mod subtext_engine;
 pub mod timing_mapper;
 
-pub mod conflict_pattern_learner;
+pub mod conflict_engine; // 统一冲突引擎（合并 conflict_growth + conflict_pattern_learner）/ Unified conflict engine
 pub mod conflict_reconciliation;
 pub mod conflict_store;
 pub mod emotional_demand_boundary;
@@ -97,8 +99,8 @@ pub mod vulnerability_wisdom;
 
 // Gap#1/#3/#4 增强 — 独处品质 / 期待深度 / 冲突成长
 // Gap#1/#3/#4 enhancement — Solitude quality / Anticipation depth / Conflict growth
+// 注：conflict_growth 已合并入 conflict_engine / Note: conflict_growth merged into conflict_engine
 pub mod anticipation_depth;
-pub mod conflict_growth;
 pub mod solitude_quality;
 
 // 极致打磨 90→95% — Extreme Polishing | 2026-07-03

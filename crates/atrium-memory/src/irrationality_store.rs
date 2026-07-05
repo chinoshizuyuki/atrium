@@ -15,28 +15,7 @@ use crate::emotional_irrationality::{
 };
 
 // ════════════════════════════════════════════════════════════════════
-// IrrationalityStoreError — 存储错误类型 / Storage Error Type
-// ════════════════════════════════════════════════════════════════════
-
-/// 非理性存储错误 / Irrationality store error
-#[derive(Debug)]
-pub enum IrrationalityStoreError {
-    /// sled 数据库错误 / Sled database error
-    SledError(String),
-    /// 序列化/反序列化错误 / Codec (de)serialization error
-    CodecError(String),
-}
-
-impl std::fmt::Display for IrrationalityStoreError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::SledError(e) => write!(f, "irrationality sled error: {}", e),
-            Self::CodecError(e) => write!(f, "irrationality codec error: {}", e),
-        }
-    }
-}
-
-impl std::error::Error for IrrationalityStoreError {}
+// 统一使用 store_core::StoreError / Unified StoreError from store_core
 
 // ════════════════════════════════════════════════════════════════════
 // SerializableIrrationalityManager — 可序列化的非理性管理器快照
@@ -190,16 +169,16 @@ pub struct IrrationalityStore {
 
 impl IrrationalityStore {
     /// 打开或创建非理性存储 / Open or create irrationality store
-    pub fn open(db: &sled::Db) -> Result<Self, IrrationalityStoreError> {
+    pub fn open(db: &sled::Db) -> Result<Self, crate::store_core::StoreError> {
         let tree = db
             .open_tree("irrationality_manager")
-            .map_err(|e| IrrationalityStoreError::SledError(e.to_string()))?;
+            .map_err(|e| crate::store_core::StoreError::Sled(e.to_string()))?;
         let pulse_tree = db
             .open_tree("irrationality_pulses")
-            .map_err(|e| IrrationalityStoreError::SledError(e.to_string()))?;
+            .map_err(|e| crate::store_core::StoreError::Sled(e.to_string()))?;
         let residue_tree = db
             .open_tree("irrationality_residues")
-            .map_err(|e| IrrationalityStoreError::SledError(e.to_string()))?;
+            .map_err(|e| crate::store_core::StoreError::Sled(e.to_string()))?;
         Ok(Self {
             tree,
             pulse_tree,
@@ -211,32 +190,32 @@ impl IrrationalityStore {
     pub fn save(
         &self,
         mgr: &crate::emotional_irrationality::IrrationalityManager,
-    ) -> Result<(), IrrationalityStoreError> {
+    ) -> Result<(), crate::store_core::StoreError> {
         let snapshot = SerializableIrrationalityManager::from(mgr);
         let value = bincode::serialize(&snapshot)
-            .map_err(|e| IrrationalityStoreError::CodecError(e.to_string()))?;
+            .map_err(|e| crate::store_core::StoreError::Codec(e.to_string()))?;
         self.tree
             .insert(b"manager", value.as_slice())
-            .map_err(|e| IrrationalityStoreError::SledError(e.to_string()))?;
+            .map_err(|e| crate::store_core::StoreError::Sled(e.to_string()))?;
 
         // 同步更新脉冲索引 / Sync pulse index
         for pulse in &mgr.pulse.active_pulses {
             let key = pulse.id.to_be_bytes();
             let val = bincode::serialize(pulse)
-                .map_err(|e| IrrationalityStoreError::CodecError(e.to_string()))?;
+                .map_err(|e| crate::store_core::StoreError::Codec(e.to_string()))?;
             self.pulse_tree
                 .insert(key, val.as_slice())
-                .map_err(|e| IrrationalityStoreError::SledError(e.to_string()))?;
+                .map_err(|e| crate::store_core::StoreError::Sled(e.to_string()))?;
         }
 
         // 同步更新残留索引 / Sync residue index
         for residue in &mgr.residue.active_residues {
             let key = residue.id.to_be_bytes();
             let val = bincode::serialize(residue)
-                .map_err(|e| IrrationalityStoreError::CodecError(e.to_string()))?;
+                .map_err(|e| crate::store_core::StoreError::Codec(e.to_string()))?;
             self.residue_tree
                 .insert(key, val.as_slice())
-                .map_err(|e| IrrationalityStoreError::SledError(e.to_string()))?;
+                .map_err(|e| crate::store_core::StoreError::Sled(e.to_string()))?;
         }
 
         Ok(())
@@ -245,15 +224,16 @@ impl IrrationalityStore {
     /// 加载非理性管理器 / Load irrationality manager
     pub fn load(
         &self,
-    ) -> Result<crate::emotional_irrationality::IrrationalityManager, IrrationalityStoreError> {
+    ) -> Result<crate::emotional_irrationality::IrrationalityManager, crate::store_core::StoreError>
+    {
         match self.tree.get(b"manager") {
             Ok(Some(value)) => {
                 let snapshot: SerializableIrrationalityManager = bincode::deserialize(&value)
-                    .map_err(|e| IrrationalityStoreError::CodecError(e.to_string()))?;
+                    .map_err(|e| crate::store_core::StoreError::Codec(e.to_string()))?;
                 Ok(snapshot.into_manager())
             }
             Ok(None) => Ok(crate::emotional_irrationality::IrrationalityManager::default()),
-            Err(e) => Err(IrrationalityStoreError::SledError(e.to_string())),
+            Err(e) => Err(crate::store_core::StoreError::Sled(e.to_string())),
         }
     }
 
@@ -261,16 +241,16 @@ impl IrrationalityStore {
     pub fn get_pulse(
         &self,
         pulse_id: u64,
-    ) -> Result<Option<ChaoticPulse>, IrrationalityStoreError> {
+    ) -> Result<Option<ChaoticPulse>, crate::store_core::StoreError> {
         let key = pulse_id.to_be_bytes();
         match self.pulse_tree.get(key) {
             Ok(Some(value)) => {
                 let pulse: ChaoticPulse = bincode::deserialize(&value)
-                    .map_err(|e| IrrationalityStoreError::CodecError(e.to_string()))?;
+                    .map_err(|e| crate::store_core::StoreError::Codec(e.to_string()))?;
                 Ok(Some(pulse))
             }
             Ok(None) => Ok(None),
-            Err(e) => Err(IrrationalityStoreError::SledError(e.to_string())),
+            Err(e) => Err(crate::store_core::StoreError::Sled(e.to_string())),
         }
     }
 
@@ -278,24 +258,24 @@ impl IrrationalityStore {
     pub fn get_residue(
         &self,
         residue_id: u64,
-    ) -> Result<Option<EmotionResidue>, IrrationalityStoreError> {
+    ) -> Result<Option<EmotionResidue>, crate::store_core::StoreError> {
         let key = residue_id.to_be_bytes();
         match self.residue_tree.get(key) {
             Ok(Some(value)) => {
                 let residue: EmotionResidue = bincode::deserialize(&value)
-                    .map_err(|e| IrrationalityStoreError::CodecError(e.to_string()))?;
+                    .map_err(|e| crate::store_core::StoreError::Codec(e.to_string()))?;
                 Ok(Some(residue))
             }
             Ok(None) => Ok(None),
-            Err(e) => Err(IrrationalityStoreError::SledError(e.to_string())),
+            Err(e) => Err(crate::store_core::StoreError::Sled(e.to_string())),
         }
     }
 
     /// 获取所有脉冲 ID / Get all pulse IDs
-    pub fn pulse_ids(&self) -> Result<Vec<u64>, IrrationalityStoreError> {
+    pub fn pulse_ids(&self) -> Result<Vec<u64>, crate::store_core::StoreError> {
         let mut ids = Vec::new();
         for item in self.pulse_tree.iter() {
-            let (key, _) = item.map_err(|e| IrrationalityStoreError::SledError(e.to_string()))?;
+            let (key, _) = item.map_err(|e| crate::store_core::StoreError::Sled(e.to_string()))?;
             let bytes: [u8; 8] = key.as_ref().try_into().unwrap_or([0u8; 8]);
             ids.push(u64::from_be_bytes(bytes));
         }
@@ -303,10 +283,10 @@ impl IrrationalityStore {
     }
 
     /// 获取所有残留 ID / Get all residue IDs
-    pub fn residue_ids(&self) -> Result<Vec<u64>, IrrationalityStoreError> {
+    pub fn residue_ids(&self) -> Result<Vec<u64>, crate::store_core::StoreError> {
         let mut ids = Vec::new();
         for item in self.residue_tree.iter() {
-            let (key, _) = item.map_err(|e| IrrationalityStoreError::SledError(e.to_string()))?;
+            let (key, _) = item.map_err(|e| crate::store_core::StoreError::Sled(e.to_string()))?;
             let bytes: [u8; 8] = key.as_ref().try_into().unwrap_or([0u8; 8]);
             ids.push(u64::from_be_bytes(bytes));
         }
@@ -321,6 +301,37 @@ impl IrrationalityStore {
     /// 残留总数 / Residue count
     pub fn residue_count(&self) -> usize {
         self.residue_tree.len()
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════
+// DomainStore + VaultTree trait 实现 / Trait Implementations
+// ════════════════════════════════════════════════════════════════════
+
+/// VaultTree 实现 — 主 tree 承载 SerializableIrrationalityManager
+/// VaultTree impl — main tree carries SerializableIrrationalityManager
+impl crate::atrium_vault::VaultTree<SerializableIrrationalityManager> for IrrationalityStore {
+    fn tree(&self) -> &sled::Tree {
+        &self.tree
+    }
+}
+
+/// DomainStore 实现 — 情绪非理性记忆子系统的存储接口
+/// DomainStore impl — irrationality memory subsystem store interface
+impl crate::store_core::DomainStore for IrrationalityStore {
+    fn domain_name(&self) -> &'static str {
+        "irrationality"
+    }
+
+    fn tree_count(&self) -> usize {
+        self.tree.len() + self.pulse_tree.len() + self.residue_tree.len()
+    }
+
+    fn flush_tree(&self) -> Result<(), crate::store_core::StoreError> {
+        self.tree.flush()?;
+        self.pulse_tree.flush()?;
+        self.residue_tree.flush()?;
+        Ok(())
     }
 }
 

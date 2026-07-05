@@ -1,6 +1,6 @@
 [package]
 name = "atrium-memory"
-version = "0.2.0"
+version = "0.10.0"
 edition = "2021"
 
 [features]
@@ -34,4 +34,10 @@ criterion.workspace = true
 
 [[bench]]
 name = "memory_bench"
+harness = false
+
+# 新通电模块基准 / Powered-module benchmarks
+# P3-A: solitude_quality / anticipation_depth / conflict_growth 热路径验证
+[[bench]]
+name = "powered_modules_bench"
 harness = false

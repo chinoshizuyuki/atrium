@@ -22,29 +22,10 @@ use crate::imperfection_engine::{
 };
 
 // ════════════════════════════════════════════════════════════════════
-// ImperfectionStoreError — 存储错误类型 / Storage Error Type
+// crate::store_core::StoreError — 存储错误类型 / Storage Error Type
 // ════════════════════════════════════════════════════════════════════
 
-/// 适度犯错存储错误 / Imperfection store error
-#[derive(Debug)]
-pub enum ImperfectionStoreError {
-    /// sled 数据库错误 / Sled database error
-    SledError(String),
-    /// 序列化/反序列化错误 / Codec (de)serialization error
-    CodecError(String),
-}
-
-impl std::fmt::Display for ImperfectionStoreError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::SledError(e) => write!(f, "imperfection sled error: {}", e),
-            Self::CodecError(e) => write!(f, "imperfection codec error: {}", e),
-        }
-    }
-}
-
-impl std::error::Error for ImperfectionStoreError {}
-
+// 统一使用 store_core::StoreError / Unified StoreError from store_core
 // ════════════════════════════════════════════════════════════════════
 // SerializableImperfectionEngine — 可序列化的引擎快照
 // Serializable engine snapshot for sled bincode persistence
@@ -140,13 +121,13 @@ pub struct ImperfectionStore {
 
 impl ImperfectionStore {
     /// 打开或创建适度犯错存储 / Open or create imperfection store
-    pub fn open(db: &sled::Db) -> Result<Self, ImperfectionStoreError> {
+    pub fn open(db: &sled::Db) -> Result<Self, crate::store_core::StoreError> {
         let tree = db
             .open_tree("imperfection_engine")
-            .map_err(|e| ImperfectionStoreError::SledError(e.to_string()))?;
+            .map_err(|e| crate::store_core::StoreError::Sled(e.to_string()))?;
         let history_tree = db
             .open_tree("imperfection_history")
-            .map_err(|e| ImperfectionStoreError::SledError(e.to_string()))?;
+            .map_err(|e| crate::store_core::StoreError::Sled(e.to_string()))?;
         Ok(Self { tree, history_tree })
     }
 
@@ -157,13 +138,13 @@ impl ImperfectionStore {
     /// history_tree；此处仅保存引擎内部状态（含 pending_corrections）。
     /// history_tree 的 key 空间专属于 MistakeRecord，禁止写入 PendingCorrection
     /// 以避免类型混淆导致反序列化失败。
-    pub fn save(&self, engine: &ImperfectionEngine) -> Result<(), ImperfectionStoreError> {
+    pub fn save(&self, engine: &ImperfectionEngine) -> Result<(), crate::store_core::StoreError> {
         let snapshot = SerializableImperfectionEngine::from(engine);
         let value = bincode::serialize(&snapshot)
-            .map_err(|e| ImperfectionStoreError::CodecError(e.to_string()))?;
+            .map_err(|e| crate::store_core::StoreError::Codec(e.to_string()))?;
         self.tree
             .insert(b"engine", value.as_slice())
-            .map_err(|e| ImperfectionStoreError::SledError(e.to_string()))?;
+            .map_err(|e| crate::store_core::StoreError::Sled(e.to_string()))?;
 
         Ok(())
     }
@@ -172,15 +153,15 @@ impl ImperfectionStore {
     ///
     /// 从 sled 反序列化快照，通过 reconstruct() 重建完整引擎。
     /// 若无持久化数据，返回默认引擎。
-    pub fn load(&self) -> Result<ImperfectionEngine, ImperfectionStoreError> {
+    pub fn load(&self) -> Result<ImperfectionEngine, crate::store_core::StoreError> {
         match self.tree.get(b"engine") {
             Ok(Some(value)) => {
                 let snapshot: SerializableImperfectionEngine = bincode::deserialize(&value)
-                    .map_err(|e| ImperfectionStoreError::CodecError(e.to_string()))?;
+                    .map_err(|e| crate::store_core::StoreError::Codec(e.to_string()))?;
                 Ok(snapshot.into_engine())
             }
             Ok(None) => Ok(ImperfectionEngine::new(ImperfectionConfig::default())),
-            Err(e) => Err(ImperfectionStoreError::SledError(e.to_string())),
+            Err(e) => Err(crate::store_core::StoreError::Sled(e.to_string())),
         }
     }
 
@@ -191,13 +172,13 @@ impl ImperfectionStore {
     pub fn save_record(
         &self,
         record: &crate::imperfection_engine::MistakeRecord,
-    ) -> Result<(), ImperfectionStoreError> {
+    ) -> Result<(), crate::store_core::StoreError> {
         let key = record.id.to_be_bytes();
         let val = bincode::serialize(record)
-            .map_err(|e| ImperfectionStoreError::CodecError(e.to_string()))?;
+            .map_err(|e| crate::store_core::StoreError::Codec(e.to_string()))?;
         self.history_tree
             .insert(key, val.as_slice())
-            .map_err(|e| ImperfectionStoreError::SledError(e.to_string()))?;
+            .map_err(|e| crate::store_core::StoreError::Sled(e.to_string()))?;
         Ok(())
     }
 
@@ -205,25 +186,26 @@ impl ImperfectionStore {
     pub fn get_record(
         &self,
         record_id: u64,
-    ) -> Result<Option<crate::imperfection_engine::MistakeRecord>, ImperfectionStoreError> {
+    ) -> Result<Option<crate::imperfection_engine::MistakeRecord>, crate::store_core::StoreError>
+    {
         let key = record_id.to_be_bytes();
         match self.history_tree.get(key) {
             Ok(Some(value)) => {
                 let record: crate::imperfection_engine::MistakeRecord =
                     bincode::deserialize(&value)
-                        .map_err(|e| ImperfectionStoreError::CodecError(e.to_string()))?;
+                        .map_err(|e| crate::store_core::StoreError::Codec(e.to_string()))?;
                 Ok(Some(record))
             }
             Ok(None) => Ok(None),
-            Err(e) => Err(ImperfectionStoreError::SledError(e.to_string())),
+            Err(e) => Err(crate::store_core::StoreError::Sled(e.to_string())),
         }
     }
 
     /// 获取所有历史记录 ID / Get all history record IDs
-    pub fn history_ids(&self) -> Result<Vec<u64>, ImperfectionStoreError> {
+    pub fn history_ids(&self) -> Result<Vec<u64>, crate::store_core::StoreError> {
         let mut ids = Vec::new();
         for item in self.history_tree.iter() {
-            let (key, _) = item.map_err(|e| ImperfectionStoreError::SledError(e.to_string()))?;
+            let (key, _) = item.map_err(|e| crate::store_core::StoreError::Sled(e.to_string()))?;
             let bytes: [u8; 8] = key.as_ref().try_into().unwrap_or([0u8; 8]);
             ids.push(u64::from_be_bytes(bytes));
         }
@@ -233,6 +215,36 @@ impl ImperfectionStore {
     /// 历史记录总数 / History record count
     pub fn history_count(&self) -> usize {
         self.history_tree.len()
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════
+// DomainStore + VaultTree trait 实现 / Trait Implementations
+// ════════════════════════════════════════════════════════════════════
+
+/// VaultTree 实现 — 主 tree 承载 SerializableImperfectionEngine
+/// VaultTree impl — main tree carries SerializableImperfectionEngine
+impl crate::atrium_vault::VaultTree<SerializableImperfectionEngine> for ImperfectionStore {
+    fn tree(&self) -> &sled::Tree {
+        &self.tree
+    }
+}
+
+/// DomainStore 实现 — 犯错记忆子系统的存储接口
+/// DomainStore impl — imperfection memory subsystem store interface
+impl crate::store_core::DomainStore for ImperfectionStore {
+    fn domain_name(&self) -> &'static str {
+        "imperfection"
+    }
+
+    fn tree_count(&self) -> usize {
+        self.tree.len() + self.history_tree.len()
+    }
+
+    fn flush_tree(&self) -> Result<(), crate::store_core::StoreError> {
+        self.tree.flush()?;
+        self.history_tree.flush()?;
+        Ok(())
     }
 }
 

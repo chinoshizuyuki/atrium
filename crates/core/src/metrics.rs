@@ -198,8 +198,18 @@ mod tests {
     #[test]
     fn test_fmt_key() {
         // 验证键名拼接格式正确 / Verify key formatting is correct
-        init_prefix("custom_");
-        let key = fmt_key("msg_received_total");
-        assert_eq!(key, "custom_msg_received_total");
+        // OnceLock 只能设置一次，不依赖特定前缀值 / OnceLock is write-once, don't depend on specific prefix
+        let suffix = "msg_received_total";
+        let key = fmt_key(suffix);
+        assert!(
+            key.ends_with(suffix),
+            "键名应以后缀结尾 / key should end with suffix: key={}",
+            key
+        );
+        assert!(
+            key.len() > suffix.len(),
+            "键名应包含前缀 / key should contain prefix: key={}",
+            key
+        );
     }
 }

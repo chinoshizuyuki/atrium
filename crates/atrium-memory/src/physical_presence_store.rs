@@ -19,28 +19,7 @@ use crate::physical_presence::{
 };
 
 // ════════════════════════════════════════════════════════════════════
-// PhysicalPresenceStoreError — 存储错误类型 / Storage Error Type
-// ════════════════════════════════════════════════════════════════════
-
-/// 物理存在感存储错误 / Physical presence store error
-#[derive(Debug)]
-pub enum PhysicalPresenceStoreError {
-    /// sled 数据库错误 / Sled database error
-    SledError(String),
-    /// 序列化/反序列化错误 / Codec (de)serialization error
-    CodecError(String),
-}
-
-impl std::fmt::Display for PhysicalPresenceStoreError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::SledError(e) => write!(f, "physical_presence sled error: {}", e),
-            Self::CodecError(e) => write!(f, "physical_presence codec error: {}", e),
-        }
-    }
-}
-
-impl std::error::Error for PhysicalPresenceStoreError {}
+// 统一使用 store_core::StoreError / Unified StoreError from store_core
 
 // ════════════════════════════════════════════════════════════════════
 // SerializablePhysicalPresence — 可序列化的引擎快照
@@ -193,13 +172,13 @@ pub struct PhysicalPresenceStore {
 
 impl PhysicalPresenceStore {
     /// 打开或创建物理存在感存储 / Open or create physical presence store
-    pub fn open(db: &sled::Db) -> Result<Self, PhysicalPresenceStoreError> {
+    pub fn open(db: &sled::Db) -> Result<Self, crate::store_core::StoreError> {
         let tree = db
             .open_tree("physical_presence_engine")
-            .map_err(|e| PhysicalPresenceStoreError::SledError(e.to_string()))?;
+            .map_err(|e| crate::store_core::StoreError::Sled(e.to_string()))?;
         let signature_tree = db
             .open_tree("physical_presence_signature")
-            .map_err(|e| PhysicalPresenceStoreError::SledError(e.to_string()))?;
+            .map_err(|e| crate::store_core::StoreError::Sled(e.to_string()))?;
         Ok(Self {
             tree,
             signature_tree,
@@ -210,20 +189,20 @@ impl PhysicalPresenceStore {
     pub fn save(
         &self,
         engine: &crate::physical_presence::PhysicalPresenceEngine,
-    ) -> Result<(), PhysicalPresenceStoreError> {
+    ) -> Result<(), crate::store_core::StoreError> {
         let snapshot = SerializablePhysicalPresence::from(engine);
         let value = bincode::serialize(&snapshot)
-            .map_err(|e| PhysicalPresenceStoreError::CodecError(e.to_string()))?;
+            .map_err(|e| crate::store_core::StoreError::Codec(e.to_string()))?;
         self.tree
             .insert(b"engine", value.as_slice())
-            .map_err(|e| PhysicalPresenceStoreError::SledError(e.to_string()))?;
+            .map_err(|e| crate::store_core::StoreError::Sled(e.to_string()))?;
 
         // 同步更新签名索引 / Sync signature index
         let sig_value = bincode::serialize(&engine.signature)
-            .map_err(|e| PhysicalPresenceStoreError::CodecError(e.to_string()))?;
+            .map_err(|e| crate::store_core::StoreError::Codec(e.to_string()))?;
         self.signature_tree
             .insert(b"current", sig_value.as_slice())
-            .map_err(|e| PhysicalPresenceStoreError::SledError(e.to_string()))?;
+            .map_err(|e| crate::store_core::StoreError::Sled(e.to_string()))?;
 
         Ok(())
     }
@@ -231,29 +210,60 @@ impl PhysicalPresenceStore {
     /// 加载物理存在感引擎 / Load physical presence engine
     pub fn load(
         &self,
-    ) -> Result<crate::physical_presence::PhysicalPresenceEngine, PhysicalPresenceStoreError> {
+    ) -> Result<crate::physical_presence::PhysicalPresenceEngine, crate::store_core::StoreError>
+    {
         match self.tree.get(b"engine") {
             Ok(Some(value)) => {
                 let snapshot: SerializablePhysicalPresence = bincode::deserialize(&value)
-                    .map_err(|e| PhysicalPresenceStoreError::CodecError(e.to_string()))?;
+                    .map_err(|e| crate::store_core::StoreError::Codec(e.to_string()))?;
                 Ok(snapshot.into_engine())
             }
             Ok(None) => Ok(crate::physical_presence::PhysicalPresenceEngine::default()),
-            Err(e) => Err(PhysicalPresenceStoreError::SledError(e.to_string())),
+            Err(e) => Err(crate::store_core::StoreError::Sled(e.to_string())),
         }
     }
 
     /// 获取体感签名 / Get body signature (high-read path)
-    pub fn get_signature(&self) -> Result<Option<BodySignature>, PhysicalPresenceStoreError> {
+    pub fn get_signature(&self) -> Result<Option<BodySignature>, crate::store_core::StoreError> {
         match self.signature_tree.get(b"current") {
             Ok(Some(value)) => {
                 let sig: BodySignature = bincode::deserialize(&value)
-                    .map_err(|e| PhysicalPresenceStoreError::CodecError(e.to_string()))?;
+                    .map_err(|e| crate::store_core::StoreError::Codec(e.to_string()))?;
                 Ok(Some(sig))
             }
             Ok(None) => Ok(None),
-            Err(e) => Err(PhysicalPresenceStoreError::SledError(e.to_string())),
+            Err(e) => Err(crate::store_core::StoreError::Sled(e.to_string())),
         }
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════
+// DomainStore + VaultTree trait 实现 / Trait Implementations
+// ════════════════════════════════════════════════════════════════════
+
+/// VaultTree 实现 — 主 tree 承载 SerializablePhysicalPresence
+/// VaultTree impl — main tree carries SerializablePhysicalPresence
+impl crate::atrium_vault::VaultTree<SerializablePhysicalPresence> for PhysicalPresenceStore {
+    fn tree(&self) -> &sled::Tree {
+        &self.tree
+    }
+}
+
+/// DomainStore 实现 — 物理存在感记忆子系统的存储接口
+/// DomainStore impl — physical presence memory subsystem store interface
+impl crate::store_core::DomainStore for PhysicalPresenceStore {
+    fn domain_name(&self) -> &'static str {
+        "physical_presence"
+    }
+
+    fn tree_count(&self) -> usize {
+        self.tree.len() + self.signature_tree.len()
+    }
+
+    fn flush_tree(&self) -> Result<(), crate::store_core::StoreError> {
+        self.tree.flush()?;
+        self.signature_tree.flush()?;
+        Ok(())
     }
 }
 

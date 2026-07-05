@@ -21,6 +21,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::resonance_core::ResonanceEngine;
+
 // ── 配置 / Config ──
 
 /// 仪式共振配置 / Ritual resonance configuration
@@ -299,6 +301,35 @@ fn relation_scale(ordinal: u8) -> f32 {
     }
 }
 
+// ════════════════════════════════════════════════════════════════════
+// ResonanceEngine trait 实现 / ResonanceEngine trait impl
+// ════════════════════════════════════════════════════════════════════
+
+/// 仪式共振引擎是无状态计算器——脉冲在被调用时即时产生并消费，
+/// 不维护持续的情感残留，因此 PAD 增量恒为零，活跃度恒为零。
+///
+/// Ritual resonance engine is a stateless calculator — pulses are produced
+/// and consumed on demand, with no persistent emotional state.
+impl ResonanceEngine for RitualResonanceEngine {
+    /// 当前 PAD 增量 — 无状态，恒为零 / Current PAD delta — stateless, always zero
+    fn current_pad_delta(&self, _now_secs: f64) -> (f32, f32, f32) {
+        (0.0, 0.0, 0.0)
+    }
+
+    /// 时间步进 — 无状态，空操作 / Time tick — stateless, no-op
+    fn tick(&mut self, _now_secs: f64) {}
+
+    /// 活跃度 — 无持续状态，恒为零 / Activity — no persistent state, always zero
+    fn activity(&self) -> f32 {
+        0.0
+    }
+
+    /// 共振类型标签 / Resonance type label
+    fn resonance_label(&self) -> &'static str {
+        "仪式共振/RitualResonance"
+    }
+}
+
 // ── 测试 / Tests ──
 
 #[cfg(test)]
@@ -512,5 +543,44 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ── ResonanceEngine trait 测试 / Trait Tests ──
+
+    #[test]
+    fn test_trait_ritual_pad_delta_always_zero() {
+        // 无状态引擎，PAD 恒为零 / Stateless engine, PAD always zero
+        let engine = RitualResonanceEngine::new();
+        assert_eq!(engine.current_pad_delta(0.0), (0.0, 0.0, 0.0));
+        assert_eq!(engine.current_pad_delta(99999.0), (0.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn test_trait_ritual_tick_noop() {
+        // tick 不改变任何状态 / tick does not change state
+        let mut engine = RitualResonanceEngine::new();
+        let before = engine.config.base_pleasure_pulse;
+        engine.tick(100.0);
+        assert_eq!(engine.config.base_pleasure_pulse, before);
+    }
+
+    #[test]
+    fn test_trait_ritual_activity_zero() {
+        // 无状态，活跃度恒为零 / Stateless, activity always zero
+        let engine = RitualResonanceEngine::new();
+        assert_eq!(engine.activity(), 0.0);
+    }
+
+    #[test]
+    fn test_trait_ritual_label() {
+        let engine = RitualResonanceEngine::new();
+        assert_eq!(engine.resonance_label(), "仪式共振/RitualResonance");
+    }
+
+    #[test]
+    fn test_trait_ritual_prompt_fragment_empty() {
+        // PAD 为零 → 不注入 / Zero PAD → no injection
+        let engine = RitualResonanceEngine::new();
+        assert!(engine.prompt_fragment(0.0).is_empty());
     }
 }

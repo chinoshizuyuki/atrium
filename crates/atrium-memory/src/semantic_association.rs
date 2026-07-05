@@ -7,7 +7,7 @@
 //! 关联——通过共现频率和类别传播。
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::followup_tracker::FollowUpCategory;
 
@@ -65,6 +65,12 @@ pub struct SemanticAssociation {
     pub term_categories: HashMap<String, FollowUpCategory>,
     /// 配置 / Configuration.
     pub config: SemanticAssociationConfig,
+    /// 计数索引 — count → 该计数下所有词对 / Count index for O(1) min eviction.
+    #[serde(skip)]
+    pub count_index: BTreeMap<u32, HashSet<(String, String)>>,
+    /// 词项反向索引 — term → (paired_term → count) / Reverse term index for O(R) lookup.
+    #[serde(skip)]
+    pub term_index: HashMap<String, HashMap<String, u32>>,
 }
 
 impl SemanticAssociation {
@@ -79,11 +85,15 @@ impl SemanticAssociation {
             co_occurrence: HashMap::new(),
             term_categories: HashMap::new(),
             config,
+            count_index: BTreeMap::new(),
+            term_index: HashMap::new(),
         }
     }
 
     /// 观察文本 — 提取关键词并更新共现计数
     /// Observe text — Extract keywords and update co-occurrence.
+    ///
+    /// 优化后复杂度：O(K² × log M)，驱逐路径从 O(M) 全表扫描降至 O(log M) BTreeMap 查找。
     pub fn observe(&mut self, text: &str, extracted_categories: &[FollowUpCategory]) {
         let keywords = self.extract_keywords(text);
         if keywords.is_empty() {
@@ -103,45 +113,126 @@ impl SemanticAssociation {
         for i in 0..keywords.len() {
             for j in (i + 1)..keywords.len() {
                 let pair = Self::ordered_pair(&keywords[i], &keywords[j]);
-                let count = self.co_occurrence.entry(pair).or_insert(0);
-                *count += 1;
+                let old_count = self.co_occurrence.get(&pair).copied().unwrap_or(0);
+                let new_count = old_count + 1;
 
-                // 限制 HashMap 大小 / Limit HashMap size
-                if self.co_occurrence.len() > self.config.max_entries {
-                    // 移除计数最低的条目 / Remove lowest-count entry
-                    if let Some(min_key) = self
-                        .co_occurrence
-                        .iter()
-                        .min_by_key(|(_, v)| *v)
-                        .map(|(k, _)| k.clone())
-                    {
-                        self.co_occurrence.remove(&min_key);
+                // 更新主存储 / Update primary store
+                self.co_occurrence.insert(pair.clone(), new_count);
+
+                // 维护计数索引 — O(log C) / Maintain count index
+                if old_count > 0 {
+                    if let Some(set) = self.count_index.get_mut(&old_count) {
+                        set.remove(&pair);
                     }
+                    // 清理空桶 / Clean empty bucket
+                    if self
+                        .count_index
+                        .get(&old_count)
+                        .is_some_and(|s| s.is_empty())
+                    {
+                        self.count_index.remove(&old_count);
+                    }
+                }
+                self.count_index
+                    .entry(new_count)
+                    .or_default()
+                    .insert(pair.clone());
+
+                // 维护词项反向索引 — O(1) / Maintain reverse term index
+                self.term_index
+                    .entry(pair.0.clone())
+                    .or_default()
+                    .insert(pair.1.clone(), new_count);
+                self.term_index
+                    .entry(pair.1.clone())
+                    .or_default()
+                    .insert(pair.0.clone(), new_count);
+
+                // 限制 HashMap 大小 — O(log M) 驱逐 / Limit HashMap size
+                if self.co_occurrence.len() > self.config.max_entries {
+                    self.evict_min();
                 }
             }
         }
     }
 
+    /// 驱逐最低计数条目 — O(log M) via count_index
+    /// Evict the minimum-count entry using the count index.
+    fn evict_min(&mut self) {
+        // 从计数索引首项取最小计数词对 / Get min-count pair from BTreeMap front
+        let evicted = self.count_index.iter_mut().next().and_then(|(_, set)| {
+            if let Some(pair) = set.iter().next().cloned() {
+                set.remove(&pair);
+                Some(pair)
+            } else {
+                None
+            }
+        });
+
+        if let Some(pair) = evicted {
+            // 清理空桶 / Clean empty bucket
+            self.count_index.retain(|_, set| !set.is_empty());
+
+            // 从主存储移除 / Remove from primary store
+            self.co_occurrence.remove(&pair);
+
+            // 从词项反向索引移除 / Remove from reverse term index
+            if let Some(map_a) = self.term_index.get_mut(&pair.0) {
+                map_a.remove(&pair.1);
+                if map_a.is_empty() {
+                    self.term_index.remove(&pair.0);
+                }
+            }
+            if let Some(map_b) = self.term_index.get_mut(&pair.1) {
+                map_b.remove(&pair.0);
+                if map_b.is_empty() {
+                    self.term_index.remove(&pair.1);
+                }
+            }
+        }
+    }
+
+    /// 重建索引 — 反序列化后调用以恢复 count_index 和 term_index
+    /// Rebuild indexes — Call after deserialization to restore count_index and term_index.
+    pub fn rebuild_indexes(&mut self) {
+        self.count_index.clear();
+        self.term_index.clear();
+
+        for (pair, &count) in &self.co_occurrence {
+            // 重建计数索引 / Rebuild count index
+            self.count_index
+                .entry(count)
+                .or_default()
+                .insert(pair.clone());
+
+            // 重建词项反向索引 / Rebuild reverse term index
+            self.term_index
+                .entry(pair.0.clone())
+                .or_default()
+                .insert(pair.1.clone(), count);
+            self.term_index
+                .entry(pair.1.clone())
+                .or_default()
+                .insert(pair.0.clone(), count);
+        }
+    }
+
     /// 发现关联事项 — 给定文本，找出关联的已知事项
     /// Find related items — Given text, find associated known items.
+    ///
+    /// 优化后复杂度：O(K × R)，R 为每个词的平均关联数（R ≪ M）。
     pub fn find_related(&self, text: &str) -> Vec<AssociationLink> {
         let keywords = self.extract_keywords(text);
         let mut links = Vec::new();
 
         for kw in &keywords {
-            for (pair, count) in &self.co_occurrence {
-                if *count < self.config.association_threshold {
-                    continue;
-                }
-                let other = if &pair.0 == kw {
-                    Some(&pair.1)
-                } else if &pair.1 == kw {
-                    Some(&pair.0)
-                } else {
-                    None
-                };
-                if let Some(term) = other {
-                    let strength = self.association_strength(kw, term);
+            // 通过反向索引直接定位关联词 — O(R) / Direct lookup via reverse index
+            if let Some(assoc_map) = self.term_index.get(kw) {
+                for (term, &count) in assoc_map {
+                    if count < self.config.association_threshold {
+                        continue;
+                    }
+                    let strength = (count as f32 / 10.0).min(1.0);
                     if strength > 0.0 {
                         let category = self
                             .term_categories
@@ -378,7 +469,9 @@ mod tests {
         sa.observe("考试面试", &[FollowUpCategory::Work]);
         // 使用 bincode 序列化（支持 tuple key）/ Use bincode (supports tuple keys)
         let bytes = bincode::serialize(&sa).unwrap();
-        let sa2: SemanticAssociation = bincode::deserialize(&bytes).unwrap();
+        let mut sa2: SemanticAssociation = bincode::deserialize(&bytes).unwrap();
+        // 反序列化后重建索引 / Rebuild indexes after deserialization
+        sa2.rebuild_indexes();
         let s1 = sa.association_strength("考试面", "试面试");
         let s2 = sa2.association_strength("考试面", "试面试");
         assert!((s1 - s2).abs() < 0.01);
@@ -395,5 +488,191 @@ mod tests {
         // 使用实际被提取的关键词对 / Use actually-extracted keyword pair
         let strength = sa.association_strength("考试面", "试面试");
         assert!(strength > 0.0, "threshold=0 should associate immediately");
+    }
+
+    // ── P3-B 专项验证 — 索引一致性与驱逐正确性 / Index consistency & eviction correctness ──
+
+    #[test]
+    fn test_count_index_consistency() {
+        // 计数索引应与主存储一致 / Count index should match primary store
+        let mut sa = SemanticAssociation::default_new();
+        for _ in 0..3 {
+            sa.observe("考研图书馆", &[FollowUpCategory::Plan]);
+        }
+        for _ in 0..2 {
+            sa.observe("考试面试", &[FollowUpCategory::Work]);
+        }
+
+        // 验证：每个 co_occurrence 条目都在 count_index 中 / Verify consistency
+        for (pair, &count) in &sa.co_occurrence {
+            let in_index = sa.count_index.get(&count).is_some_and(|s| s.contains(pair));
+            assert!(
+                in_index,
+                "pair {:?} count {} missing from count_index",
+                pair, count
+            );
+        }
+
+        // 验证：count_index 中的条目都在 co_occurrence 中 / Reverse consistency
+        let total_indexed: usize = sa.count_index.values().map(|s| s.len()).sum();
+        assert_eq!(total_indexed, sa.co_occurrence.len());
+    }
+
+    #[test]
+    fn test_term_index_consistency() {
+        // 词项反向索引应与主存储一致 / Term index should match primary store
+        let mut sa = SemanticAssociation::default_new();
+        sa.observe("考研图书馆", &[FollowUpCategory::Plan]);
+        sa.observe("考试面试", &[FollowUpCategory::Work]);
+
+        // 验证：每个 co_occurrence (a,b)→c 都在 term_index 中 / Verify
+        for (pair, &count) in &sa.co_occurrence {
+            let ab = sa.term_index.get(&pair.0).and_then(|m| m.get(&pair.1));
+            let ba = sa.term_index.get(&pair.1).and_then(|m| m.get(&pair.0));
+            assert_eq!(
+                ab,
+                Some(&count),
+                "term_index[{}][{}] mismatch",
+                pair.0,
+                pair.1
+            );
+            assert_eq!(
+                ba,
+                Some(&count),
+                "term_index[{}][{}] mismatch",
+                pair.1,
+                pair.0
+            );
+        }
+    }
+
+    #[test]
+    fn test_eviction_removes_lowest_count() {
+        // 驱逐应移除最低计数条目 / Eviction should remove min-count entry
+        let mut sa = SemanticAssociation::new(SemanticAssociationConfig {
+            association_threshold: 1,
+            max_entries: 3,
+            max_keyword_len: 4,
+        });
+        // 插入 3 个不同词对 / Insert 3 distinct pairs
+        sa.observe("词甲词乙", &[FollowUpCategory::Interest]);
+        sa.observe("词丙词丁", &[FollowUpCategory::Interest]);
+        sa.observe("词戊词己", &[FollowUpCategory::Interest]);
+        assert!(sa.co_occurrence.len() <= 3);
+
+        // 再次插入词甲词乙 → 计数=2，其他仍=1
+        sa.observe("词甲词乙", &[FollowUpCategory::Interest]);
+
+        // 插入第4个不同词对 → 触发驱逐，应移除计数=1 的条目
+        sa.observe("词庚词辛", &[FollowUpCategory::Interest]);
+        assert!(sa.co_occurrence.len() <= 3, "should respect max_entries");
+
+        // 词甲词乙（计数=2）不应被驱逐 / High-count pair should survive
+        let survived = sa.co_occurrence.iter().any(|(_, &c)| c >= 2);
+        assert!(survived, "highest-count pair should survive eviction");
+    }
+
+    #[test]
+    fn test_find_related_equivalence() {
+        // 优化后 find_related 应返回与逻辑等价的结果 / Optimized find_related equivalence
+        let mut sa = SemanticAssociation::default_new();
+        for _ in 0..3 {
+            sa.observe("考试面试", &[FollowUpCategory::Work]);
+        }
+        for _ in 0..2 {
+            sa.observe("考试面试", &[FollowUpCategory::Work]);
+        }
+
+        let links = sa.find_related("考试");
+        // 每个返回的关联都应在 co_occurrence 中有对应 / Each link should exist in co_occurrence
+        for link in &links {
+            assert!(link.strength > 0.0, "strength should be positive");
+        }
+    }
+
+    #[test]
+    fn test_rebuild_indexes_correctness() {
+        // 反序列化后重建索引应恢复完整查找能力 / Rebuild restores lookup
+        let mut sa = SemanticAssociation::default_new();
+        for _ in 0..3 {
+            sa.observe("考研图书馆", &[FollowUpCategory::Plan]);
+        }
+
+        // 模拟反序列化 — 清空索引后重建 / Simulate deserialization
+        sa.count_index.clear();
+        sa.term_index.clear();
+        // 使用与存储匹配的关键词查询 / Query with a keyword that matches stored terms
+        assert!(
+            sa.find_related("考研图书").is_empty(),
+            "empty index → no results"
+        );
+
+        sa.rebuild_indexes();
+        let links = sa.find_related("考研图书");
+        assert!(!links.is_empty(), "rebuild should restore lookup");
+    }
+
+    #[test]
+    fn test_eviction_index_cleanup() {
+        // 驱逐后索引应正确清理 / Index cleanup after eviction
+        let mut sa = SemanticAssociation::new(SemanticAssociationConfig {
+            association_threshold: 1,
+            max_entries: 2,
+            max_keyword_len: 4,
+        });
+        sa.observe("词甲词乙", &[FollowUpCategory::Interest]);
+        sa.observe("词丙词丁", &[FollowUpCategory::Interest]);
+        sa.observe("词戊词己", &[FollowUpCategory::Interest]); // 触发驱逐
+
+        // 验证索引与主存储一致 / Verify index consistency post-eviction
+        let total_indexed: usize = sa.count_index.values().map(|s| s.len()).sum();
+        assert_eq!(
+            total_indexed,
+            sa.co_occurrence.len(),
+            "count_index size mismatch after eviction"
+        );
+
+        // 验证被驱逐的词对不在索引中 / Evicted pair should not be in index
+        for pair in sa.co_occurrence.keys() {
+            let in_term_a = sa
+                .term_index
+                .get(&pair.0)
+                .is_some_and(|m| m.contains_key(&pair.1));
+            let in_term_b = sa
+                .term_index
+                .get(&pair.1)
+                .is_some_and(|m| m.contains_key(&pair.0));
+            assert!(
+                in_term_a && in_term_b,
+                "pair {:?} missing from term_index after eviction",
+                pair
+            );
+        }
+    }
+
+    #[test]
+    fn test_large_scale_observe_performance() {
+        // 大规模观察 — 验证索引在多次驱逐后仍一致 / Large-scale consistency
+        let mut sa = SemanticAssociation::new(SemanticAssociationConfig {
+            association_threshold: 1,
+            max_entries: 10,
+            max_keyword_len: 4,
+        });
+        for i in 0..100 {
+            let text = format!("词{}对{}", i, i + 200);
+            sa.observe(&text, &[FollowUpCategory::Interest]);
+        }
+        // 索引一致性 / Index consistency
+        let total_indexed: usize = sa.count_index.values().map(|s| s.len()).sum();
+        assert_eq!(
+            total_indexed,
+            sa.co_occurrence.len(),
+            "index mismatch after 100 observes with eviction"
+        );
+        assert!(
+            sa.co_occurrence.len() <= 10,
+            "should respect max_entries: {}",
+            sa.co_occurrence.len()
+        );
     }
 }

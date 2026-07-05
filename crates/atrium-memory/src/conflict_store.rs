@@ -14,29 +14,10 @@ use crate::conflict_reconciliation::{
 };
 
 // ════════════════════════════════════════════════════════════════════
-// ConflictStoreError — 存储错误类型 / Storage Error Type
+// crate::store_core::StoreError — 存储错误类型 / Storage Error Type
 // ════════════════════════════════════════════════════════════════════
 
-/// 冲突存储错误 / Conflict store error
-#[derive(Debug)]
-pub enum ConflictStoreError {
-    /// sled 数据库错误 / Sled database error
-    SledError(String),
-    /// 序列化/反序列化错误 / Codec (de)serialization error
-    CodecError(String),
-}
-
-impl std::fmt::Display for ConflictStoreError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::SledError(e) => write!(f, "conflict sled error: {}", e),
-            Self::CodecError(e) => write!(f, "conflict codec error: {}", e),
-        }
-    }
-}
-
-impl std::error::Error for ConflictStoreError {}
-
+// 统一使用 store_core::StoreError / Unified StoreError from store_core
 // ════════════════════════════════════════════════════════════════════
 // SerializableConflictManager — 可序列化的冲突管理器快照
 // Serializable ConflictManager snapshot for sled bincode persistence
@@ -208,13 +189,13 @@ pub struct ConflictStore {
 
 impl ConflictStore {
     /// 打开或创建冲突存储 / Open or create conflict store
-    pub fn open(db: &sled::Db) -> Result<Self, ConflictStoreError> {
+    pub fn open(db: &sled::Db) -> Result<Self, crate::store_core::StoreError> {
         let tree = db
             .open_tree("conflict_manager")
-            .map_err(|e| ConflictStoreError::SledError(e.to_string()))?;
+            .map_err(|e| crate::store_core::StoreError::Sled(e.to_string()))?;
         let signal_tree = db
             .open_tree("conflict_signals")
-            .map_err(|e| ConflictStoreError::SledError(e.to_string()))?;
+            .map_err(|e| crate::store_core::StoreError::Sled(e.to_string()))?;
         Ok(Self { tree, signal_tree })
     }
 
@@ -222,22 +203,22 @@ impl ConflictStore {
     pub fn save(
         &self,
         mgr: &crate::conflict_reconciliation::ConflictManager,
-    ) -> Result<(), ConflictStoreError> {
+    ) -> Result<(), crate::store_core::StoreError> {
         let snapshot = SerializableConflictManager::from(mgr);
         let value = bincode::serialize(&snapshot)
-            .map_err(|e| ConflictStoreError::CodecError(e.to_string()))?;
+            .map_err(|e| crate::store_core::StoreError::Codec(e.to_string()))?;
         self.tree
             .insert(b"manager", value.as_slice())
-            .map_err(|e| ConflictStoreError::SledError(e.to_string()))?;
+            .map_err(|e| crate::store_core::StoreError::Sled(e.to_string()))?;
 
         // 同步更新冲突信号索引 / Sync conflict signal index
         for signal in &mgr.state.active_conflicts {
             let key = signal.timestamp.to_be_bytes();
             let val = bincode::serialize(signal)
-                .map_err(|e| ConflictStoreError::CodecError(e.to_string()))?;
+                .map_err(|e| crate::store_core::StoreError::Codec(e.to_string()))?;
             self.signal_tree
                 .insert(key, val.as_slice())
-                .map_err(|e| ConflictStoreError::SledError(e.to_string()))?;
+                .map_err(|e| crate::store_core::StoreError::Sled(e.to_string()))?;
         }
 
         Ok(())
@@ -246,37 +227,41 @@ impl ConflictStore {
     /// 加载冲突管理器 / Load conflict manager
     pub fn load(
         &self,
-    ) -> Result<crate::conflict_reconciliation::ConflictManager, ConflictStoreError> {
+    ) -> Result<crate::conflict_reconciliation::ConflictManager, crate::store_core::StoreError>
+    {
         match self.tree.get(b"manager") {
             Ok(Some(value)) => {
                 let snapshot: SerializableConflictManager = bincode::deserialize(&value)
-                    .map_err(|e| ConflictStoreError::CodecError(e.to_string()))?;
+                    .map_err(|e| crate::store_core::StoreError::Codec(e.to_string()))?;
                 Ok(snapshot.into_manager())
             }
             Ok(None) => Ok(crate::conflict_reconciliation::ConflictManager::default()),
-            Err(e) => Err(ConflictStoreError::SledError(e.to_string())),
+            Err(e) => Err(crate::store_core::StoreError::Sled(e.to_string())),
         }
     }
 
     /// 获取指定时间戳的冲突信号 / Get conflict signal by timestamp
-    pub fn get_signal(&self, timestamp: i64) -> Result<Option<ConflictSignal>, ConflictStoreError> {
+    pub fn get_signal(
+        &self,
+        timestamp: i64,
+    ) -> Result<Option<ConflictSignal>, crate::store_core::StoreError> {
         let key = timestamp.to_be_bytes();
         match self.signal_tree.get(key) {
             Ok(Some(value)) => {
                 let signal: ConflictSignal = bincode::deserialize(&value)
-                    .map_err(|e| ConflictStoreError::CodecError(e.to_string()))?;
+                    .map_err(|e| crate::store_core::StoreError::Codec(e.to_string()))?;
                 Ok(Some(signal))
             }
             Ok(None) => Ok(None),
-            Err(e) => Err(ConflictStoreError::SledError(e.to_string())),
+            Err(e) => Err(crate::store_core::StoreError::Sled(e.to_string())),
         }
     }
 
     /// 获取所有冲突信号时间戳 / Get all conflict signal timestamps
-    pub fn signal_timestamps(&self) -> Result<Vec<i64>, ConflictStoreError> {
+    pub fn signal_timestamps(&self) -> Result<Vec<i64>, crate::store_core::StoreError> {
         let mut timestamps = Vec::new();
         for item in self.signal_tree.iter() {
-            let (key, _) = item.map_err(|e| ConflictStoreError::SledError(e.to_string()))?;
+            let (key, _) = item.map_err(|e| crate::store_core::StoreError::Sled(e.to_string()))?;
             let bytes: [u8; 8] = key.as_ref().try_into().unwrap_or([0u8; 8]);
             timestamps.push(i64::from_be_bytes(bytes));
         }
@@ -286,6 +271,36 @@ impl ConflictStore {
     /// 冲突信号总数 / Conflict signal count
     pub fn signal_count(&self) -> usize {
         self.signal_tree.len()
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════
+// DomainStore + VaultTree trait 实现 / Trait Implementations
+// ════════════════════════════════════════════════════════════════════
+
+/// VaultTree 实现 — 主 tree 承载 SerializableConflictManager
+/// VaultTree impl — main tree carries SerializableConflictManager
+impl crate::atrium_vault::VaultTree<SerializableConflictManager> for ConflictStore {
+    fn tree(&self) -> &sled::Tree {
+        &self.tree
+    }
+}
+
+/// DomainStore 实现 — 冲突记忆子系统的存储接口
+/// DomainStore impl — conflict memory subsystem store interface
+impl crate::store_core::DomainStore for ConflictStore {
+    fn domain_name(&self) -> &'static str {
+        "conflict"
+    }
+
+    fn tree_count(&self) -> usize {
+        self.tree.len() + self.signal_tree.len()
+    }
+
+    fn flush_tree(&self) -> Result<(), crate::store_core::StoreError> {
+        self.tree.flush()?;
+        self.signal_tree.flush()?;
+        Ok(())
     }
 }
 

@@ -348,7 +348,14 @@ impl InnerDialogue {
     pub fn generate_seeds(&self, thought: &str) -> Vec<DialogueSeed> {
         let trimmed = thought.trim();
         let preview = if trimmed.len() > 60 {
-            &trimmed[..60]
+            // 字符安全截断：回退到最后一个字符边界 / Char-safe truncation
+            let end = trimmed
+                .char_indices()
+                .take_while(|(i, _)| *i < 60)
+                .last()
+                .map(|(i, c)| i + c.len_utf8())
+                .unwrap_or(60);
+            &trimmed[..end]
         } else {
             trimmed
         };
@@ -573,7 +580,14 @@ impl SolitudeQualityEngine {
             let seeds = self.dialogue_seeds(&self.last_thought);
             let seed_preview = seeds.first().map(|s| s.seed_text.as_str()).unwrap_or("");
             let preview = if seed_preview.len() > 80 {
-                &seed_preview[..80]
+                // 字符安全截断 / Char-safe truncation
+                let end = seed_preview
+                    .char_indices()
+                    .take_while(|(i, _)| *i < 80)
+                    .last()
+                    .map(|(i, c)| i + c.len_utf8())
+                    .unwrap_or(80);
+                &seed_preview[..end]
             } else {
                 seed_preview
             };
@@ -582,7 +596,14 @@ impl SolitudeQualityEngine {
 
         // budget 截断 / Budget truncation.
         if hint.len() > PROMPT_BUDGET {
-            hint.truncate(PROMPT_BUDGET);
+            // 字符安全截断 / Char-safe truncation
+            let end = hint
+                .char_indices()
+                .take_while(|(i, _)| *i < PROMPT_BUDGET)
+                .last()
+                .map(|(i, c)| i + c.len_utf8())
+                .unwrap_or(PROMPT_BUDGET);
+            hint.truncate(end);
         }
         hint
     }

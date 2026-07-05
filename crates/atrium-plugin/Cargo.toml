@@ -1,6 +1,6 @@
 [package]
 name = "atrium-plugin"
-version = "0.2.0"
+version = "0.10.0"
 edition = "2021"
 description = "Atrium 插件系统 — 动态/静态插件加载与生命周期管理"
 

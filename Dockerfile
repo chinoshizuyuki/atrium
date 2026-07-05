@@ -3,7 +3,7 @@
 # fastembed(ONNX) 需要 glibc，musl 无预编译二进制
 
 FROM rust:slim-bookworm AS builder
-ARG VERSION=0.2.0
+ARG VERSION=0.10.0
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libsqlite3-dev protobuf-compiler \
     && rm -rf /var/lib/apt/lists/*
@@ -18,7 +18,7 @@ RUN cargo build --release -p atrium-core && \
     strip target/release/atrium-core
 
 FROM debian:bookworm-slim
-ARG VERSION=0.2.0
+ARG VERSION=0.10.0
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates libsqlite3-0 tzdata \
     && rm -rf /var/lib/apt/lists/*

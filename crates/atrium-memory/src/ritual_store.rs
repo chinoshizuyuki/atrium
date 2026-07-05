@@ -12,28 +12,7 @@ use crate::ritual_detector::RitualDetector;
 use crate::seasonal_awareness::SeasonalAwareness;
 
 // ════════════════════════════════════════════════════════════════════
-// RitualStoreError — 存储错误类型 / Storage Error Type
-// ════════════════════════════════════════════════════════════════════
-
-/// 仪式存储错误 / Ritual store error
-#[derive(Debug)]
-pub enum RitualStoreError {
-    /// sled 数据库错误 / Sled database error
-    SledError(String),
-    /// 序列化/反序列化错误 / Codec (de)serialization error
-    CodecError(String),
-}
-
-impl std::fmt::Display for RitualStoreError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::SledError(e) => write!(f, "ritual sled error: {}", e),
-            Self::CodecError(e) => write!(f, "ritual codec error: {}", e),
-        }
-    }
-}
-
-impl std::error::Error for RitualStoreError {}
+// 统一使用 store_core::StoreError / Unified StoreError from store_core
 
 // ════════════════════════════════════════════════════════════════════
 // SerializableRitualSnapshot — 可序列化的仪式系统快照
@@ -89,16 +68,16 @@ pub struct RitualStore {
 
 impl RitualStore {
     /// 打开或创建仪式存储 / Open or create ritual store
-    pub fn open(db: &sled::Db) -> Result<Self, RitualStoreError> {
+    pub fn open(db: &sled::Db) -> Result<Self, crate::store_core::StoreError> {
         let tree = db
             .open_tree("ritual_snapshot")
-            .map_err(|e| RitualStoreError::SledError(e.to_string()))?;
+            .map_err(|e| crate::store_core::StoreError::Sled(e.to_string()))?;
         let ritual_tree = db
             .open_tree("ritual_patterns")
-            .map_err(|e| RitualStoreError::SledError(e.to_string()))?;
+            .map_err(|e| crate::store_core::StoreError::Sled(e.to_string()))?;
         let anniversary_tree = db
             .open_tree("ritual_anniversaries")
-            .map_err(|e| RitualStoreError::SledError(e.to_string()))?;
+            .map_err(|e| crate::store_core::StoreError::Sled(e.to_string()))?;
         Ok(Self {
             tree,
             ritual_tree,
@@ -112,43 +91,43 @@ impl RitualStore {
         detector: &RitualDetector,
         anniversary: &AnniversarySystem,
         seasonal: &SeasonalAwareness,
-    ) -> Result<(), RitualStoreError> {
+    ) -> Result<(), crate::store_core::StoreError> {
         let snapshot = SerializableRitualSnapshot::from_parts(detector, anniversary, seasonal);
         let value = bincode::serialize(&snapshot)
-            .map_err(|e| RitualStoreError::CodecError(e.to_string()))?;
+            .map_err(|e| crate::store_core::StoreError::Codec(e.to_string()))?;
         self.tree
             .insert(b"snapshot", value.as_slice())
-            .map_err(|e| RitualStoreError::SledError(e.to_string()))?;
+            .map_err(|e| crate::store_core::StoreError::Sled(e.to_string()))?;
 
         // 同步更新仪式模式索引 / Sync ritual pattern index
         for pattern in &detector.patterns {
             let key = pattern.id.to_be_bytes();
             let val = bincode::serialize(pattern)
-                .map_err(|e| RitualStoreError::CodecError(e.to_string()))?;
+                .map_err(|e| crate::store_core::StoreError::Codec(e.to_string()))?;
             self.ritual_tree
                 .insert(key, val.as_slice())
-                .map_err(|e| RitualStoreError::SledError(e.to_string()))?;
+                .map_err(|e| crate::store_core::StoreError::Sled(e.to_string()))?;
         }
 
         // 同步更新纪念日索引 / Sync anniversary index
         for ann in &anniversary.anniversaries {
             let key = ann.id.to_be_bytes();
-            let val =
-                bincode::serialize(ann).map_err(|e| RitualStoreError::CodecError(e.to_string()))?;
+            let val = bincode::serialize(ann)
+                .map_err(|e| crate::store_core::StoreError::Codec(e.to_string()))?;
             self.anniversary_tree
                 .insert(key, val.as_slice())
-                .map_err(|e| RitualStoreError::SledError(e.to_string()))?;
+                .map_err(|e| crate::store_core::StoreError::Sled(e.to_string()))?;
         }
 
         Ok(())
     }
 
     /// 加载仪式系统快照 / Load ritual systems snapshot
-    pub fn load(&self) -> Result<SerializableRitualSnapshot, RitualStoreError> {
+    pub fn load(&self) -> Result<SerializableRitualSnapshot, crate::store_core::StoreError> {
         match self.tree.get(b"snapshot") {
             Ok(Some(value)) => {
                 let snapshot: SerializableRitualSnapshot = bincode::deserialize(&value)
-                    .map_err(|e| RitualStoreError::CodecError(e.to_string()))?;
+                    .map_err(|e| crate::store_core::StoreError::Codec(e.to_string()))?;
                 Ok(snapshot)
             }
             Ok(None) => Ok(SerializableRitualSnapshot {
@@ -156,7 +135,7 @@ impl RitualStore {
                 anniversary_system: AnniversarySystem::new(),
                 seasonal_awareness: SeasonalAwareness::new(),
             }),
-            Err(e) => Err(RitualStoreError::SledError(e.to_string())),
+            Err(e) => Err(crate::store_core::StoreError::Sled(e.to_string())),
         }
     }
 
@@ -164,17 +143,17 @@ impl RitualStore {
     pub fn get_ritual_pattern(
         &self,
         ritual_id: u64,
-    ) -> Result<Option<crate::ritual_detector::RitualPattern>, RitualStoreError> {
+    ) -> Result<Option<crate::ritual_detector::RitualPattern>, crate::store_core::StoreError> {
         let key = ritual_id.to_be_bytes();
         match self.ritual_tree.get(key) {
             Ok(Some(value)) => {
                 let pattern: crate::ritual_detector::RitualPattern =
                     bincode::deserialize(&value)
-                        .map_err(|e| RitualStoreError::CodecError(e.to_string()))?;
+                        .map_err(|e| crate::store_core::StoreError::Codec(e.to_string()))?;
                 Ok(Some(pattern))
             }
             Ok(None) => Ok(None),
-            Err(e) => Err(RitualStoreError::SledError(e.to_string())),
+            Err(e) => Err(crate::store_core::StoreError::Sled(e.to_string())),
         }
     }
 
@@ -182,24 +161,24 @@ impl RitualStore {
     pub fn get_anniversary(
         &self,
         anniversary_id: u64,
-    ) -> Result<Option<crate::anniversary_system::Anniversary>, RitualStoreError> {
+    ) -> Result<Option<crate::anniversary_system::Anniversary>, crate::store_core::StoreError> {
         let key = anniversary_id.to_be_bytes();
         match self.anniversary_tree.get(key) {
             Ok(Some(value)) => {
                 let ann: crate::anniversary_system::Anniversary = bincode::deserialize(&value)
-                    .map_err(|e| RitualStoreError::CodecError(e.to_string()))?;
+                    .map_err(|e| crate::store_core::StoreError::Codec(e.to_string()))?;
                 Ok(Some(ann))
             }
             Ok(None) => Ok(None),
-            Err(e) => Err(RitualStoreError::SledError(e.to_string())),
+            Err(e) => Err(crate::store_core::StoreError::Sled(e.to_string())),
         }
     }
 
     /// 获取所有仪式模式 ID / Get all ritual pattern IDs
-    pub fn ritual_pattern_ids(&self) -> Result<Vec<u64>, RitualStoreError> {
+    pub fn ritual_pattern_ids(&self) -> Result<Vec<u64>, crate::store_core::StoreError> {
         let mut ids = Vec::new();
         for item in self.ritual_tree.iter() {
-            let (key, _) = item.map_err(|e| RitualStoreError::SledError(e.to_string()))?;
+            let (key, _) = item.map_err(|e| crate::store_core::StoreError::Sled(e.to_string()))?;
             let bytes: [u8; 8] = key.as_ref().try_into().unwrap_or([0u8; 8]);
             ids.push(u64::from_be_bytes(bytes));
         }
@@ -207,10 +186,10 @@ impl RitualStore {
     }
 
     /// 获取所有纪念日 ID / Get all anniversary IDs
-    pub fn anniversary_ids(&self) -> Result<Vec<u64>, RitualStoreError> {
+    pub fn anniversary_ids(&self) -> Result<Vec<u64>, crate::store_core::StoreError> {
         let mut ids = Vec::new();
         for item in self.anniversary_tree.iter() {
-            let (key, _) = item.map_err(|e| RitualStoreError::SledError(e.to_string()))?;
+            let (key, _) = item.map_err(|e| crate::store_core::StoreError::Sled(e.to_string()))?;
             let bytes: [u8; 8] = key.as_ref().try_into().unwrap_or([0u8; 8]);
             ids.push(u64::from_be_bytes(bytes));
         }
@@ -225,6 +204,37 @@ impl RitualStore {
     /// 纪念日总数 / Anniversary count
     pub fn anniversary_count(&self) -> usize {
         self.anniversary_tree.len()
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════
+// DomainStore + VaultTree trait 实现 / Trait Implementations
+// ════════════════════════════════════════════════════════════════════
+
+/// VaultTree 实现 — 主 tree 承载 SerializableRitualSnapshot
+/// VaultTree impl — main tree carries SerializableRitualSnapshot
+impl crate::atrium_vault::VaultTree<SerializableRitualSnapshot> for RitualStore {
+    fn tree(&self) -> &sled::Tree {
+        &self.tree
+    }
+}
+
+/// DomainStore 实现 — 仪式记忆子系统的存储接口
+/// DomainStore impl — ritual memory subsystem store interface
+impl crate::store_core::DomainStore for RitualStore {
+    fn domain_name(&self) -> &'static str {
+        "ritual"
+    }
+
+    fn tree_count(&self) -> usize {
+        self.tree.len() + self.ritual_tree.len() + self.anniversary_tree.len()
+    }
+
+    fn flush_tree(&self) -> Result<(), crate::store_core::StoreError> {
+        self.tree.flush()?;
+        self.ritual_tree.flush()?;
+        self.anniversary_tree.flush()?;
+        Ok(())
     }
 }
 

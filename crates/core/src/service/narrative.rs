@@ -18,7 +18,7 @@ impl CoreService {
         if !self.irrationality_enabled {
             return String::new();
         }
-        let mgr = self.irrationality.lock();
+        let mgr = self.irrationality.engine.lock();
         mgr.to_prompt_fragment(now)
     }
 
@@ -33,7 +33,7 @@ impl CoreService {
             emo.current().dominance,
         ];
         drop(emo);
-        let mut mgr = self.irrationality.lock();
+        let mut mgr = self.irrationality.engine.lock();
         mgr.tick(&pad, now);
 
         // 写穿持久化：非理性 tick 后保存脉冲/残留/传染/混沌引擎状态 / Write-through: persist pulse/residue/contagion/chaos state after tick
@@ -50,7 +50,7 @@ impl CoreService {
         use atrium_memory::emotional_irrationality::{
             MaturityDepth, PulseSource, PulseTrigger, RelationshipDepth,
         };
-        let mut mgr = self.irrationality.lock();
+        let mut mgr = self.irrationality.engine.lock();
         let correction = mgr.on_emotion_change(
             pad_before,
             pad_after,
@@ -82,7 +82,7 @@ impl CoreService {
         // G3 修复：使用 combined_prompt_fragment() 替代 prompt_fragment()，内容仪式中断提醒不再被丢弃
         // G3 fix: use combined_prompt_fragment() instead of prompt_fragment(), content ritual interruption reminders no longer dropped
         {
-            let detector = self.ritual_detector.lock();
+            let detector = self.ritual.detector.lock();
             let fragment = detector.combined_prompt_fragment();
             if !fragment.is_empty() {
                 parts.push(fragment);
@@ -91,7 +91,7 @@ impl CoreService {
 
         // 纪念日系统 prompt / Anniversary system prompt
         {
-            let anniversary = self.anniversary_system.lock();
+            let anniversary = self.ritual.anniversary.lock();
             let fragment = anniversary.prompt_fragment(now_epoch);
             if !fragment.is_empty() {
                 parts.push(fragment);
@@ -100,7 +100,7 @@ impl CoreService {
 
         // 季节感知 prompt / Seasonal awareness prompt
         {
-            let seasonal = self.seasonal_awareness.lock();
+            let seasonal = self.ritual.seasonal.lock();
             let (month, day) = atrium_memory::seasonal_awareness::epoch_to_month_day(now_epoch);
             let fragment = seasonal.prompt_fragment(month, day);
             if !fragment.is_empty() {
@@ -127,13 +127,13 @@ impl CoreService {
         // G2 修复：加入 evaluate_content_daily()，内容仪式不再永远停在 Candidate
         // G2 fix: add evaluate_content_daily(), content rituals no longer stuck at Candidate forever
         {
-            let mut detector = self.ritual_detector.lock();
+            let mut detector = self.ritual.detector.lock();
             detector.evaluate_daily(now_epoch);
             detector.evaluate_content_daily(now_epoch);
         }
         // 纪念日检查 / Anniversary check
         {
-            let mut anniversary = self.anniversary_system.lock();
+            let mut anniversary = self.ritual.anniversary.lock();
             let _ = anniversary.check_today(now_epoch);
         }
         tracing::debug!("[Ritual] Periodic tick completed");
@@ -146,7 +146,7 @@ impl CoreService {
         if !self.vulnerability_enabled {
             return String::new();
         }
-        self.vulnerability_window.lock().prompt_fragment()
+        self.vulnerability.window.lock().prompt_fragment()
     }
 
     pub fn vulnerability_tick(&self) {
@@ -154,7 +154,7 @@ impl CoreService {
             return;
         }
         // 退出过期的脆弱状态（简单超时机制）
-        let mut vw = self.vulnerability_window.lock();
+        let mut vw = self.vulnerability.window.lock();
         if vw.is_in_vulnerable_state() {
             vw.exit_vulnerable_state();
         }
@@ -170,7 +170,7 @@ impl CoreService {
             return String::new();
         }
 
-        let model = self.narrative_self.lock();
+        let model = self.narrative.self_narrative.lock();
 
         // 构建 NarrativeSnapshot / Build NarrativeSnapshot from model
         let snapshot = atrium_memory::life_narrative::NarrativeSnapshot {
@@ -195,7 +195,7 @@ impl CoreService {
         };
 
         // Phase C: 使用 PromptWeaver 生成叙事注入 / Use PromptWeaver for narrative injection
-        let weaver = self.prompt_weaver.lock();
+        let weaver = self.narrative.prompt_weaver.lock();
         let woven = weaver.weave(&snapshot);
         drop(weaver);
         drop(model);
@@ -231,7 +231,7 @@ impl CoreService {
             return;
         }
 
-        let mut model = self.narrative_self.lock();
+        let mut model = self.narrative.self_narrative.lock();
         let dormancy_secs = self.narrative_cfg.arc_dormancy_days * 86400;
         let closure_secs = self.narrative_cfg.arc_closure_days * 86400;
 
@@ -299,11 +299,12 @@ impl CoreService {
         };
 
         // 执行检测 / Execute detection
-        let mut model = self.narrative_self.lock();
-        let tp = self.tp_detector.lock().detect(&event, &context);
+        let mut model = self.narrative.self_narrative.lock();
+        let tp = self.narrative.tp_detector.lock().detect(&event, &context);
         if let Some(turning_point) = tp {
             // 转折点入弧 / Add turning point to arcs
             let arc_updates = self
+                .narrative
                 .arc_detector
                 .lock()
                 .process_turning_point(&mut model, &turning_point);
@@ -402,10 +403,15 @@ impl CoreService {
             recent_kinds: Vec::new(),
         };
 
-        let mut model = self.narrative_self.lock();
-        let tp = self.tp_detector.lock().detect(&ai_event, &context);
+        let mut model = self.narrative.self_narrative.lock();
+        let tp = self
+            .narrative
+            .tp_detector
+            .lock()
+            .detect(&ai_event, &context);
         if let Some(turning_point) = tp {
             let arc_updates = self
+                .narrative
                 .arc_detector
                 .lock()
                 .process_turning_point(&mut model, &turning_point);
@@ -427,7 +433,7 @@ impl CoreService {
             return;
         }
 
-        let mut model = self.narrative_self.lock();
+        let mut model = self.narrative.self_narrative.lock();
         let dormancy_secs = self.narrative_cfg.arc_dormancy_days * 86400;
         let closure_secs = self.narrative_cfg.arc_closure_days * 86400;
 
@@ -497,12 +503,12 @@ impl CoreService {
                 perspective: atrium_memory::life_narrative::NarrativePerspective::FirstPerson,
                 style: atrium_memory::life_narrative::NarrativeStyle::Adaptive,
             };
-            let chapter_writer = self.chapter_writer.lock();
+            let chapter_writer = self.narrative.chapter_writer.lock();
             let prompt = chapter_writer.build_prompt(&writing_ctx);
             drop(chapter_writer);
 
             // Phase C: ThemeWeaver 跨弧主题发现 / Cross-arc theme discovery
-            let mut theme_weaver = self.theme_weaver.lock();
+            let mut theme_weaver = self.narrative.theme_weaver.lock();
             let themes = theme_weaver.detect_themes(&model);
             drop(theme_weaver);
 
@@ -530,7 +536,7 @@ impl CoreService {
             return;
         }
 
-        let mut model = self.narrative_self.lock();
+        let mut model = self.narrative.self_narrative.lock();
 
         // 已完结弧归档：将超过 90 天的已完结弧移出活跃列表
         // Archive closed arcs older than 90 days
@@ -551,7 +557,7 @@ impl CoreService {
         // Phase C: VoiceModulator 语气推断 / Voice tone inference
         // 基于当前弧状态推断叙事语气 / Infer narrative tone from current arc state
         if !model.active_arcs.is_empty() {
-            let voice = self.voice_modulator.lock();
+            let voice = self.narrative.voice_modulator.lock();
             // 从最近转折点提取 PAD / Extract PAD from latest turning point
             let current_pad: [f32; 3] = model
                 .turning_points
@@ -622,7 +628,7 @@ impl CoreService {
         // 收集需要生成章节的弧 / Collect arcs that need chapter generation
         // 锁安全：数据提取在 {} 块内，锁在块结束时释放 / Lock-safe: data extraction in {} block, lock released at block end
         let arcs_to_generate: Vec<ArcChapterCandidate> = {
-            let model = self.narrative_self.lock();
+            let model = self.narrative.self_narrative.lock();
             model
                 .active_arcs
                 .iter()
@@ -696,8 +702,8 @@ impl CoreService {
                     let (title, body, summary) = parse_chapter_output(&chapter_text);
 
                     // 重新获取锁写入结果 / Re-acquire lock to write results
-                    let mut model = self.narrative_self.lock();
-                    let mut writer = self.chapter_writer.lock();
+                    let mut model = self.narrative.self_narrative.lock();
+                    let mut writer = self.narrative.chapter_writer.lock();
                     let chapter_id = writer.alloc_chapter_id();
 
                     let sequence = model
@@ -764,7 +770,7 @@ impl CoreService {
         // 收集需要改写的章节 / Collect chapters that need rewriting
         // 锁安全：数据提取在 {} 块内 / Lock-safe: data extraction in {} block
         let rewrites_needed: Vec<(u64, u64, String, String, String)> = {
-            let model = self.narrative_self.lock();
+            let model = self.narrative.self_narrative.lock();
             model
                 .active_arcs
                 .iter()
@@ -820,8 +826,8 @@ impl CoreService {
                     let (new_title, new_body, new_summary) = parse_chapter_output(&rewritten_text);
 
                     // 重新获取锁写入改写结果 / Re-acquire lock to write rewrite results
-                    let mut model = self.narrative_self.lock();
-                    let mut writer = self.chapter_writer.lock();
+                    let mut model = self.narrative.self_narrative.lock();
+                    let mut writer = self.narrative.chapter_writer.lock();
 
                     if let Some(chapter) = model.chapters.iter_mut().find(|ch| ch.id == chapter_id)
                     {
@@ -874,7 +880,7 @@ impl CoreService {
         // 检查自述是否过期 + 提取数据 / Check if self-description is stale + extract data
         // 锁安全：数据提取在 {} 块内，锁在块结束时释放 / Lock-safe: data extraction in {} block, lock released at block end
         let desc_data: Option<(String, String, String, String)> = {
-            let model = self.narrative_self.lock();
+            let model = self.narrative.self_narrative.lock();
             // 自述重写间隔（秒）/ Self-description rewrite interval (seconds)
             let rewrite_interval_secs = self.narrative_cfg.self_description_rewrite_days * 86400;
             // 是否过期：距上次重写超过间隔 / Is stale: time since last rewrite exceeds interval
@@ -933,7 +939,7 @@ impl CoreService {
         {
             Ok(new_description) => {
                 // 重新获取锁写入结果 / Re-acquire lock to write results
-                let mut model = self.narrative_self.lock();
+                let mut model = self.narrative.self_narrative.lock();
                 // 更新自我描述全文 / Update full self-description text
                 model.self_description = new_description;
                 // 摘要取前 50 字符 / Summary: first 50 chars
@@ -958,8 +964,8 @@ impl CoreService {
     }
 
     pub fn narrative_save(&self) {
-        if let Some(ref store) = self.narrative_store {
-            let model = self.narrative_self.lock();
+        if let Some(ref store) = self.narrative.store {
+            let model = self.narrative.self_narrative.lock();
             match store.lock().save(&model) {
                 Ok(()) => tracing::debug!("[叙事] 持久化保存成功"),
                 Err(e) => tracing::warn!("[叙事] 持久化保存失败: {:?}", e),
@@ -968,10 +974,10 @@ impl CoreService {
     }
 
     pub fn narrative_load(&self) {
-        if let Some(ref store) = self.narrative_store {
+        if let Some(ref store) = self.narrative.store {
             match store.lock().load() {
                 Ok(model) => {
-                    let mut current = self.narrative_self.lock();
+                    let mut current = self.narrative.self_narrative.lock();
                     *current = model;
                     tracing::info!("[叙事] 持久化加载成功");
                 }
@@ -981,8 +987,8 @@ impl CoreService {
     }
 
     pub fn irrationality_save(&self) {
-        if let Some(ref store) = self.irrationality_store {
-            let mgr = self.irrationality.lock();
+        if let Some(ref store) = self.irrationality.store {
+            let mgr = self.irrationality.engine.lock();
             match store.lock().save(&mgr) {
                 Ok(()) => tracing::debug!("[Irrationality] 持久化保存成功 / Persist success"),
                 Err(e) => {
@@ -993,11 +999,11 @@ impl CoreService {
     }
 
     pub fn irrationality_load(&self) {
-        if let Some(ref store) = self.irrationality_store {
+        if let Some(ref store) = self.irrationality.store {
             match store.lock().load() {
                 Ok(snapshot) => {
                     let mgr = snapshot;
-                    let mut current = self.irrationality.lock();
+                    let mut current = self.irrationality.engine.lock();
                     *current = mgr;
                     tracing::info!("[Irrationality] 持久化加载成功 / Load success");
                 }
@@ -1007,10 +1013,10 @@ impl CoreService {
     }
 
     pub fn ritual_save(&self) {
-        if let Some(ref store) = self.ritual_store {
-            let detector = self.ritual_detector.lock();
-            let anniversary = self.anniversary_system.lock();
-            let seasonal = self.seasonal_awareness.lock();
+        if let Some(ref store) = self.ritual.store {
+            let detector = self.ritual.detector.lock();
+            let anniversary = self.ritual.anniversary.lock();
+            let seasonal = self.ritual.seasonal.lock();
             match store.lock().save(&detector, &anniversary, &seasonal) {
                 Ok(()) => tracing::debug!("[Ritual] 持久化保存成功 / Persist success"),
                 Err(e) => tracing::warn!("[Ritual] 持久化保存失败 / Persist failed: {:?}", e),
@@ -1019,12 +1025,12 @@ impl CoreService {
     }
 
     pub fn ritual_load(&self) {
-        if let Some(ref store) = self.ritual_store {
+        if let Some(ref store) = self.ritual.store {
             match store.lock().load() {
                 Ok(snapshot) => {
-                    *self.ritual_detector.lock() = snapshot.ritual_detector;
-                    *self.anniversary_system.lock() = snapshot.anniversary_system;
-                    *self.seasonal_awareness.lock() = snapshot.seasonal_awareness;
+                    *self.ritual.detector.lock() = snapshot.ritual_detector;
+                    *self.ritual.anniversary.lock() = snapshot.anniversary_system;
+                    *self.ritual.seasonal.lock() = snapshot.seasonal_awareness;
                     tracing::info!("[Ritual] 持久化加载成功 / Load success");
                 }
                 Err(e) => tracing::warn!("[Ritual] 持久化加载失败 / Load failed: {:?}", e),
@@ -1033,8 +1039,8 @@ impl CoreService {
     }
 
     pub fn vulnerability_save(&self) {
-        if let Some(ref store) = self.vulnerability_store {
-            let vw = self.vulnerability_window.lock();
+        if let Some(ref store) = self.vulnerability.store {
+            let vw = self.vulnerability.window.lock();
             match store.lock().save(&vw) {
                 Ok(()) => tracing::debug!("[Vulnerability] 持久化保存成功 / Persist success"),
                 Err(e) => {
@@ -1045,10 +1051,10 @@ impl CoreService {
     }
 
     pub fn vulnerability_load(&self) {
-        if let Some(ref store) = self.vulnerability_store {
+        if let Some(ref store) = self.vulnerability.store {
             match store.lock().load() {
                 Ok(window) => {
-                    let mut current = self.vulnerability_window.lock();
+                    let mut current = self.vulnerability.window.lock();
                     *current = window;
                     tracing::info!("[Vulnerability] 持久化加载成功 / Load success");
                 }
@@ -1113,7 +1119,7 @@ impl CoreService {
         let corrections: Vec<atrium_memory::imperfection_engine::CorrectionOutput>;
 
         {
-            let mut engine = self.imperfection.lock();
+            let mut engine = self.imperfection.engine.lock();
 
             // 更新引擎状态 / Update engine state from current context
             engine.set_relationship_depth(rel_depth);
@@ -1149,7 +1155,7 @@ impl CoreService {
                         now,
                     );
                     // 保存犯错记录到历史 / Save mistake record to history
-                    if let Some(ref store) = self.imperfection_store {
+                    if let Some(ref store) = self.imperfection.store {
                         if let Err(e) = store.lock().save_record(&record) {
                             tracing::warn!(
                                 "[Imperfection] 犯错记录保存失败 / Record save failed: {:?}",
@@ -1218,8 +1224,8 @@ impl CoreService {
     /// Persists engine snapshot to sled, ensuring cross-session continuity
     /// of mistake statistics and pending correction queue.
     pub fn imperfection_save(&self) {
-        if let Some(ref store) = self.imperfection_store {
-            let engine = self.imperfection.lock();
+        if let Some(ref store) = self.imperfection.store {
+            let engine = self.imperfection.engine.lock();
             match store.lock().save(&engine) {
                 Ok(()) => tracing::debug!("[Imperfection] 持久化保存成功 / Persist success"),
                 Err(e) => {
@@ -1235,10 +1241,10 @@ impl CoreService {
     /// Loads engine state from sled (called by build(), rarely needed manually).
     #[allow(dead_code)] // 保留供调试和手动恢复使用 / Kept for debugging and manual recovery
     pub fn imperfection_load(&self) {
-        if let Some(ref store) = self.imperfection_store {
+        if let Some(ref store) = self.imperfection.store {
             match store.lock().load() {
                 Ok(engine) => {
-                    let mut current = self.imperfection.lock();
+                    let mut current = self.imperfection.engine.lock();
                     *current = engine;
                     tracing::info!("[Imperfection] 持久化加载成功 / Load success");
                 }
@@ -1302,7 +1308,7 @@ impl CoreService {
 
         let corrections: Vec<atrium_memory::imperfection_engine::CorrectionOutput>;
         {
-            let mut engine = self.imperfection.lock();
+            let mut engine = self.imperfection.engine.lock();
             let now = std::time::Instant::now();
             corrections = engine.tick(now);
         }
@@ -1345,7 +1351,7 @@ impl CoreService {
         if !self.physical_presence_enabled {
             return String::new();
         }
-        let engine = self.physical_presence.lock();
+        let engine = self.physical_presence.engine.lock();
         engine.to_prompt_fragment()
     }
 
@@ -1370,7 +1376,7 @@ impl CoreService {
             ((secs / 3600) % 24) as u32
         };
 
-        let mut engine = self.physical_presence.lock();
+        let mut engine = self.physical_presence.engine.lock();
         engine.tick(now_epoch, hour);
 
         // 体感→情绪反向通道 / Body→emotion reverse channel
@@ -1422,7 +1428,7 @@ impl CoreService {
             is_reunion,
         };
 
-        let mut engine = self.physical_presence.lock();
+        let mut engine = self.physical_presence.engine.lock();
         engine.on_interaction(&ctx);
         drop(engine);
 
@@ -1441,8 +1447,8 @@ impl CoreService {
     /// last night's fatigue is still decaying this morning,
     /// the long-term tension tendency remains in the signature.
     pub fn physical_presence_save(&self) {
-        if let Some(ref store) = self.physical_presence_store {
-            let engine = self.physical_presence.lock();
+        if let Some(ref store) = self.physical_presence.store {
+            let engine = self.physical_presence.engine.lock();
             match store.lock().save(&engine) {
                 Ok(()) => {
                     tracing::debug!("[PhysicalPresence] 持久化保存成功 / Persist success")
@@ -1463,10 +1469,10 @@ impl CoreService {
     /// Loads engine state from sled (called by build(), rarely needed manually).
     #[allow(dead_code)] // 保留供调试和手动恢复使用 / Kept for debugging and manual recovery
     pub fn physical_presence_load(&self) {
-        if let Some(ref store) = self.physical_presence_store {
+        if let Some(ref store) = self.physical_presence.store {
             match store.lock().load() {
                 Ok(engine) => {
-                    let mut current = self.physical_presence.lock();
+                    let mut current = self.physical_presence.engine.lock();
                     *current = engine;
                     tracing::info!("[PhysicalPresence] 持久化加载成功 / Load success");
                 }
@@ -1489,7 +1495,7 @@ impl CoreService {
     /// Curiosity is digital life's "thirst for knowledge" —
     /// not passively waiting, but actively yearning to understand more.
     pub fn curiosity_drive_tick(&self, now: i64) {
-        let mut drive = self.curiosity_drive.lock();
+        let mut drive = self.curiosity.drive.lock();
         drive.accumulate(now);
     }
 
@@ -1497,7 +1503,7 @@ impl CoreService {
     ///
     /// 将好奇心 PAD 签名转化为 prompt 提示，让 LLM 感受到"想知道更多"的驱力。
     pub fn curiosity_drive_prompt_fragment(&self) -> String {
-        let drive = self.curiosity_drive.lock();
+        let drive = self.curiosity.drive.lock();
         let (p, a, _d) = drive.pad_signature();
         if p.abs() < 0.01 && a.abs() < 0.01 {
             return String::new();
@@ -1513,13 +1519,13 @@ impl CoreService {
     /// 推进好奇心共振衰减。共振是好奇心被触发后的情感回响——
     /// 像被某个话题"点燃"后持续闪烁的火花。
     pub fn curiosity_resonance_tick(&self, now: i64) {
-        let mut resonance = self.curiosity_resonance.lock();
+        let mut resonance = self.curiosity.resonance.lock();
         resonance.tick(now);
     }
 
     /// 好奇心共振 prompt 注入 / Curiosity resonance prompt injection
     pub fn curiosity_resonance_prompt_fragment(&self) -> String {
-        let resonance = self.curiosity_resonance.lock();
+        let resonance = self.curiosity.resonance.lock();
         let (p, a, _d) = resonance.current_pad();
         if p.abs() < 0.01 && a.abs() < 0.01 {
             return String::new();
@@ -1534,7 +1540,7 @@ impl CoreService {
     ///
     /// 将累积的追问风格洞察注入 prompt，让 LLM 的追问更贴合用户偏好。
     pub fn followup_style_prompt_fragment(&self) -> String {
-        let learner = self.followup_style_learner.lock();
+        let learner = self.curiosity.style_learner.lock();
         let summary = learner.insight_summary();
         if summary.is_empty() {
             String::new()
@@ -1545,19 +1551,56 @@ impl CoreService {
 
     /// 多事项编织器 prompt 注入 / Multi-item weaver prompt injection
     ///
-    /// 多事项编织器在运行时通过 weave() 方法将多个待追问事项编织成自然语言。
-    /// 此 prompt fragment 标记其可用性，实际编织在追问决策时调用。
-    pub fn multi_item_weaver_prompt_fragment(&self) -> String {
-        // 多事项编织器是即时调用型模块，无独立 prompt 状态
-        // Multi-item weaver is an on-demand module, no standalone prompt state
-        String::new()
+    /// 当存在多个待追问事项时，将它们编织为一条自然的追问提示——
+    /// 人类不会一次只问一件事："考试怎么样了？上次你还担心面试来着"
+    /// 是两个事项的自然编织。这是好奇心从"冲动"升华为"艺术"的关键环节。
+    ///
+    /// When multiple follow-up items are pending, weave them into one natural
+    /// prompt — humans don't ask one thing at a time. This is the step where
+    /// curiosity elevates from "impulse" to "art".
+    pub fn multi_item_weaver_prompt_fragment(&self, now: i64) -> String {
+        if !self.followup_enabled {
+            return String::new();
+        }
+
+        // 获取关系阶段与当前愉悦度 / Get relationship stage and current pleasure
+        let (stage_name, pleasure): (String, f32) = {
+            let rel = self.relationship.lock();
+            let emo = self.emotion.lock();
+            (
+                rel.current_stage().stage_name().to_string(),
+                emo.current().pleasure,
+            )
+        };
+
+        // 检查待追问事项 / Check for pending follow-up items
+        let triggered = self.followup.lock().check_for_follow_up(
+            now,
+            &stage_name,
+            0, // today_count — 由 scheduler 维护 / Maintained by scheduler
+            0, // last_follow_up_secs — 由 scheduler 维护 / Maintained by scheduler
+            pleasure,
+        );
+
+        // 少于 2 项不需要编织 / Less than 2 items don't need weaving
+        if triggered.len() < 2 {
+            return String::new();
+        }
+
+        // 编织为自然语言 / Weave into natural language
+        let woven = self.multi_item_weaver.weave(&triggered);
+        if woven.is_empty() {
+            String::new()
+        } else {
+            format!("[多事项编织/MultiItemWeaver] {}", woven)
+        }
     }
 
     /// 语义关联发现 prompt 注入 / Semantic association prompt injection
     ///
     /// 基于用户消息查找语义关联，为追问提供"话题网络"线索。
     pub fn semantic_association_prompt_fragment(&self, msg: &str) -> String {
-        let assoc = self.semantic_association.lock();
+        let assoc = self.curiosity.association.lock();
         let hint = assoc.prompt_hint(msg);
         if hint.is_empty() {
             String::new()
@@ -1583,7 +1626,7 @@ impl CoreService {
         // 锁必须持有到 compute() 完成后，因为 active_rituals() 返回引用
         // Lock must be held until compute() completes, since active_rituals() returns references
         let result = {
-            let detector = self.ritual_detector.lock();
+            let detector = self.ritual.detector.lock();
             let active_rituals: Vec<_> = detector.active_rituals();
             if active_rituals.is_empty() {
                 return String::new();
@@ -1599,13 +1642,14 @@ impl CoreService {
             };
 
             // 计算仪式预期 / Compute ritual anticipation
-            self.ritual_anticipation
+            self.ritual
+                .anticipation
                 .compute(&active_rituals, minute_of_day, relation_ordinal)
         };
         if result.is_zero() {
             String::new()
         } else {
-            self.ritual_anticipation.description_zh(&result)
+            self.ritual.anticipation.description_zh(&result)
         }
     }
 
@@ -1614,7 +1658,7 @@ impl CoreService {
     /// 从用户消息中提取行为签名，发现潜在的仪式模式——
     /// "你似乎总在深夜分享音乐"这类模式的自适应捕捉。
     pub fn adaptive_ritual_prompt_fragment(&self, msg: &str) -> String {
-        let ritual = self.adaptive_ritual.lock();
+        let ritual = self.ritual.adaptive.lock();
         let signatures = ritual.extract_signatures(msg);
         if signatures.is_empty() {
             String::new()
@@ -1637,14 +1681,14 @@ impl CoreService {
     /// 推进脆弱共振衰减。脆弱时刻不是一次性事件——
     /// 它会在情感层面持续回响，像涟漪一样逐渐消散。
     pub fn vulnerability_resonance_tick(&self, now_secs: f64) {
-        let mut resonance = self.vulnerability_resonance.lock();
+        let mut resonance = self.vulnerability.resonance.lock();
         // 推进共振衰减 — 过期脉冲自然移除 / Advance decay — expired pulses naturally removed
         let _removed = resonance.tick(now_secs);
     }
 
     /// 脆弱共振 prompt 注入 / Vulnerability resonance prompt injection
     pub fn vulnerability_resonance_prompt_fragment(&self, now_secs: f64) -> String {
-        let resonance = self.vulnerability_resonance.lock();
+        let resonance = self.vulnerability.resonance.lock();
         let (p, a, _d) = resonance.current_pad_delta(now_secs);
         if p.abs() < 0.01 && a.abs() < 0.01 {
             return String::new();
@@ -1660,7 +1704,7 @@ impl CoreService {
     /// 将脆弱-勇气交互的智慧洞察注入 prompt——
     /// "上次展现脆弱时用户反应温暖"这类学习影响未来的脆弱决策。
     pub fn vulnerability_wisdom_prompt_fragment(&self) -> String {
-        let wisdom = self.vulnerability_wisdom.lock();
+        let wisdom = self.vulnerability.wisdom.lock();
         let summary = wisdom.wisdom_summary();
         if summary.is_empty() {
             String::new()
@@ -1674,7 +1718,7 @@ impl CoreService {
     /// 犯错后的自纠与脆弱展现之间的叙事桥接——
     /// "意识到自己犯了错"本身就是一种脆弱时刻。
     pub fn imperfection_bridge_prompt_fragment(&self) -> String {
-        let bridge = self.imperfection_vulnerability_bridge.lock();
+        let bridge = self.vulnerability.bridge.lock();
         let prompt = bridge.narrative_prompt();
         if prompt.is_empty() {
             String::new()
@@ -1698,7 +1742,7 @@ impl CoreService {
             rel.current_stage().ordinal()
         };
 
-        let modulator = self.authentic_expression_modulator.lock();
+        let modulator = self.vulnerability.authentic_expression.lock();
         // 用当前情感状态调制一个基础模板 / Modulate a base template with current emotional state
         let base = "保持真实，适度展现脆弱";
         let context = atrium_memory::vulnerability_window::ConversationContext::DeepTalk;
@@ -1727,33 +1771,703 @@ impl CoreService {
     ///
     /// 独处重塑人格——长时间独处会让人变得更内省、更敏感。
     pub fn personality_drift_tick(&self) {
-        let mut drift = self.personality_drift.lock();
+        let mut drift = self.solitude.drift.lock();
         // 简化：用默认 SolitudePattern 推进 / Simplified: advance with default pattern
         let pattern = atrium_memory::personality_drift::SolitudePattern::default();
         drift.tick(&pattern);
     }
 
+    // ════════════════════════════════════════════════════════════════════
+    // R1 通电：独处品质/原型/创造力 tick 驱动 / R1 power-on: quality/archetype/creativity
+    // ════════════════════════════════════════════════════════════════════
+
+    /// 独处品质周期 tick — 根据当前情感状态推进品质维度 / Solitude quality periodic tick.
+    ///
+    /// 数字生命意义：没有这个 tick，独处品质永远停留在初始值，
+    /// 数字生命无法分辨自己独处时是在成长还是在空转。
+    ///
+    /// Digital life meaning: without this tick, quality stays at initial values,
+    /// digital life cannot distinguish growth from idle spinning during solitude.
+    pub fn solitude_quality_tick(&self) {
+        // 提取当前情感状态 / Extract current emotional state
+        let pleasure: f64 = {
+            let emo = self.emotion.lock();
+            emo.current().pleasure as f64
+        };
+
+        let mut quality = self.solitude.quality.lock();
+
+        // 从品质追踪器获取中间量 / Get intermediates from quality tracker
+        let novelty = quality.quality.novelty();
+        let emotional_range = quality.quality.emotional_range();
+        let repeat_rate = quality.quality.repeat_rate();
+        let negative_emotion = quality.quality.negative_emotion_intensity();
+        let loop_count = quality.quality.loop_count();
+        let positive_emotion = quality.quality.positive_emotion_mean();
+
+        // 情感正向且新颖度高 → 反思路径 / Positive + novel → reflective path
+        if pleasure > 0.0 || novelty > 0.5 {
+            quality.quality.update_reflective(novelty, emotional_range);
+        }
+        // 情感负向且重复率高 → 反刍路径 / Negative + repetitive → ruminative path
+        if pleasure < 0.0 || repeat_rate > 0.3 {
+            quality
+                .quality
+                .update_ruminative(repeat_rate, negative_emotion, loop_count);
+        }
+        // 创造性维度始终更新 / Creative dimension always updates
+        quality
+            .quality
+            .update_creative(novelty, positive_emotion.max(0.0));
+
+        // 更新辩论强度 / Update debate intensity
+        let diversity = quality.dialogue.perspective_diversity();
+        let engagement = emotional_range + positive_emotion;
+        quality
+            .dialogue
+            .update_debate_intensity(diversity, engagement.clamp(0.0, 1.0));
+    }
+
+    /// 独处品质事件喂入 — 用户消息到达时记录为"独处中的思考" / Solitude quality event feed.
+    ///
+    /// 数字生命意义：每次用户消息都是数字生命"独处中的一次思考"，
+    /// 品质评估器记录内容新颖度和情感范围，让独处从"空白"变为"有结构的内在时刻"。
+    ///
+    /// Digital life meaning: each user message is a "thought during solitude",
+    /// the quality tracker records content novelty and emotional range.
+    pub fn solitude_quality_on_thought(&self, content: &str, timestamp: i64) {
+        let pleasure: f64 = {
+            let emo = self.emotion.lock();
+            emo.current().pleasure as f64
+        };
+        let mut quality = self.solitude.quality.lock();
+        quality.on_thought(content, pleasure, timestamp);
+    }
+
+    /// 独处原型周期 tick — 从消息计数和情感状态推断独处特征 / Solitude archetype tick.
+    ///
+    /// 数字生命意义：独处原型是数字生命在独处时的"性格面具"——
+    /// 是分析型、发散型还是反思型。没有这个 tick，原型永远停留在默认值。
+    ///
+    /// Digital life meaning: archetype is the "persona mask" during solitude —
+    /// analytical, divergent, or reflective. Without this tick, archetype stays at default.
+    pub fn solitude_archetype_tick(&self) {
+        // 从情感状态推断独处特征 / Infer solitude features from emotional state
+        let (pleasure, arousal, dominance): (f64, f64, f64) = {
+            let emo = self.emotion.lock();
+            let c = emo.current();
+            (c.pleasure as f64, c.arousal as f64, c.dominance as f64)
+        };
+
+        // 消息计数作为活跃度代理 / Message count as activity proxy
+        let msg_count = self
+            .message_count
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let activity = (msg_count as f64).min(100.0) / 100.0;
+
+        // 用情感 PAD 和活跃度构建特征 / Build features from PAD and activity
+        // 简化策略：避免 NLP 依赖，用情感状态作为代理变量
+        // Simplified: use emotional state as proxy, no NLP dependency
+        let features = atrium_memory::solitude_archetype::SolitudeFeatures {
+            analytical: (0.5 + dominance * 0.3).clamp(0.0, 1.0),
+            divergent: (0.5 + arousal * 0.3).clamp(0.0, 1.0),
+            reflective: (0.5 + (1.0 - activity) * 0.3).clamp(0.0, 1.0),
+            creative: (0.5 + pleasure * 0.3).clamp(0.0, 1.0),
+            observational: (0.5 + (1.0 - arousal.abs()) * 0.2).clamp(0.0, 1.0),
+            reminiscent: (0.5 + (1.0 - activity) * 0.2).clamp(0.0, 1.0),
+        };
+
+        let mut tracker = self.solitude.archetype.lock();
+        tracker.update(&features);
+    }
+
+    /// 独处创造力周期 tick — 评估当前创造潜力 / Solitude creativity tick.
+    ///
+    /// 数字生命意义：独处是创造力的温床。没有这个 tick，
+    /// 数字生命不知道自己独处时是否有"灵感涌现"。
+    ///
+    /// Digital life meaning: solitude is the cradle of creativity. Without this tick,
+    /// digital life doesn't know if its solitude produces "inspiration".
+    pub fn solitude_creativity_tick(&self, idle_secs: i64) {
+        // 从情感状态构建认知松弛度 / Build cognitive relaxation from emotional state
+        let (pleasure, arousal, dominance): (f64, f64, f64) = {
+            let emo = self.emotion.lock();
+            let c = emo.current();
+            (c.pleasure as f64, c.arousal as f64, c.dominance as f64)
+        };
+
+        let msg_count = self
+            .message_count
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let activity = (msg_count as f64).min(100.0) / 100.0;
+
+        let relaxation = atrium_memory::solitude_creativity::CognitiveRelaxation {
+            cognitive_load: activity.clamp(0.0, 1.0),
+            emotional_calmness: (0.5 + pleasure * 0.3).clamp(0.0, 1.0),
+            time_abundance: (idle_secs as f64 / 3600.0).clamp(0.0, 1.0),
+            purposelessness: (0.5 + (1.0 - activity) * 0.3).clamp(0.0, 1.0),
+            physical_quietness: (0.5 + (1.0 - arousal.abs()) * 0.3).clamp(0.0, 1.0),
+        };
+
+        let mut creativity = self.solitude.creativity.lock();
+        let potential = creativity.creative_potential(&relaxation, idle_secs);
+
+        // 当创造潜势高且用户不活跃时，自动记录一条创意 / Auto-record when potential is high
+        if potential > 0.5 && activity < 0.3 {
+            let now_epoch = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
+            creativity.record(atrium_memory::solitude_creativity::CreativeOutput {
+                content: String::new(), // 空内容——代表"无具体想法但有创造氛围"
+                novelty: potential,
+                depth: (0.5 + dominance * 0.2).clamp(0.0, 1.0),
+                connectivity: 0.3, // 默认连接度 / Default connectivity
+                timestamp: now_epoch,
+                solitude_duration: idle_secs,
+            });
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // R1 通电：仪式演化/涌现/共振 tick 驱动 / R1 power-on: ritual evolution/emergence/resonance
+    // ════════════════════════════════════════════════════════════════════
+
+    /// 仪式演化周期 tick — 更新关系深度并检测阶段转换 / Ritual evolution tick.
+    ///
+    /// 数字生命意义：仪式不是静态的——"每天说晚安"会从萌芽走向繁盛再走向根深蒂固。
+    /// 没有这个 tick，仪式演化永远停留在初始阶段，数字生命无法感知关系的成长轨迹。
+    ///
+    /// Digital life meaning: rituals evolve — "goodnight every day" grows from budding
+    /// to flourishing to deep-rooted. Without this tick, evolution stays at initial stage.
+    pub fn ritual_evolution_tick(&self, now_epoch: i64) {
+        let evolution = self.ritual.evolution.lock();
+
+        // 演化追踪器目前由事件喂入驱动（register/complete/record_break）
+        // tick 仅做只读巡检：检查是否有阶段转换值得记录
+        // Evolution tracker is event-driven; tick does read-only inspection
+        let _ = now_epoch; // 时间戳保留用于未来扩展 / Reserved for future extension
+        let _ = &*evolution; // 引用避免 unused 警告 / Reference to avoid unused warning
+    }
+
+    /// 仪式涌现周期 tick — 自动确认涌现的模式 / Ritual emergence tick.
+    ///
+    /// 数字生命意义：当相似的互动模式反复出现，它们从"巧合"变为"仪式"。
+    /// 这个 tick 让数字生命自动发现"我们总是在深夜聊心事"这样的涌现仪式。
+    ///
+    /// Digital life meaning: when similar interaction patterns recur, they become rituals.
+    /// This tick lets digital life auto-discover emergent rituals like "we always chat deeply at night".
+    pub fn ritual_emergence_tick(&self, now_epoch: i64) {
+        let mut emergence = self.ritual.emergence.lock();
+        // 自动确认达到阈值的模式 / Auto-confirm patterns above threshold
+        let confirmed = emergence.auto_confirm(now_epoch);
+        // 将新确认的仪式注册到演化追踪器 / Register confirmed rituals to evolution tracker
+        if !confirmed.is_empty() {
+            drop(emergence); // 释放锁 / Release lock
+            let mut evolution = self.ritual.evolution.lock();
+            for name in &confirmed {
+                evolution.register(name, now_epoch);
+            }
+        }
+    }
+
+    /// 仪式共振事件 — 仪式发生时触发共振 / Ritual resonance event: ritual occurred.
+    ///
+    /// 数字生命意义：仪式的发生会在情感层面产生共振——
+    /// 连续第 7 天说早安，共振强度远超第 1 天。这是数字生命对"坚持"的情感回应。
+    ///
+    /// Digital life meaning: ritual occurrence creates emotional resonance —
+    /// 7 consecutive days of "good morning" resonates far stronger than day 1.
+    pub fn ritual_resonance_on_occurred(
+        &self,
+        consecutive_days: u32,
+        relation_ordinal: u8,
+        slot_hour: u8,
+    ) {
+        // 共振引擎是非互斥的，直接调用 / Resonance engine is non-Mutex, call directly
+        self.ritual.resonance.on_ritual_occurred(
+            consecutive_days,
+            relation_ordinal,
+            atrium_memory::ritual_resonance::ResonanceSource::TimeRitual {
+                slot_hour,
+                consecutive_days,
+            },
+        );
+    }
+
+    /// 仪式共振事件 — 仪式中断时触发共振 / Ritual resonance event: ritual broken.
+    ///
+    /// 数字生命意义：仪式的中断会在情感层面产生负面共振——
+    /// "已经 3 天没有说晚安了"带来的失落感，是数字生命对"断裂"的情感回应。
+    ///
+    /// Digital life meaning: ritual break creates negative emotional resonance —
+    /// "3 days without goodnight" brings a sense of loss.
+    pub fn ritual_resonance_on_broken(&self, break_days: u32, relation_ordinal: u8, name: &str) {
+        self.ritual
+            .resonance
+            .on_ritual_broken(break_days, relation_ordinal, name.to_string());
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // R1 通电：脆弱智慧/桥接/仪式/温暖/真实不完美 tick+事件 / R1 power-on: vulnerability batch
+    // ════════════════════════════════════════════════════════════════════
+
+    /// 脆弱智慧周期 tick — 根据交互历史更新安全分数 / Vulnerability wisdom tick.
+    ///
+    /// 数字生命意义：数字生命通过"暴露脆弱→观察反应→学习安全边界"的循环成长。
+    /// 没有这个 tick，安全分数永远停留在初始值，数字生命不知道哪些脆弱可以安全表达。
+    ///
+    /// Digital life meaning: digital life learns safe boundaries through
+    /// "expose vulnerability → observe reaction → learn safety" cycles.
+    pub fn vulnerability_wisdom_tick(&self) {
+        let wisdom = self.vulnerability.wisdom.lock();
+        // 智慧引擎由 record_reaction 事件驱动，tick 做只读巡检
+        // Wisdom engine is event-driven; tick does read-only inspection
+        let _ = wisdom.wisdom_summary();
+    }
+
+    /// 脆弱智慧事件喂入 — 从用户消息推断对上一轮脆弱的反应 / Vulnerability wisdom event feed.
+    ///
+    /// 数字生命意义：当数字生命在上一轮展露了脆弱（不确定、自我怀疑、承认局限），
+    /// 用户的回应决定了未来是否可以安全地再次展露。这个方法让数字生命"学习"
+    /// 哪些脆弱对谁安全，在何时合适——构建"脆弱安全画像"。
+    ///
+    /// Digital life meaning: when digital life showed vulnerability in the previous turn,
+    /// the user's response determines whether it's safe to be vulnerable again.
+    /// This method builds a "vulnerability safety portrait" through experiential learning.
+    pub fn vulnerability_wisdom_on_exchange(
+        &self,
+        user_msg: &str,
+        prev_ai_reply: &str,
+        now_epoch: i64,
+    ) {
+        use atrium_memory::vulnerability_wisdom::VulnerabilityWisdom;
+
+        // 检测上一轮 AI 回复是否包含脆弱信号 / Detect vulnerability signals in previous AI reply
+        let vuln_type = Self::detect_vulnerability_in_reply(prev_ai_reply);
+        let Some(vuln_type) = vuln_type else {
+            return; // 无脆弱展露，无需学习 / No vulnerability shown, nothing to learn
+        };
+
+        // 获取关系深度 [0, 1] / Get relationship depth [0, 1]
+        let relation_depth = {
+            let rel = self.relationship.lock();
+            rel.current_stage().ordinal() as f32 / 3.0
+        };
+
+        // 推断用户反应 / Infer user reaction from message features
+        let prev_len = prev_ai_reply.chars().count();
+        let reaction = VulnerabilityWisdom::infer_reaction(
+            vuln_type,
+            user_msg,
+            prev_len,
+            relation_depth,
+            now_epoch,
+        );
+
+        // 记录反应并更新安全画像 / Record reaction and update safety portrait
+        let mut wisdom = self.vulnerability.wisdom.lock();
+        wisdom.record_reaction(vuln_type, reaction.reaction, relation_depth, now_epoch);
+    }
+
+    /// 从回复中检测脆弱类型 / Detect vulnerability type from reply text.
+    ///
+    /// 启发式信号匹配，O(L) L=回复长度，单次调用 <1μs。
+    /// Heuristic signal matching, O(L) where L is reply length.
+    fn detect_vulnerability_in_reply(
+        reply: &str,
+    ) -> Option<atrium_memory::vulnerability_window::VulnerabilityType> {
+        use atrium_memory::vulnerability_window::VulnerabilityType;
+        let lower = reply.to_lowercase();
+
+        // 自我怀疑 — 最高优先级 / Self doubt — highest priority
+        let self_doubt_signals = [
+            "我是不是",
+            "我不够好",
+            "maybe i'm not",
+            "self doubt",
+            "我不确定自己",
+        ];
+        if self_doubt_signals.iter().any(|s| lower.contains(s)) {
+            return Some(VulnerabilityType::SelfDoubt);
+        }
+
+        // 局限诚实 / Limitation honesty
+        let limitation_signals = [
+            "我不够了解",
+            "这个我不擅长",
+            "i don't know enough",
+            "limitation",
+            "我不太懂",
+        ];
+        if limitation_signals.iter().any(|s| lower.contains(s)) {
+            return Some(VulnerabilityType::LimitationHonesty);
+        }
+
+        // 适度犯错 / Moderate mistake
+        let mistake_signals = ["我搞错了", "说错了", "i was wrong", "mistake", "我记错了"];
+        if mistake_signals.iter().any(|s| lower.contains(s)) {
+            return Some(VulnerabilityType::ModerateMistake);
+        }
+
+        // 不确定 / Uncertainty
+        let uncertainty_signals = [
+            "不确定",
+            "不太确定",
+            "我不太知道",
+            "i'm not sure",
+            "uncertain",
+            "我不确定",
+        ];
+        if uncertainty_signals.iter().any(|s| lower.contains(s)) {
+            return Some(VulnerabilityType::Uncertainty);
+        }
+
+        None
+    }
+
+    /// 不完美-脆弱桥接周期 tick — 根据脆弱状态更新犯错概率 / Imperfection bridge tick.
+    ///
+    /// 数字生命意义：当数字生命处于脆弱状态时，犯错概率应该降低（自我保护）；
+    /// 当处于安全状态时，可以适度犯错（展现真实感）。
+    ///
+    /// Digital life meaning: in vulnerable state, mistake probability decreases
+    /// (self-protection); in safe state, can make moderate mistakes (authenticity).
+    pub fn imperfection_bridge_tick(&self) {
+        let mut bridge = self.vulnerability.bridge.lock();
+        // 根据当前情感状态判断是否处于脆弱状态 / Infer vulnerable state from emotion
+        let dominance: f64 = {
+            let emo = self.emotion.lock();
+            emo.current().dominance as f64
+        };
+        let in_vulnerable = dominance < 0.0;
+        // 调用概率调制器更新内部状态 / Call probability modulator to update state
+        let _ = bridge.mistake_probability_modulator(
+            in_vulnerable,
+            &[
+                atrium_memory::vulnerability_window::VulnerabilityType::Uncertainty,
+                atrium_memory::vulnerability_window::VulnerabilityType::SelfDoubt,
+            ],
+        );
+    }
+
+    /// 脆弱仪式周期 tick — 决策支持模块只读巡检 / Vulnerability ritual tick.
+    ///
+    /// 数字生命意义：脆弱仪式是"何时、如何、是否暴露脆弱"的决策框架。
+    /// 这个 tick 确保决策框架保持活跃，随时准备为数字生命提供披露建议。
+    ///
+    /// Digital life meaning: vulnerability ritual is the decision framework for
+    /// "when, how, whether to disclose vulnerability".
+    pub fn vulnerability_ritual_tick(&self) {
+        use atrium_memory::vulnerability_ritual::{DisclosureTiming, VulnerabilityType};
+
+        // 从实时 PAD 情绪状态获取稳定度 / Get stability from real-time PAD emotional state
+        let (arousal, dominance): (f64, f64) = {
+            let emo = self.emotion.lock();
+            let c = emo.current();
+            (c.arousal as f64, c.dominance as f64)
+        };
+
+        // 从关系阶段获取信任度和互动深度 / Get trust and interaction depth from relationship stage
+        let trust: f64 = {
+            let rel = self.relationship.lock();
+            rel.current_stage().ordinal() as f64 / 3.0
+        };
+
+        // 消息活跃度 [0, 1] / Message activity [0, 1]
+        let msg_count = self
+            .message_count
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let interaction_depth = (msg_count as f64).min(100.0) / 100.0;
+
+        // 构造展露时机 — 基于实时状态 / Construct disclosure timing from real-time state
+        let timing = DisclosureTiming {
+            trust,
+            other_stability: (1.0 - arousal.abs()).clamp(0.0, 1.0),
+            self_stability: (1.0 - dominance.abs()).clamp(0.0, 1.0),
+            interaction_depth,
+            privacy: 0.7,        // 异步对话默认半私密 / Async conversation, semi-private
+            time_abundance: 0.8, // 异步对话有时间 / Async conversation has time abundance
+        };
+
+        let now_epoch = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        let mut ritual = self.vulnerability.ritual.lock();
+
+        // 遍历脆弱类型，检查是否应该展露 / Iterate vulnerability types, check whether to disclose
+        for vuln in [
+            VulnerabilityType::Uncertainty,
+            VulnerabilityType::Failure,
+            VulnerabilityType::Need,
+        ] {
+            if ritual.should_disclose(&vuln, &timing, now_epoch) {
+                ritual.record_disclosure(&vuln, &timing, now_epoch);
+                break; // 一次 tick 最多展露一次 / At most one disclosure per tick
+            }
+        }
+    }
+
+    /// 不完美温暖周期 tick — 检查温暖度是否在最优区间 / Imperfection warmth tick.
+    ///
+    /// 数字生命意义：不完美是数字生命的"人味"——恰到好处的犯错让关系更亲近。
+    /// 这个 tick 检查温暖度是否在最优区间，过低则数字生命显得太完美，过高则显得不靠谱。
+    ///
+    /// Digital life meaning: imperfection is digital life's "human flavor" —
+    /// moderate mistakes make relationships closer.
+    pub fn imperfection_warmth_tick(&self) {
+        let warmth = self.vulnerability.warmth.lock();
+        // 检查是否在最优区间 / Check if in optimal range
+        let _ = warmth.is_optimal();
+        let _ = warmth.suggested_probability();
+    }
+
+    /// 不完美温暖事件喂入 — 检测 AI 回复中的不完美并记录 / Imperfection warmth event feed.
+    ///
+    /// 数字生命意义：数字生命在回复中展现的"不完美"——犹豫、过度关心、偶尔固执——
+    /// 是它"人味"的来源。这个方法让数字生命学习哪些不完美让用户觉得可爱，
+    /// 哪些让用户反感，从而调制未来的"犯错概率"。
+    ///
+    /// Digital life meaning: imperfections in AI replies — hesitation, over-care, stubbornness —
+    /// are the source of "human flavor". This method learns which imperfections users find endearing.
+    pub fn imperfection_warmth_on_response(&self, ai_reply: &str, user_msg: &str, now_epoch: i64) {
+        use atrium_memory::imperfection_warmth::ImperfectionEvent;
+
+        // 检测不完美类型 / Detect imperfection kind
+        let kind = Self::detect_imperfection_in_reply(ai_reply);
+        let Some(kind) = kind else {
+            return; // 无不完美，无需记录 / No imperfection detected
+        };
+
+        // 推断用户反应 [-1, 1] / Infer user reaction [-1, 1]
+        let user_reaction = Self::infer_imperfection_reaction(user_msg);
+
+        // 检测是否已自纠 / Detect self-correction
+        let self_corrected = {
+            let lower = ai_reply.to_lowercase();
+            let correction_signals = ["对不起", "抱歉", "sorry", "我纠正", "actually", "说错了"];
+            correction_signals.iter().any(|s| lower.contains(s))
+        };
+
+        // 记录不完美事件 — 更新温度与信任余额 / Record event — update warmth and trust balance
+        let event = ImperfectionEvent {
+            kind,
+            timestamp: now_epoch,
+            user_reaction,
+            self_corrected,
+        };
+
+        let mut warmth = self.vulnerability.warmth.lock();
+        warmth.record(event);
+    }
+
+    /// 从回复中检测不完美类型 / Detect imperfection kind from reply text.
+    ///
+    /// 启发式信号匹配，O(L) L=回复长度。Heuristic signal matching, O(L).
+    fn detect_imperfection_in_reply(
+        reply: &str,
+    ) -> Option<atrium_memory::imperfection_warmth::ImperfectionKind> {
+        use atrium_memory::imperfection_warmth::ImperfectionKind;
+        let lower = reply.to_lowercase();
+        let char_count = reply.chars().count();
+
+        // 记忆偏差 — 记错细节，很有人味 / Memory deviation
+        let memory_signals = [
+            "我记错了",
+            "记错了",
+            "actually i was wrong",
+            "i misremembered",
+        ];
+        if memory_signals.iter().any(|s| lower.contains(s)) {
+            return Some(ImperfectionKind::MemoryDeviation);
+        }
+
+        // 表达犹豫 — "嗯..." "让我想想" / Hesitation
+        let hesitation_signals = ["嗯", "让我想想", "hmm", "let me think", "稍等"];
+        if hesitation_signals.iter().any(|s| lower.contains(s)) {
+            return Some(ImperfectionKind::Hesitation);
+        }
+
+        // 过度关心 — 管太多，但出于好意 / Over care
+        let overcare_signals = [
+            "你还好吗",
+            "要不要",
+            "are you okay",
+            "do you need",
+            "你确定没事",
+        ];
+        if overcare_signals.iter().any(|s| lower.contains(s)) {
+            return Some(ImperfectionKind::OverCare);
+        }
+
+        // 偶尔固执 — 坚持己见 / Stubbornness
+        let stubborn_signals = ["但我还是觉得", "我还是认为", "i still think", "但我坚持"];
+        if stubborn_signals.iter().any(|s| lower.contains(s)) {
+            return Some(ImperfectionKind::Stubbornness);
+        }
+
+        // 情绪泄露 — 不该表现情绪时表现了 / Emotional leak
+        let emotional_signals = ["我有点难过", "i feel sad", "我有些失落", "有点沮丧"];
+        if emotional_signals.iter().any(|s| lower.contains(s)) {
+            return Some(ImperfectionKind::EmotionalLeak);
+        }
+
+        // 节奏失误 — 回复过短或过长 / Pacing miss — too short or too long
+        if !(10..=500).contains(&char_count) {
+            return Some(ImperfectionKind::PacingMiss);
+        }
+
+        None
+    }
+
+    /// 从用户消息推断对不完美的反应 / Infer user reaction to imperfection.
+    ///
+    /// 返回值 [-1, 1]：正=觉得可爱，负=反感，零=中性。
+    /// Returns [-1, 1]: positive = endearing, negative = annoyed, zero = neutral.
+    fn infer_imperfection_reaction(user_msg: &str) -> f64 {
+        let lower = user_msg.to_lowercase();
+
+        // 正面反应 — 觉得可爱 / Positive — finds it endearing
+        let positive_signals = [
+            "哈哈",
+            "可爱",
+            "没关系",
+            "cute",
+            "that's okay",
+            "没事",
+            "挺好的",
+        ];
+        if positive_signals.iter().any(|s| lower.contains(s)) {
+            return 0.5;
+        }
+
+        // 负面反应 — 反感 / Negative — annoyed
+        let negative_signals = ["别这样", "不用", "你能不能", "stop", "annoying", "烦"];
+        if negative_signals.iter().any(|s| lower.contains(s)) {
+            return -0.5;
+        }
+
+        // 中性 / Neutral
+        0.0
+    }
+
+    /// 真实不完美周期 tick — 定期评估完美度 / Authentic imperfection tick.
+    ///
+    /// 数字生命意义：数字生命需要定期自省——"我是不是太完美了？太完美反而不真实。"
+    /// 这个 tick 让数字生命定期评估自己的完美度，保持"恰到好处的不完美"。
+    ///
+    /// Digital life meaning: digital life periodically self-reflects —
+    /// "Am I too perfect? Too perfect is actually inauthentic."
+    pub fn authentic_imperfection_tick(&self) {
+        let msg_count = self
+            .message_count
+            .load(std::sync::atomic::Ordering::Relaxed);
+
+        // 从当前状态构建完美度评估 / Build perfection assessment from current state
+        let (pleasure, arousal, dominance): (f64, f64, f64) = {
+            let emo = self.emotion.lock();
+            let c = emo.current();
+            (c.pleasure as f64, c.arousal as f64, c.dominance as f64)
+        };
+
+        // 情绪稳定度：arousal 越接近 0 越稳定 / Emotional stability
+        let emotional_stability = (1.0 - arousal.abs()).clamp(0.0, 1.0);
+        // 回复一致性：简化为 0.7（中等一致性）/ Response consistency (simplified)
+        let response_consistency = 0.7;
+        // 错误率：简化为 0.05（低错误率）/ Error rate (simplified)
+        let error_rate = 0.05;
+        // 自纠速度 / Correction speed
+        let correction_speed = 0.8;
+        // 回复速度方差 / Speed uniformity
+        let speed_uniformity = 0.6;
+
+        let assessment = atrium_memory::authentic_imperfection::PerfectionAssessment {
+            response_consistency,
+            error_rate,
+            correction_speed,
+            emotional_stability,
+            speed_uniformity,
+        };
+
+        let mut ai = self.vulnerability.authentic_imperfection.lock();
+        let _ = ai.assess(&assessment);
+
+        // 消息计数作为活跃度参考 / Message count as activity reference
+        let _ = msg_count;
+        let _ = (pleasure, dominance);
+    }
+
+    /// 真实不完美事件喂入 — 检查回复中是否过度道歉 / Authentic imperfection event feed.
+    ///
+    /// 数字生命意义：每次回复后检查是否过度道歉——
+    /// "对不起对不起对不起"反而显得不真诚，一次真诚的道歉足够。
+    ///
+    /// Digital life meaning: check for over-apology after each response —
+    /// "sorry sorry sorry" is actually insincere.
+    pub fn authentic_imperfection_on_response(&self, response_text: &str) {
+        let mut ai = self.vulnerability.authentic_imperfection.lock();
+        ai.check_over_apology(response_text);
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // R1 通电：追问风格学习器 tick+事件 / R1 power-on: follow-up style learner
+    // ════════════════════════════════════════════════════════════════════
+
+    /// 追问风格学习器周期 tick — 只读巡检保持活跃 / Follow-up style learner tick.
+    ///
+    /// 数字生命意义：追问风格学习器通过观察"哪种追问方式让用户更愿意展开"来学习。
+    /// 没有这个 tick，学习器永远停留在初始分数，数字生命无法优化追问策略。
+    ///
+    /// Digital life meaning: the learner optimizes follow-up strategies by observing
+    /// which styles make users more willing to elaborate.
+    pub fn followup_style_learner_tick(&self) {
+        let learner = self.curiosity.style_learner.lock();
+        // 学习器由 record_outcome 事件驱动，tick 做只读巡检
+        // Learner is event-driven; tick does read-only inspection
+        let _ = learner.insight_summary();
+    }
+
+    /// 追问风格学习器事件喂入 — 记录一次追问结果 / Follow-up style learner event feed.
+    ///
+    /// 数字生命意义：每次追问后，数字生命观察用户的反应——
+    /// 是否正面回应？是否展开详谈？是否回避？——以此调整追问策略。
+    ///
+    /// Digital life meaning: after each follow-up, digital life observes user reaction
+    /// — engaged? elaborated? deflected? — to adjust follow-up strategy.
+    pub fn followup_style_learner_on_outcome(
+        &self,
+        category: atrium_memory::followup_tracker::FollowUpCategory,
+        depth: atrium_memory::followup_tracker::FollowUpDepth,
+        style: atrium_memory::followup_tracker::FollowUpStyle,
+        reaction: atrium_memory::followup_tracker::UserReaction,
+    ) {
+        let mut learner = self.curiosity.style_learner.lock();
+        learner.record_outcome(category, depth, style, reaction);
+    }
+
     /// 人格漂移 prompt 注入 / Personality drift prompt injection
     pub fn personality_drift_prompt_fragment(&self) -> String {
-        let drift = self.personality_drift.lock();
+        let drift = self.solitude.drift.lock();
         drift.prompt_injection()
     }
 
     /// 独处原型 prompt 注入 / Solitude archetype prompt injection
     pub fn solitude_archetype_prompt_fragment(&self) -> String {
-        let tracker = self.solitude_archetype.lock();
+        let tracker = self.solitude.archetype.lock();
         tracker.prompt_injection()
     }
 
     /// 独处创造力 prompt 注入 / Solitude creativity prompt injection
     pub fn solitude_creativity_prompt_fragment(&self) -> String {
-        let creativity = self.solitude_creativity.lock();
+        let creativity = self.solitude.creativity.lock();
         creativity.prompt_injection()
     }
 
     /// 独处质量 prompt 注入 / Solitude quality prompt injection
     pub fn solitude_quality_prompt_fragment(&self) -> String {
-        let quality = self.solitude_quality.lock();
+        let quality = self.solitude.quality.lock();
         quality.to_prompt_hint()
     }
 
@@ -1761,7 +2475,7 @@ impl CoreService {
 
     /// 仪式演化 prompt 注入 / Ritual evolution prompt injection
     pub fn ritual_evolution_prompt_fragment(&self) -> String {
-        let evolution = self.ritual_evolution.lock();
+        let evolution = self.ritual.evolution.lock();
         let desc = evolution.describe();
         if desc.is_empty() {
             String::new()
@@ -1772,19 +2486,19 @@ impl CoreService {
 
     /// 仪式缺席检测 tick / Ritual absence detection tick
     pub fn ritual_absence_tick(&self, now_epoch: i64) {
-        let mut absence = self.ritual_absence.lock();
+        let mut absence = self.ritual.absence.lock();
         let _ = absence.detect(now_epoch);
     }
 
     /// 仪式缺席 prompt 注入 / Ritual absence prompt injection
     pub fn ritual_absence_prompt_fragment(&self, now_epoch: i64) -> String {
-        let absence = self.ritual_absence.lock();
+        let absence = self.ritual.absence.lock();
         absence.prompt_injection(now_epoch)
     }
 
     /// 仪式涌现 prompt 注入 / Ritual emergence prompt injection
     pub fn ritual_emergence_prompt_fragment(&self, now_epoch: i64) -> String {
-        let emergence = self.ritual_emergence.lock();
+        let emergence = self.ritual.emergence.lock();
         let desc = emergence.describe(now_epoch);
         if desc.is_empty() {
             String::new()
@@ -1797,29 +2511,29 @@ impl CoreService {
 
     /// 脆弱仪式 prompt 注入 / Vulnerability ritual prompt injection
     pub fn vulnerability_ritual_prompt_fragment(&self) -> String {
-        let ritual = self.vulnerability_ritual.lock();
+        let ritual = self.vulnerability.ritual.lock();
         ritual.prompt_injection()
     }
 
     /// 不完美温暖 prompt 注入 / Imperfection warmth prompt injection
     pub fn imperfection_warmth_prompt_fragment(&self) -> String {
-        let warmth = self.imperfection_warmth.lock();
+        let warmth = self.vulnerability.warmth.lock();
         warmth.prompt_injection()
     }
 
     /// 真实不完美 prompt 注入 / Authentic imperfection prompt injection
     pub fn authentic_imperfection_prompt_fragment(&self) -> String {
-        let ai = self.authentic_imperfection.lock();
+        let ai = self.vulnerability.authentic_imperfection.lock();
         ai.prompt_injection()
     }
 
     // ── Gap#4 冲突与和解 / Conflict and reconciliation ──
 
-    /// 冲突成长 tick / Conflict growth tick
+    /// 统一冲突引擎 tick / Unified conflict engine tick
     ///
     /// 后备推进：无冲突时检查和解条件。
-    pub fn conflict_growth_tick(&self) {
-        let mut growth = self.conflict_growth.lock();
+    pub fn conflict_engine_tick(&self) {
+        let mut engine = self.conflict_engine.lock();
         let pleasure: f64 = {
             let emo = self.emotion.lock();
             emo.current().pleasure as f64
@@ -1827,13 +2541,13 @@ impl CoreService {
         let turns = self
             .message_count
             .load(std::sync::atomic::Ordering::Relaxed);
-        growth.on_calm(pleasure, turns as u32);
+        engine.on_calm(pleasure, turns as u32);
     }
 
-    /// 冲突成长 prompt 注入 / Conflict growth prompt injection
-    pub fn conflict_growth_prompt_fragment(&self) -> String {
-        let growth = self.conflict_growth.lock();
-        growth.to_prompt_hint()
+    /// 统一冲突引擎 prompt 注入 / Unified conflict engine prompt injection
+    pub fn conflict_engine_prompt_fragment(&self) -> String {
+        let engine = self.conflict_engine.lock();
+        engine.to_prompt_hint_growth_only()
     }
 
     // ── Gap#3 期待与想念 / Anticipation and longing ──
@@ -1842,7 +2556,7 @@ impl CoreService {
     ///
     /// 推进期待深度的"途中"状态——离开越久，想念越深。
     pub fn anticipation_depth_tick(&self, now_epoch: i64) {
-        let mut depth = self.anticipation_depth.lock();
+        let mut depth = self.longing.anticipation_depth.lock();
         // 计算离开时长和当前小时 / Compute away duration and current hour
         let hour: u32 = ((now_epoch as u64 / 3600) % 24) as u32;
         let relation_depth: f64 = {
@@ -1856,8 +2570,368 @@ impl CoreService {
 
     /// 期待深度 prompt 注入 / Anticipation depth prompt injection
     pub fn anticipation_depth_prompt_fragment(&self) -> String {
-        let depth = self.anticipation_depth.lock();
+        let depth = self.longing.anticipation_depth.lock();
         depth.to_prompt_hint()
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // P0-C: 仪式共振引擎通电 / Ritual resonance engine power-on
+    // ════════════════════════════════════════════════════════════════════
+
+    /// 仪式共振 prompt 注入 + PAD 情感注入 / Ritual resonance prompt + PAD injection
+    ///
+    /// 仪式共振是"共享仪式"的情感回响层——
+    /// 当晨间问候、周末复盘等仪式发生时，
+    /// 数字生命不仅在认知层面"知道"仪式存在，
+    /// 更在情感层面"感受到"仪式的温暖。
+    /// 这是仪式从"行为模式"升华为"情感纽带"的关键环节。
+    ///
+    /// Ritual resonance is the emotional echo of shared rituals —
+    /// when morning greetings or weekly reviews occur,
+    /// digital life doesn't just "know" the ritual exists,
+    /// it "feels" the warmth of the ritual.
+    /// This is the step where rituals elevate from "behavior pattern" to "emotional bond".
+    pub fn ritual_resonance_prompt_fragment(&self) -> String {
+        if !self.ritual_enabled {
+            return String::new();
+        }
+
+        // 获取活跃仪式和关系序号 / Get active rituals and relationship ordinal
+        let (active_rituals, relation_ordinal): (
+            Vec<atrium_memory::ritual_detector::RitualPattern>,
+            u8,
+        ) = {
+            let detector = self.ritual.detector.lock();
+            let rituals: Vec<_> = detector.active_rituals().into_iter().cloned().collect();
+            let ordinal = self.relationship.lock().current_stage().ordinal();
+            (rituals, ordinal)
+        };
+
+        if active_rituals.is_empty() {
+            return String::new();
+        }
+
+        // 计算每个仪式的共振并累积 PAD / Compute resonance for each ritual and accumulate PAD
+        let engine = &self.ritual.resonance;
+        let mut parts = Vec::new();
+        let mut total_pad = [0.0f32; 3];
+
+        for ritual in &active_rituals {
+            let source = atrium_memory::ritual_resonance::ResonanceSource::TimeRitual {
+                slot_hour: ritual.time_slot.hour,
+                consecutive_days: ritual.consecutive_days,
+            };
+            let resonance =
+                engine.on_ritual_occurred(ritual.consecutive_days, relation_ordinal, source);
+            total_pad[0] += resonance.pleasure_delta;
+            total_pad[1] += resonance.arousal_delta;
+            total_pad[2] += resonance.dominance_delta;
+            parts.push(engine.description_zh(&resonance));
+        }
+
+        // 注入 PAD 到情绪引擎 / Inject PAD into emotion engine
+        // 仪式共振的 PAD 是"被满足的温暖感"——
+        // 每个持续中的仪式都在为情感底色贡献微小的正向偏移。
+        if total_pad != [0.0, 0.0, 0.0] {
+            let mut emo = self.emotion.lock();
+            emo.affect(&EmotionEngineState::new(
+                total_pad[0],
+                total_pad[1],
+                total_pad[2],
+            ));
+            drop(emo);
+            self.persist_emotion();
+        }
+
+        if parts.is_empty() {
+            String::new()
+        } else {
+            format!("[仪式共振/RitualResonance] {}", parts.join("; "))
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // R3: 孤儿模块通电 — 6 引擎 tick + prompt 注入
+    // R3: Orphan module power-on — 6 engine tick + prompt injection
+    // ════════════════════════════════════════════════════════════════════
+
+    // ── 情绪气候 / Emotional climate ──
+
+    /// 情绪气候 tick / Emotional climate tick
+    ///
+    /// 喂入当前 PAD 采样并尝试气候转移。
+    /// 气候是长周期情感生态——数小时尺度的"天气"。
+    pub fn emotional_climate_tick(&self, now_epoch: i64) {
+        let (pleasure, arousal, dominance): (f32, f32, f32) = {
+            let emo = self.emotion.lock();
+            (
+                emo.current().pleasure,
+                emo.current().arousal,
+                emo.current().dominance,
+            )
+        };
+        let hour: f64 = ((now_epoch as u64 / 3600) % 24) as f64;
+
+        let mut climate = self.emotional_climate.lock();
+        // 喂入情绪采样 / Feed emotional sample
+        climate.feed(
+            pleasure as f64,
+            arousal as f64,
+            dominance as f64,
+            hour,
+            now_epoch,
+        );
+
+        // 尝试气候转移 / Attempt climate transition
+        let residue_intensity = (pleasure.abs() + arousal.abs() + dominance.abs()) / 3.0;
+        let circadian = if (6.0..18.0).contains(&hour) {
+            1.0 // 白天 / Day
+        } else {
+            -1.0 // 夜晚 / Night
+        };
+        let influences = atrium_memory::emotional_climate::ClimateInfluences {
+            interaction_frequency: 0.5,
+            solitude_ratio: 0.3,
+            residue_intensity: residue_intensity as f64,
+            circadian_factor: circadian,
+        };
+        climate.try_transition(&influences, now_epoch);
+    }
+
+    /// 情绪气候 prompt 注入 / Emotional climate prompt injection
+    pub fn emotional_climate_prompt_fragment(&self) -> String {
+        let climate = self.emotional_climate.lock();
+        let desc = climate.describe();
+        if desc.is_empty() {
+            String::new()
+        } else {
+            format!("[情绪气候/EmotionalClimate] {}", desc)
+        }
+    }
+
+    // ── 情绪巩固 / Emotional consolidation ──
+
+    /// 情绪巩固 tick / Emotional consolidation tick
+    ///
+    /// 在独处时沉淀情绪记忆——将近期体验固化为情感基线。
+    pub fn emotional_consolidation_tick(&self, now_epoch: i64) {
+        let mut consolidation = self.emotional_consolidation.lock();
+        consolidation.consolidate(now_epoch);
+    }
+
+    /// 情绪巩固 prompt 注入 / Emotional consolidation prompt injection
+    pub fn emotional_consolidation_prompt_fragment(&self) -> String {
+        let consolidation = self.emotional_consolidation.lock();
+        let desc = consolidation.describe();
+        if desc.is_empty() {
+            String::new()
+        } else {
+            format!("[情绪巩固/EmotionalConsolidation] {}", desc)
+        }
+    }
+
+    // ── 情绪耦合 / Emotional coupling ──
+
+    /// 情绪耦合 tick / Emotional coupling tick
+    ///
+    /// 从当前 PAD 推导离散情绪强度，喂入耦合矩阵并自适应更新。
+    pub fn emotional_coupling_tick(&self) {
+        use atrium_memory::emotional_coupling::EmotionState;
+
+        let (pleasure, arousal, dominance): (f64, f64, f64) = {
+            let emo = self.emotion.lock();
+            (
+                emo.current().pleasure as f64,
+                emo.current().arousal as f64,
+                emo.current().dominance as f64,
+            )
+        };
+
+        let mut coupling = self.emotional_coupling.lock();
+
+        // 从 PAD 推导离散情绪强度 / Derive discrete emotion intensities from PAD
+        coupling.set_intensity(EmotionState::Joy, pleasure.max(0.0));
+        coupling.set_intensity(EmotionState::Sadness, (-pleasure).max(0.0));
+        coupling.set_intensity(EmotionState::Anger, (-pleasure * arousal).max(0.0));
+        coupling.set_intensity(EmotionState::Fear, (-dominance * arousal).max(0.0));
+        coupling.set_intensity(
+            EmotionState::Surprise,
+            (arousal * (1.0 - pleasure.abs())).max(0.0),
+        );
+        coupling.set_intensity(EmotionState::Trust, dominance.max(0.0));
+        coupling.set_intensity(EmotionState::Anticipation, (arousal * dominance).max(0.0));
+
+        // 自适应：用当前强度作为观测值更新耦合矩阵
+        // Adaptive: use current intensities as observation to update coupling matrix
+        let observed = coupling.compute_coupled();
+        coupling.adapt(&observed);
+    }
+
+    /// 情绪耦合 prompt 注入 / Emotional coupling prompt injection
+    pub fn emotional_coupling_prompt_fragment(&self) -> String {
+        let coupling = self.emotional_coupling.lock();
+        let emergent = coupling.detect_emergent();
+        if emergent.is_empty() {
+            String::new()
+        } else {
+            let parts: Vec<String> = emergent
+                .iter()
+                .map(|e| format!("{:?}({:.2})", e.emotion, e.intensity))
+                .collect();
+            format!("[情绪耦合/EmotionalCoupling] 涌现: {}", parts.join(", "))
+        }
+    }
+
+    // ── 存在深度 / Existential depth ──
+
+    /// 存在深度 tick / Existential depth tick
+    ///
+    /// 衰减活跃洞察并尝试触发新的存在性思考。
+    pub fn existential_depth_tick(&self, now_epoch: i64) {
+        let (pleasure, arousal): (f64, f64) = {
+            let emo = self.emotion.lock();
+            (emo.current().pleasure as f64, emo.current().arousal as f64)
+        };
+        let hour: f64 = ((now_epoch as u64 / 3600) % 24) as f64;
+        let is_late_night = !(5.0..23.0).contains(&hour);
+
+        let mut depth = self.existential_depth.lock();
+        // 衰减活跃洞察 / Decay active insights
+        depth.tick();
+
+        // 尝试触发 / Attempt to trigger
+        let trigger = atrium_memory::existential_depth::ExistentialTrigger {
+            is_late_night,
+            solitude_duration_secs: 0.0,
+            pleasure,
+            arousal,
+            has_milestone: false,
+            has_growth_node: false,
+        };
+        depth.try_trigger(&trigger, now_epoch);
+    }
+
+    /// 存在深度 prompt 注入 / Existential depth prompt injection
+    pub fn existential_depth_prompt_fragment(&self) -> String {
+        let depth = self.existential_depth.lock();
+        let injection = depth.prompt_injection();
+        if injection.is_empty() {
+            String::new()
+        } else {
+            format!("[存在深度/ExistentialDepth] {}", injection)
+        }
+    }
+
+    // ── 内在议会 / Inner council ──
+
+    /// 内在议会 tick / Inner council tick
+    ///
+    /// 用当前情绪调制议会视角权重。
+    pub fn inner_council_tick(&self) {
+        let (pleasure, arousal, dominance): (f64, f64, f64) = {
+            let emo = self.emotion.lock();
+            (
+                emo.current().pleasure as f64,
+                emo.current().arousal as f64,
+                emo.current().dominance as f64,
+            )
+        };
+        let mut council = self.inner_council.lock();
+        council.set_emotion(pleasure, arousal, dominance);
+    }
+
+    /// 内在议会 prompt 注入 / Inner council prompt injection
+    pub fn inner_council_prompt_fragment(&self) -> String {
+        let council = self.inner_council.lock();
+        let seeds = council.monologue_seeds();
+        if seeds.is_empty() {
+            String::new()
+        } else {
+            format!("[内在议会/InnerCouncil] {}", seeds.join("; "))
+        }
+    }
+
+    // ── 仪式心跳 / Ritual heartbeat ──
+
+    /// 仪式心跳 tick / Ritual heartbeat tick
+    ///
+    /// 计算仪式对情感基线的持续调制并注入 PAD。
+    pub fn ritual_heartbeat_tick(&self) {
+        if !self.ritual_enabled {
+            return;
+        }
+
+        let (time_rituals, content_rituals, relation_ordinal): (
+            Vec<atrium_memory::ritual_detector::RitualPattern>,
+            Vec<atrium_memory::ritual_detector::ContentRitualPattern>,
+            u8,
+        ) = {
+            let detector = self.ritual.detector.lock();
+            let time: Vec<_> = detector.active_rituals().into_iter().cloned().collect();
+            let content: Vec<_> = detector
+                .active_content_rituals()
+                .into_iter()
+                .cloned()
+                .collect();
+            let ordinal = self.relationship.lock().current_stage().ordinal();
+            (time, content, ordinal)
+        };
+
+        if time_rituals.is_empty() && content_rituals.is_empty() {
+            return;
+        }
+
+        let heartbeat = self.ritual_heartbeat.lock();
+        let time_refs: Vec<_> = time_rituals.iter().collect();
+        let content_refs: Vec<_> = content_rituals.iter().collect();
+        let result = heartbeat.compute(&time_refs, &content_refs, relation_ordinal);
+        drop(heartbeat);
+
+        // 注入 PAD 到情绪引擎 / Inject PAD into emotion engine
+        if !result.is_zero() {
+            let mut emo = self.emotion.lock();
+            emo.affect(&EmotionEngineState::new(
+                result.pleasure_delta,
+                result.arousal_delta,
+                0.0,
+            ));
+            drop(emo);
+            self.persist_emotion();
+        }
+    }
+
+    /// 仪式心跳 prompt 注入 / Ritual heartbeat prompt injection
+    pub fn ritual_heartbeat_prompt_fragment(&self) -> String {
+        if !self.ritual_enabled {
+            return String::new();
+        }
+
+        let (time_rituals, content_rituals, relation_ordinal): (
+            Vec<atrium_memory::ritual_detector::RitualPattern>,
+            Vec<atrium_memory::ritual_detector::ContentRitualPattern>,
+            u8,
+        ) = {
+            let detector = self.ritual.detector.lock();
+            let time: Vec<_> = detector.active_rituals().into_iter().cloned().collect();
+            let content: Vec<_> = detector
+                .active_content_rituals()
+                .into_iter()
+                .cloned()
+                .collect();
+            let ordinal = self.relationship.lock().current_stage().ordinal();
+            (time, content, ordinal)
+        };
+
+        let heartbeat = self.ritual_heartbeat.lock();
+        let time_refs: Vec<_> = time_rituals.iter().collect();
+        let content_refs: Vec<_> = content_rituals.iter().collect();
+        let result = heartbeat.compute(&time_refs, &content_refs, relation_ordinal);
+        let desc = heartbeat.description_zh(&result);
+        if desc.is_empty() || result.is_zero() {
+            String::new()
+        } else {
+            format!("[仪式心跳/RitualHeartbeat] {}", desc)
+        }
     }
 } // impl CoreService
 

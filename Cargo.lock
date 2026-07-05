@@ -149,7 +149,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "atrium-bridge"
-version = "0.2.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -173,7 +173,7 @@ dependencies = [
 
 [[package]]
 name = "atrium-core"
-version = "0.2.0"
+version = "0.10.0"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -207,14 +207,14 @@ dependencies = [
 
 [[package]]
 name = "atrium-echo-plugin"
-version = "0.2.0"
+version = "0.10.0"
 dependencies = [
  "atrium-plugin",
 ]
 
 [[package]]
 name = "atrium-emotion"
-version = "0.2.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "bincode",
@@ -229,7 +229,7 @@ dependencies = [
 
 [[package]]
 name = "atrium-memory"
-version = "0.2.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "atrium-emotion",
@@ -256,7 +256,7 @@ dependencies = [
 
 [[package]]
 name = "atrium-persona"
-version = "0.2.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "bincode",
@@ -271,7 +271,7 @@ dependencies = [
 
 [[package]]
 name = "atrium-plugin"
-version = "0.2.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "libloading",

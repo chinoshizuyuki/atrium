@@ -161,7 +161,14 @@ impl RitualEmergence {
     pub fn compute_signature(content: &str, time_window: &str) -> String {
         // 简单签名：内容前20字符 + 时间窗口 / Simple signature.
         let content_key = if content.len() > 20 {
-            &content[..20]
+            // 字符安全截断 / Char-safe truncation
+            let end = content
+                .char_indices()
+                .take_while(|(i, _)| *i < 20)
+                .last()
+                .map(|(i, c)| i + c.len_utf8())
+                .unwrap_or(20);
+            &content[..end]
         } else {
             content
         };

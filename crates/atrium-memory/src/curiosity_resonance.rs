@@ -8,6 +8,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::resonance_core::{pad_magnitude, ResonanceEngine};
+
 // ═══════════════════════════════════════════════════════════════════════════
 // 配置 — Configuration
 // ═══════════════════════════════════════════════════════════════════════════
@@ -143,6 +145,63 @@ impl CuriosityResonance {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// ResonanceEngine trait 实现 / ResonanceEngine trait impl
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// 好奇共振引擎是有状态的——维护当前 PAD 调制和满足度脉冲，
+/// 随时间指数衰减。trait 方法委托到已有实现，并桥接 i64↔f64 时间戳。
+///
+/// Curiosity resonance is stateful — maintains current PAD modulation and
+/// satisfaction pulse with exponential decay. Trait methods delegate to
+/// existing implementations, bridging i64↔f64 timestamps.
+impl ResonanceEngine for CuriosityResonance {
+    /// 当前 PAD 情感增量 / Current PAD emotional delta
+    fn current_pad_delta(&self, _now_secs: f64) -> (f32, f32, f32) {
+        self.current_pad
+    }
+
+    /// 时间步进 — 指数衰减 / Time tick — exponential decay
+    fn tick(&mut self, now_secs: f64) {
+        // 桥接 f64→i64 时间戳 / Bridge f64→i64 timestamp
+        CuriosityResonance::tick(self, now_secs as i64);
+    }
+
+    /// 活跃度 = PAD 模长（钳制到 [0, 1]）/ Activity = PAD magnitude clamped
+    fn activity(&self) -> f32 {
+        let (p, a, d) = self.current_pad;
+        pad_magnitude(p, a, d).min(1.0)
+    }
+
+    /// 共振类型标签 / Resonance type label
+    fn resonance_label(&self) -> &'static str {
+        "好奇共振/CuriosityResonance"
+    }
+
+    /// 生成 prompt 注入片段 / Generate prompt injection fragment
+    ///
+    /// 覆盖默认实现，使用好奇共振特有的中文情感描述。
+    fn prompt_fragment(&self, now_secs: f64) -> String {
+        let (p, a, d) = self.current_pad_delta(now_secs);
+        if p.abs() < 0.01 && a.abs() < 0.01 {
+            return String::new();
+        }
+        // 复用已有 prompt_suffix 生成情感色彩描述 / Reuse existing prompt_suffix
+        let suffix = self.prompt_suffix();
+        if suffix.is_empty() {
+            format!(
+                "[好奇共振/CuriosityResonance] PAD: P{:+.3} A{:+.3} D{:+.3} — 好奇的情感回响仍在",
+                p, a, d
+            )
+        } else {
+            format!(
+                "[好奇共振/CuriosityResonance] PAD: P{:+.3} A{:+.3} D{:+.3} {}",
+                p, a, d, suffix
+            )
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // 单元测试 — Unit Tests
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -252,5 +311,65 @@ mod tests {
         let json = serde_json::to_string(&r).unwrap();
         let r2: CuriosityResonance = serde_json::from_str(&json).unwrap();
         assert!((r2.current_pad.1 - r.current_pad.1).abs() < 0.01);
+    }
+
+    // ── ResonanceEngine trait 测试 / Trait Tests ──
+
+    #[test]
+    fn test_trait_curiosity_pad_delta_matches_current_pad() {
+        // trait 方法应返回 current_pad / Trait method should return current_pad
+        let mut r = CuriosityResonance::default_new();
+        r.on_curiosity_triggered(0.8, 100);
+        assert_eq!(r.current_pad_delta(100.0), r.current_pad);
+    }
+
+    #[test]
+    fn test_trait_curiosity_tick_decays() {
+        // trait tick 应触发衰减 / Trait tick should trigger decay
+        let mut r = CuriosityResonance::default_new();
+        r.on_curiosity_triggered(1.0, 100);
+        let before = r.current_pad.1;
+        ResonanceEngine::tick(&mut r, 160.0); // 一个半衰期 / One half-life
+        let after = r.current_pad.1;
+        assert!(after < before, "should decay via trait tick");
+    }
+
+    #[test]
+    fn test_trait_curiosity_activity_zero_when_calm() {
+        // 平静时活跃度为零 / Activity is zero when calm
+        let r = CuriosityResonance::default_new();
+        assert_eq!(r.activity(), 0.0);
+    }
+
+    #[test]
+    fn test_trait_curiosity_activity_positive_when_triggered() {
+        // 触发后活跃度大于零 / Activity is positive after trigger
+        let mut r = CuriosityResonance::default_new();
+        r.on_curiosity_triggered(1.0, 100);
+        assert!(r.activity() > 0.0);
+        assert!(r.activity() <= 1.0); // 钳制到 [0, 1] / Clamped to [0, 1]
+    }
+
+    #[test]
+    fn test_trait_curiosity_label() {
+        let r = CuriosityResonance::default_new();
+        assert_eq!(r.resonance_label(), "好奇共振/CuriosityResonance");
+    }
+
+    #[test]
+    fn test_trait_curiosity_prompt_fragment_when_active() {
+        // 活跃时 prompt_fragment 非空 / Active → non-empty fragment
+        let mut r = CuriosityResonance::default_new();
+        r.on_curiosity_triggered(1.0, 100);
+        let frag = r.prompt_fragment(100.0);
+        assert!(!frag.is_empty(), "should have fragment: {}", frag);
+        assert!(frag.contains("好奇共振/CuriosityResonance"));
+    }
+
+    #[test]
+    fn test_trait_curiosity_prompt_fragment_empty_when_calm() {
+        // 平静时 prompt_fragment 为空 / Calm → empty fragment
+        let r = CuriosityResonance::default_new();
+        assert!(r.prompt_fragment(0.0).is_empty());
     }
 }

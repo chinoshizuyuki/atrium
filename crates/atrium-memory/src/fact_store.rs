@@ -115,24 +115,8 @@ fn now_secs() -> u64 {
         .as_secs()
 }
 
-#[derive(Debug)]
-pub enum FactStoreError {
-    Storage(String),
-    Serialize(String),
-}
-
-impl std::fmt::Display for FactStoreError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Storage(msg) => write!(f, "Storage Error: {}", msg),
-            Self::Serialize(msg) => write!(f, "Serialize Error: {}", msg),
-        }
-    }
-}
-
-impl std::error::Error for FactStoreError {}
-
-pub type Result<T> = std::result::Result<T, FactStoreError>;
+// 统一使用 store_core::StoreError / Unified StoreError from store_core
+pub type Result<T> = std::result::Result<T, crate::store_core::StoreError>;
 
 pub struct FactStore {
     inner: Mutex<HashMap<String, Fact>>,
@@ -148,15 +132,15 @@ impl FactStore {
             });
         }
         let db = sled::open(db_path)
-            .map_err(|e| FactStoreError::Storage(format!("sled open: {}", e)))?;
+            .map_err(|e| crate::store_core::StoreError::Sled(format!("sled open: {}", e)))?;
         // 从 sled 恢复所有事实到内存
         let mut map = HashMap::new();
         for item in db.iter() {
             let (key, value) =
-                item.map_err(|e| FactStoreError::Storage(format!("sled iter: {}", e)))?;
+                item.map_err(|e| crate::store_core::StoreError::Sled(format!("sled iter: {}", e)))?;
             if key.as_ref().starts_with(b"fact:") {
                 let fact: Fact = bincode::deserialize(&value)
-                    .map_err(|e| FactStoreError::Serialize(format!("bincode: {}", e)))?;
+                    .map_err(|e| crate::store_core::StoreError::Codec(format!("bincode: {}", e)))?;
                 let canonical = fact.canonical_form();
                 map.insert(canonical, fact);
             }
@@ -172,7 +156,7 @@ impl FactStore {
         let db = sled::Config::default()
             .temporary(true)
             .open()
-            .map_err(|e| FactStoreError::Storage(format!("sled open: {}", e)))?;
+            .map_err(|e| crate::store_core::StoreError::Sled(format!("sled open: {}", e)))?;
         Ok(Self {
             inner: Mutex::new(HashMap::new()),
             db: Some(db),

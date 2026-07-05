@@ -79,6 +79,83 @@ impl AtriumCoreService for CoreService {
             self.detect_narrative_event(msg, now_epoch);
         }
 
+        // R1 通电：独处品质事件喂入 — 每条用户消息都是"独处中的思考"
+        // R1 power-on: solitude quality event feed — each user message is a "thought during solitude"
+        {
+            let now_epoch = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
+            self.solitude_quality_on_thought(msg, now_epoch);
+        }
+
+        // R1-residual 通电：脆弱智慧学习闭环 — 从用户消息推断对上一轮脆弱的反应
+        // R1-residual power-on: vulnerability wisdom learning loop
+        {
+            let now_epoch = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
+            let history = self.get_history(&req.session_id, 5);
+            let prev_ai = history
+                .iter()
+                .find(|m| m.role == "assistant")
+                .map(|m| m.content.as_str())
+                .unwrap_or("");
+            self.vulnerability_wisdom_on_exchange(msg, prev_ai, now_epoch);
+        }
+
+        // R1 通电：仪式涌现事件喂入 — 每条消息都是一次交互模式观察
+        // R1 power-on: ritual emergence event feed — each message is an interaction pattern observation
+        {
+            let now_epoch = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
+            let valence: f64 = {
+                let emo = self.emotion.lock();
+                emo.current().pleasure as f64
+            };
+            let tags = atrium_memory::ritual_emergence::RitualEmergence::context_tags(
+                msg.contains("再见") || msg.contains("bye"),
+                msg.contains("你好") || msg.contains("hi") || msg.contains("早"),
+                msg.len() > 50,
+            );
+            let mut emergence = self.ritual.emergence.lock();
+            emergence.observe(msg, now_epoch, valence, tags);
+        }
+
+        // R1 通电：追问风格学习器事件喂入 — 从用户消息推断反应
+        // R1 power-on: follow-up style learner event feed — infer reaction from message
+        {
+            use atrium_memory::followup_tracker::{
+                FollowUpCategory, FollowUpDepth, FollowUpStyle, UserReaction,
+            };
+            // 简化启发式：长消息=正面回应，短消息=中性，含回避词=回避
+            // Simplified heuristic: long=engaged, short=neutral, avoidance words=deflected
+            let engaged = msg.len() > 30;
+            let elaborated = msg.len() > 80;
+            let deflected = msg.contains("算了") || msg.contains("不用了") || msg.contains("没事");
+            let sentiment: f32 = if deflected {
+                -0.5
+            } else if engaged {
+                0.5
+            } else {
+                0.0
+            };
+            self.followup_style_learner_on_outcome(
+                FollowUpCategory::Relationship,
+                FollowUpDepth::Moderate,
+                FollowUpStyle::Caring,
+                UserReaction {
+                    engaged,
+                    sentiment,
+                    deflected,
+                    elaborated,
+                },
+            );
+        }
+
         // 打字节奏分析──
         let rhythm: Option<TypingRhythm> = if self.perception_enabled {
             let event = MessageEvent::simple(msg.clone(), chrono::Utc::now().timestamp_millis());
@@ -480,24 +557,26 @@ impl AtriumCoreService for CoreService {
                 extra_parts.push(ritual_ctx);
             }
             // 记录时间交互到仪式检测器 / Record time interaction to ritual detector
-            self.ritual_detector.lock().record_interaction(now_epoch);
+            self.ritual.detector.lock().record_interaction(now_epoch);
             // 记录内容交互到仪式检测器（晚安/早安/节日等语义检测）/ Record content interaction to ritual detector (goodnight/greeting/holiday semantics)
             // G1 修复：内容仪式检测不再是死代码，"每晚说晚安"终于能被发现为仪式
             // G1 fix: content ritual detection is no longer dead code, "saying goodnight every night" can finally be discovered as ritual
-            self.ritual_detector
+            self.ritual
+                .detector
                 .lock()
                 .record_content_interaction(now_epoch, msg);
             // 纪念日自动标记 / Anniversary auto-marking
             // G4 修复：首次对话日 / G4 fix: first conversation day
             {
-                let mut anniversary = self.anniversary_system.lock();
+                let mut anniversary = self.ritual.anniversary.lock();
                 if anniversary.anniversaries.is_empty() {
                     anniversary.set_first_conversation(now_epoch);
                 }
             }
             // G4 修复：命名日 — 用户取名时同步标记纪念日 / G4 fix: naming day — mark anniversary when user names the AI
             if let Some(ref new_name) = named_just_now {
-                self.anniversary_system
+                self.ritual
+                    .anniversary
                     .lock()
                     .set_naming_day(now_epoch, new_name);
             }
@@ -531,7 +610,7 @@ impl AtriumCoreService for CoreService {
                 extra_parts.push(vuln_fragment);
             }
             // 记录对话计数 / Record conversation count
-            self.vulnerability_window.lock().record_conversation();
+            self.vulnerability.window.lock().record_conversation();
             // 写穿持久化：脆弱时刻记录后保存 / Write-through: persist after vulnerability recording
             self.vulnerability_save();
         }
@@ -626,6 +705,13 @@ impl AtriumCoreService for CoreService {
             if !sa_fragment.is_empty() {
                 extra_parts.push(sa_fragment);
             }
+            // 多事项编织 — 多个好奇心编织为自然追问 / Multi-item weaving
+            // 人类不会逐条追问，而是"考试怎么样了？上次你还担心面试来着"
+            let now_ts = chrono::Utc::now().timestamp();
+            let miw_fragment = self.multi_item_weaver_prompt_fragment(now_ts);
+            if !miw_fragment.is_empty() {
+                extra_parts.push(miw_fragment);
+            }
         }
 
         // ── Gap#5 共享仪式补充 prompt 注入 / Ritual supplement prompt injection ──
@@ -641,6 +727,12 @@ impl AtriumCoreService for CoreService {
             let ar_fragment = self.adaptive_ritual_prompt_fragment(msg);
             if !ar_fragment.is_empty() {
                 extra_parts.push(ar_fragment);
+            }
+            // 仪式共振 — 仪式的情感回响 / Ritual resonance
+            // 仪式不只在认知层"被知道"，更在情感层"被感受到"
+            let rr_fragment = self.ritual_resonance_prompt_fragment();
+            if !rr_fragment.is_empty() {
+                extra_parts.push(rr_fragment);
             }
         }
 
@@ -724,7 +816,7 @@ impl AtriumCoreService for CoreService {
             }
 
             // Gap#4 冲突与和解 / Conflict and reconciliation
-            let cg_fragment = self.conflict_growth_prompt_fragment();
+            let cg_fragment = self.conflict_engine_prompt_fragment();
             if !cg_fragment.is_empty() {
                 extra_parts.push(cg_fragment);
             }
@@ -733,6 +825,32 @@ impl AtriumCoreService for CoreService {
             let ad_fragment = self.anticipation_depth_prompt_fragment();
             if !ad_fragment.is_empty() {
                 extra_parts.push(ad_fragment);
+            }
+
+            // R3 通电：6 个孤儿引擎 prompt 注入 / R3 power-on: 6 orphan engine prompts
+            let ec_fragment = self.emotional_climate_prompt_fragment();
+            if !ec_fragment.is_empty() {
+                extra_parts.push(ec_fragment);
+            }
+            let econ_fragment = self.emotional_consolidation_prompt_fragment();
+            if !econ_fragment.is_empty() {
+                extra_parts.push(econ_fragment);
+            }
+            let ecp_fragment = self.emotional_coupling_prompt_fragment();
+            if !ecp_fragment.is_empty() {
+                extra_parts.push(ecp_fragment);
+            }
+            let ed_fragment = self.existential_depth_prompt_fragment();
+            if !ed_fragment.is_empty() {
+                extra_parts.push(ed_fragment);
+            }
+            let ic_fragment = self.inner_council_prompt_fragment();
+            if !ic_fragment.is_empty() {
+                extra_parts.push(ic_fragment);
+            }
+            let rh_fragment = self.ritual_heartbeat_prompt_fragment();
+            if !rh_fragment.is_empty() {
+                extra_parts.push(rh_fragment);
             }
         }
 
@@ -755,6 +873,10 @@ impl AtriumCoreService for CoreService {
         } else {
             reply
         };
+
+        // R1 通电：真实不完美事件喂入 — 检查回复是否过度道歉
+        // R1 power-on: authentic imperfection event feed — check over-apology in response
+        self.authentic_imperfection_on_response(&reply);
 
         // 人格防御（按成长阶段调制严格度）+ 存储AI回复到历史
         // Persona defense (strictness modulated by maturity stage) + store AI reply
@@ -791,6 +913,10 @@ impl AtriumCoreService for CoreService {
                 .unwrap_or_default()
                 .as_secs() as i64;
             self.record_narrative_event(msg, &validated_reply, now_epoch);
+
+            // R1-residual 通电：不完美温度学习闭环 — 检测 AI 回复中的不完美并记录
+            // R1-residual power-on: imperfection warmth learning loop
+            self.imperfection_warmth_on_response(&validated_reply, msg, now_epoch);
         }
 
         atrium_bridge::grpc::atrium::ProcessMessageResponse {
