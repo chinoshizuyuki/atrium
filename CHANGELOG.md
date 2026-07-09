@@ -54,6 +54,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - clippy: `unnecessary_sort_by` → `sort_by_key` in `episodic_store.rs`。
 - 审计评分 85→~95：G-01~G-09 全部闭环，P0-P3 全部完成，§20-§38 共 19 个完成日志。
 
+### Security
+
+- **RUSTSEC-2026-0204** (crossbeam-epoch 0.9.18, error): 升级到 0.9.20 — 修复 `fmt::Pointer` 无效指针解引用漏洞。
+- **RUSTSEC-2026-0190** (anyhow 1.0.102, unsound): 升级到 1.0.103 — 修复 `Error::downcast_mut()` 非健全性。
+- **RUSTSEC-2026-0002** (lru 0.12.5, unsound): 升级 ratatui 0.28→0.30，间接升级 lru 到 0.18.0 — 修复 `IterMut` 违反 Stacked Borrows。
+- **RUSTSEC-2024-0436** (paste 1.0.15, unmaintained): ratatui 0.30 移除 paste 依赖。
+- CI `cargo audit` 配置 `--ignore` 忽略 5 个不可修复的 unmaintained 警告（bincode/fxhash/instant/number_prefix/paste — 来自 sled 0.34 传递依赖或 Cargo.lock 残留，上游未发布修复）。
+
 [0.11.0]: https://github.com/chinoshizuyuki/atrium/compare/v0.10.0...v0.11.0
 
 ## [0.10.0] - 2026-07-05
