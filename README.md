@@ -6,7 +6,7 @@
 [![Tests](https://img.shields.io/badge/tests-2000+%20passed-brightgreen.svg)]()
 [![Version](https://img.shields.io/badge/version-0.11.0-blue.svg)]()
 
-[简体中文](readme/README_ZH.md)
+[Simplified Chinese](readme/README_ZH.md)
 
 Atrium is an emotional AI framework built from scratch, designed for companionship and interactive scenarios. It features **permanent memory**, **stable personality**, **autonomous emotional life**, **associative reasoning**, **real-time user perception**, **cognitive empathy**, **compound emotions**, **cross-channel memory**, **multi-platform adaptation** (QQ/TencentBot/Feishu/Web), **file storage**, **scheduled reminders**, **canned knowledge (ACK)**, and **avatar rendering**.
 
@@ -33,28 +33,28 @@ Atrium is an emotional AI framework built from scratch, designed for companionsh
 ```
 HTTP/WebSocket Requests
     │
-Rust Native HTTP/SSE Gateway (axum, :8080)  ← 全 Rust 单进程，零 Python 依赖
-    ├─ /api/chat/stream → SSE 流式对话 (DeepSeek/OpenAI 兼容)
-    ├─ /api/chat         → 非流式对话
-    ├─ /v1/chat          → QQ 适配器兼容端点
-    ├─ /api/emotion      → PAD 三维情绪状态
-    ├─ /api/persona      → 人格/关系/成长阶段 (GET/POST)
-    ├─ /api/memory/search→ 五路混合检索 (FTS5 + FactStore + STM + Persona + KeyFact)
-    ├─ /api/canned       → 罐装知识搜索/导入
-    ├─ /api/history/:sid → 对话历史
-    ├─ /api/sessions     → 活跃会话列表
-    ├─ /api/relationship → 关系阶段状态
-    ├─ /api/care/config  → 关怀引擎配置 + 主动行为状态 (GET/POST)
-    ├─ /api/files/upload → 文件上传 + 自动索引
-    ├─ /api/rooms        → 活跃房间列表
-    ├─ /ws               → 实时事件推送 (WebSocket)
-    ├─ /ws/room/:id      → 多 AI 房间广播
-    ├─ /health           → 模块健康诊断
-    └─ / (静态文件)       → Web UI (frontend/index.html)
+Rust Native HTTP/SSE Gateway (axum, :8080)  ← single Rust process, zero Python dependency
+    ├─ /api/chat/stream → SSE streaming chat (DeepSeek/OpenAI compatible)
+    ├─ /api/chat         → non-streaming chat
+    ├─ /v1/chat          → QQ adapter compatible endpoint
+    ├─ /api/emotion      → PAD 3D emotion state
+    ├─ /api/persona      → persona / relationship / growth stage (GET/POST)
+    ├─ /api/memory/search→ 5-way hybrid retrieval (FTS5 + FactStore + STM + Persona + KeyFact)
+    ├─ /api/canned       → canned knowledge search/import
+    ├─ /api/history/:sid → conversation history
+    ├─ /api/sessions     → active session list
+    ├─ /api/relationship → relationship stage status
+    ├─ /api/care/config  → care engine config + proactive behavior status (GET/POST)
+    ├─ /api/files/upload → file upload + auto-indexing
+    ├─ /api/rooms        → active room list
+    ├─ /ws               → real-time event push (WebSocket)
+    ├─ /ws/room/:id      → multi-AI room broadcast
+    ├─ /health           → module health diagnostics
+    └─ / (static files)   → Web UI (frontend/index.html)
     │
-    ├─ qq_adapter.py (仅保留) → QQ Bot (OneBot v11 + Tencent Official Bot)
+    ├─ qq_adapter.py (legacy only) → QQ Bot (OneBot v11 + Tencent Official Bot)
     │
-    │ gRPC (:50051, 向后兼容)
+    │ gRPC (:50051, backward compatible)
     │
 Rust Core Engine (tokio, 10ms tick, panic-resilient)
     ├─ CoreService       → 10-step message pipeline + ReAct pre-thinking + greeting fast path + preference/rules/canned/empathy injection
@@ -79,14 +79,14 @@ Unity / Unreal / Live2D / VR
 
 ## Quick Start
 
-### Docker (推荐)
+### Docker (recommended)
 
 ```bash
 git clone https://github.com/chinoshizuyuki/atrium.git
 cd atrium
 
-# 在 atrium.toml 中填入你的 LLM API key (或用环境变量)
-# Start the full Rust stack (单进程，含 HTTP/SSE 网关 + Web UI)
+# Fill in your LLM API key in atrium.toml (or use environment variables)
+# Start the full Rust stack (single process, with HTTP/SSE gateway + Web UI)
 docker compose up -d
 
 # Check health
@@ -96,57 +96,57 @@ docker compose ps
 | Service            | Port  | URL                                    |
 | ------------------ | ----- | -------------------------------------- |
 | Rust Core + Gateway| 8080  | <http://localhost:8080> (Web UI + API) |
-| gRPC (向后兼容)    | 50051 | —                                      |
+| gRPC (backward compatible) | 50051 | —                          |
 | Prometheus Metrics | 9090  | <http://localhost:9090/metrics>        |
 
-### 本地开发
+### Local Development
 
 ```bash
-# 1. 启动 Rust 后端 (单进程即生命体: HTTP/SSE 网关 + gRPC + Web UI)
+# 1. Start the Rust backend (a single process is the living entity: HTTP/SSE gateway + gRPC + Web UI)
 cargo run --release --bin atrium-core
 
-# 2. (可选) 启动 QQ 适配器
+# 2. (optional) Start the QQ adapter
 cd services/gateway
 pip install -r requirements-qq.txt
 QQ_BOT_MODE=tencent QQ_BOT_APP_ID=xxx QQ_BOT_TOKEN=xxx QQ_BOT_SECRET=xxx \
   python atrium/qq_adapter.py
 ```
 
-### Web UI (浏览器控制台)
+### Web UI (browser console)
 
-启动 `atrium-core` 后，浏览器访问 **<http://localhost:8080>** 即可打开数字生命控制台。
+After starting `atrium-core`, open **<http://localhost:8080>** in your browser to access the digital life console.
 
-仿 AstrBot 风格的深色仪表盘，包含 12 个功能视图：
-- **仪表盘** — 网关状态/情绪/关系/事件数统计 + PAD 情绪可视化 + 模块健康
-- **对话** — SSE 流式聊天 (Ctrl+Enter 发送，光标动画)
-- **情绪** — 实时 PAD 三维模型 (Pleasure/Arousal/Dominance 双向条形图)
-- **人格** — 名字/称呼/版本/关系阶段/成长阶段 + 动态人格同步
-- **记忆** — 五路混合检索 (FTS5 + FactStore + STM + Persona + KeyFact)
-- **罐装知识** — ACK 搜索 + 跨 AI 传输文本导入
-- **会话** — 活跃会话列表 + 历史消息查看
-- **关怀引擎** — 主动问候/签到/情感检查频率配置 + 安静时段
-- **文件** — 上传文档自动索引为认知扩展
-- **房间** — 活跃 WebSocket 群聊房间
-- **配置** — 系统配置只读查看
-- **日志** — 实时 WebSocket 事件流
+A dark dashboard inspired by AstrBot, featuring 12 functional views:
+- **Dashboard** — gateway status / emotion / relationship / event count stats + PAD emotion visualization + module health
+- **Chat** — SSE streaming chat (Ctrl+Enter to send, cursor animation)
+- **Emotion** — real-time PAD 3D model (Pleasure/Arousal/Dominance dual-direction bar charts)
+- **Persona** — name / nickname / version / relationship stage / growth stage + dynamic persona sync
+- **Memory** — 5-way hybrid retrieval (FTS5 + FactStore + STM + Persona + KeyFact)
+- **Canned Knowledge** — ACK search + cross-AI transfer text import
+- **Sessions** — active session list + historical message view
+- **Care Engine** — proactive greeting / check-in / emotion-check frequency config + quiet hours
+- **Files** — uploaded documents auto-indexed as cognitive extensions
+- **Rooms** — active WebSocket group-chat rooms
+- **Config** — read-only system configuration view
+- **Logs** — real-time WebSocket event stream
 
-### Terminal TUI (终端客户端)
+### Terminal TUI (terminal client)
 
 ```bash
-# 先启动 atrium-core (见上方本地开发)
-# 然后另开终端:
+# Start atrium-core first (see Local Development above)
+# Then open a new terminal:
 cargo run --release -p atrium-tui
 
-# 自定义网关地址/会话/用户
+# Custom gateway address / session / user
 cargo run --release -p atrium-tui -- --gateway http://127.0.0.1:8080 --session tui --user tui-user
 
-# 或用环境变量
+# Or use environment variables
 ATRIUM_GATEWAY=http://127.0.0.1:8080 cargo run --release -p atrium-tui
 ```
 
-TUI 布局：左侧对话流 (SSE 流式) + 右侧数字生命状态面板 (PAD 情绪条 + 关系/成长阶段 + 模块健康列表) + 底部输入框。
+TUI layout: conversation stream on the left (SSE streaming) + digital life status panel on the right (PAD emotion bars + relationship / growth stage + module health list) + input box at the bottom.
 
-命令: `/q` 退出 · `/clear` 清空对话 · `/help` 帮助。按键: `Enter` 发送 · `Esc` 退出 · `↑/↓` 滚动 · `PgUp/PgDn` 翻页。
+Commands: `/q` quit · `/clear` clear chat · `/help` help. Keys: `Enter` send · `Esc` quit · `↑/↓` scroll · `PgUp/PgDn` page.
 
 ### Configuration
 
