@@ -91,6 +91,15 @@ pub struct FeedbackLoop {
     last_topic_hash: u64,
     /// 上一条 AI 回复的情绪标签（用于关联反馈）
     last_ai_emotion: String,
+    /// P3-C 上次消息处理后的满意度变化量 / P3-C Satisfaction delta after the last message
+    ///
+    /// 强化学习闭环信号——供 `reinforce_facts_by_feedback` 读取，决定事实置信度
+    /// 的调整方向与幅度。每次 `on_user_message` 更新：delta = new_satisfaction - old_satisfaction。
+    ///
+    /// Reinforcement learning closed-loop signal — read by `reinforce_facts_by_feedback`
+    /// to decide fact confidence adjustment direction and magnitude. Updated on every
+    /// `on_user_message`: delta = new_satisfaction - old_satisfaction.
+    last_satisfaction_delta: f32,
 }
 
 impl Default for FeedbackLoop {
@@ -110,6 +119,7 @@ impl FeedbackLoop {
             consecutive_same_topic: 0,
             last_topic_hash: 0,
             last_ai_emotion: String::new(),
+            last_satisfaction_delta: 0.0,
         }
     }
 
@@ -123,6 +133,7 @@ impl FeedbackLoop {
             consecutive_same_topic: 0,
             last_topic_hash: 0,
             last_ai_emotion: String::new(),
+            last_satisfaction_delta: 0.0,
         }
     }
 
@@ -171,7 +182,9 @@ impl FeedbackLoop {
             self.last_topic_hash = topic_hash;
         }
 
-        // 5. 更新满意度 (EMA)
+        // 5. 更新满意度 (EMA) — 记录处理前快照，计算 P3-C 满意度变化量
+        // 5. Update satisfaction (EMA) — snapshot before, compute P3-C satisfaction delta
+        let old_satisfaction = self.satisfaction;
         let latest_delta = self
             .signals
             .last()
@@ -179,6 +192,9 @@ impl FeedbackLoop {
             .unwrap_or(0.0);
         self.satisfaction =
             (self.satisfaction + self.satisfaction_alpha * latest_delta).clamp(0.0, 1.0);
+        // P3-C 记录本次消息处理后的满意度变化量 — 供 reinforce_facts_by_feedback 读取
+        // P3-C Record satisfaction delta after this message — read by reinforce_facts_by_feedback
+        self.last_satisfaction_delta = self.satisfaction - old_satisfaction;
 
         // 6. 调节 verbosity (基于用户消息平均长度)
         // Short user messages → AI should be more concise
@@ -212,6 +228,22 @@ impl FeedbackLoop {
     /// 获取当前满意度
     pub fn satisfaction(&self) -> f32 {
         self.satisfaction
+    }
+
+    /// P3-C 获取上次消息处理后的满意度变化量 / P3-C Get satisfaction delta after the last message
+    ///
+    /// 强化学习闭环信号——返回 `on_user_message` 处理后的满意度变化量
+    /// （new_satisfaction - old_satisfaction）。供 `CoreService::reinforce_facts_by_feedback`
+    /// 读取，决定事实置信度的调整方向：正值提升置信度（用户满意→事实更可信），
+    /// 负值降低置信度（用户纠正→事实更不可信）。
+    ///
+    /// Reinforcement learning closed-loop signal — returns the satisfaction change after
+    /// `on_user_message` (new_satisfaction - old_satisfaction). Read by
+    /// `CoreService::reinforce_facts_by_feedback` to decide fact confidence adjustment:
+    /// positive values raise confidence (user satisfied → facts more credible),
+    /// negative values lower confidence (user correction → facts less credible).
+    pub fn satisfaction_delta(&self) -> f32 {
+        self.last_satisfaction_delta
     }
 
     /// 获取行为调节参数
@@ -827,5 +859,62 @@ mod tests {
             timestamp: 0,
         };
         assert!((deepening.satisfaction_delta() - 0.02).abs() < 1e-6);
+    }
+
+    // ── P3-C satisfaction_delta 追踪测试 / P3-C satisfaction_delta tracking tests ──
+
+    #[test]
+    fn test_satisfaction_delta_tracking() {
+        // on_user_message 后 satisfaction_delta 应正确更新（= new - old）
+        // After on_user_message, satisfaction_delta should be correctly updated (= new - old)
+        let mut fl = FeedbackLoop::new();
+        // 初始 delta 应为 0.0
+        assert!(
+            fl.satisfaction_delta().abs() < 1e-6,
+            "初始 satisfaction_delta 应为 0.0 / initial should be 0.0"
+        );
+
+        let old_sat = fl.satisfaction();
+        // 赞扬消息 → 满意度上升 → delta > 0
+        fl.on_user_message("太对了 awesome 好棒");
+        let new_sat = fl.satisfaction();
+        let delta = fl.satisfaction_delta();
+        assert!(
+            (delta - (new_sat - old_sat)).abs() < 1e-6,
+            "satisfaction_delta 应等于 new - old：delta={}, new-old={} / should equal new - old",
+            delta,
+            new_sat - old_sat
+        );
+    }
+
+    #[test]
+    fn test_satisfaction_delta_negative_after_correction() {
+        // 强纠正消息 → 满意度下降 → delta < 0
+        // Strong correction message → satisfaction drops → delta < 0
+        let mut fl = FeedbackLoop::new();
+        // 单条纠正消息 — 无前序消息，不会触发 TopicShift，确保 Correction 是 signals.last()
+        // Single correction — no prior message, no TopicShift, ensuring Correction is signals.last()
+        fl.on_user_message("不对你说错了搞错了");
+        let delta = fl.satisfaction_delta();
+        assert!(
+            delta < 0.0,
+            "纠正后 satisfaction_delta 应为负值，实际 {} / should be negative, got {}",
+            delta,
+            delta
+        );
+    }
+
+    #[test]
+    fn test_satisfaction_delta_zero_on_neutral() {
+        // 中性消息（无反馈信号）→ delta 为 0（无信号，satisfaction 不变）
+        // Neutral message (no feedback signal) → delta = 0 (no signal, satisfaction unchanged)
+        let mut fl = FeedbackLoop::new();
+        fl.on_user_message("请继续讲");
+        assert!(
+            fl.satisfaction_delta().abs() < 1e-6,
+            "中性消息 satisfaction_delta 应为 0，实际 {} / should be 0, got {}",
+            fl.satisfaction_delta(),
+            fl.satisfaction_delta()
+        );
     }
 }

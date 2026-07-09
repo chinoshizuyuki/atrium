@@ -235,13 +235,13 @@ pub struct HealthCheckResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BridgeConfig {
+pub struct BridgeProtocolConfig {
     pub grpc_addr: String,
     pub shm_path: String,
     pub shm_size: usize,
 }
 
-impl Default for BridgeConfig {
+impl Default for BridgeProtocolConfig {
     fn default() -> Self {
         Self {
             grpc_addr: "/tmp/atrium.sock".into(),

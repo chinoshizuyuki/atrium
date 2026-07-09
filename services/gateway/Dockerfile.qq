@@ -1,0 +1,90 @@
+# Atrium QQ Bot Adapter — Docker 镜像 / Docker Image
+# ============================================================================
+# 数字生命的 QQ 感官器官 — 将 QQ 消息流接入 Atrium 核心意识
+# Digital life's QQ sensory organ — bridges QQ message stream into Atrium core
+#
+# 设计理念 / Design Philosophy:
+#   - 极致性能：python:3.12-slim 基础镜像，aiohttp 单依赖，镜像 < 120MB
+#     Extreme performance: slim base, single dependency, image < 120MB
+#   - 极致能力：双模式支持（OneBot v11 + Tencent Official），自动重连
+#     Extreme capability: dual-mode support, auto-reconnection
+#   - 安全：非 root 用户运行，最小权限原则
+#     Security: non-root user, least-privilege principle
+#   - 解耦：通过 ATRIUM_GATEWAY 环境变量与 Core 解耦，可独立扩缩容
+#     Decoupled: connects to Core via env var, independently scalable
+# ============================================================================
+
+FROM python:3.12-slim-bookworm AS builder
+
+# 构建阶段：安装依赖到独立目录 / Build stage: install deps to isolated prefix
+# 使用 --prefix 避免污染系统 Python，便于多阶段复制
+WORKDIR /build
+
+COPY services/gateway/requirements-qq.txt ./requirements.txt
+
+# 安装依赖到 /install 前缀 / Install deps to /install prefix
+RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 运行阶段 / Runtime Stage
+# ─────────────────────────────────────────────────────────────────────────────
+
+FROM python:3.12-slim-bookworm
+
+# 安装最小运行时依赖 / Install minimal runtime deps
+#   - ca-certificates: HTTPS 连接 Tencent API / HTTPS to Tencent API
+#   - tzdata: 时区支持（数字生命需要感知时间）/ Timezone (digital life needs time awareness)
+#   - wget: 健康检查探测 / Health check probe
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    tzdata \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# 复制依赖 / Copy dependencies from builder
+COPY --from=builder /install /usr/local
+
+# 创建非 root 用户 / Create non-root user for security
+# 数字生命的感官器官不应以特权运行 / Sensory organs should not run privileged
+RUN groupadd -r atrium-qq && \
+    useradd -r -g atrium-qq -d /app -s /sbin/nologin atrium-qq
+
+WORKDIR /app
+
+# 复制适配器代码 / Copy adapter source
+COPY --chown=atrium-qq:atrium-qq services/gateway/atrium/qq_adapter.py ./qq_adapter.py
+
+# 切换非 root 用户 / Switch to non-root user
+USER atrium-qq
+
+# 环境变量默认值 / Default environment variables
+#   ATRIUM_GATEWAY: Core 引擎地址 / Core engine URL
+#   ONEBOT_PORT: OneBot v11 反向 WS 监听端口 / OneBot reverse-WS listen port
+#   TZ: 时区（影响数字生命的昼夜节律）/ Timezone (affects circadian rhythm)
+ENV ATRIUM_GATEWAY=http://atrium-core:8080 \
+    ONEBOT_HOST=0.0.0.0 \
+    ONEBOT_PORT=8088 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    TZ=Asia/Shanghai
+
+# 暴露 OneBot 反向 WS 端口 / Expose OneBot reverse-WS port
+# Tencent 模式为出站连接，无需暴露端口
+# Tencent mode uses outbound connections, no port needed
+EXPOSE 8088
+
+# 健康检查 / Health Check
+#   OneBot 模式：探测 :8088 端口是否监听 / Probe port 8088 in OneBot mode
+#   Tencent 模式：探测 Python 进程是否存活 / Probe Python process in Tencent mode
+#   双模式兼容：优先检测端口，失败则检测进程 / Dual-mode: try port first, fallback to process
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD wget -qO- http://localhost:${ONEBOT_PORT}/ >/dev/null 2>&1 || \
+        pgrep -f qq_adapter.py >/dev/null || exit 1
+
+# 优雅退出 / Graceful shutdown
+#   SIGTERM → asyncio.CancelledError → 关闭所有 WS 连接 + aiohttp session
+#   SIGTERM → asyncio.CancelledError → close all WS + aiohttp session
+STOPSIGNAL SIGTERM
+
+# 启动适配器 / Launch adapter
+ENTRYPOINT ["python", "qq_adapter.py"]

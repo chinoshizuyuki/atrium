@@ -222,6 +222,11 @@ pub struct VulnerabilitySubsystem {
     pub ritual: Mutex<atrium_memory::vulnerability_ritual::VulnerabilityRitual>,
     /// 不完美温暖引擎 / Imperfection warmth engine
     pub warmth: Mutex<atrium_memory::imperfection_warmth::ImperfectionWarmth>,
+    /// G-08 成长反馈桥接器 — 桥接 FeedbackLoop → VulnerabilityWisdom/ImperfectionWarmth
+    /// G-08 Growth feedback bridge — bridges FeedbackLoop → VulnerabilityWisdom/ImperfectionWarmth
+    pub growth_bridge: Mutex<atrium_memory::growth_feedback::GrowthFeedbackBridge>,
+    /// G-08 成长桥接持久化存储 — 跨会话保持成长势头连续 / Growth bridge persistence store
+    pub growth_bridge_store: Option<Mutex<atrium_memory::growth_feedback::GrowthBridgeStore>>,
     /// 真实不完美评估器 / Authentic imperfection assessor
     pub authentic_imperfection: Mutex<atrium_memory::authentic_imperfection::AuthenticImperfection>,
     /// 脆弱窗口持久化存储 / Vulnerability persistence store
@@ -241,7 +246,26 @@ impl VulnerabilitySubsystem {
         warmth: atrium_memory::imperfection_warmth::ImperfectionWarmth,
         authentic_imperfection: atrium_memory::authentic_imperfection::AuthenticImperfection,
         store: Option<atrium_memory::vulnerability_store::VulnerabilityStore>,
+        growth_bridge_store: Option<atrium_memory::growth_feedback::GrowthBridgeStore>,
     ) -> Self {
+        // 成长桥接启动恢复 — 从持久化存储加载或冷启动 / Growth bridge startup restore — load from persistence or cold start
+        let growth_bridge = if let Some(ref gbs) = growth_bridge_store {
+            match gbs.load() {
+                Ok(b) => {
+                    tracing::info!("[GrowthBridge] 从持久化恢复 / Restored from persistence");
+                    b
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "[GrowthBridge] 持久化加载失败，冷启动 / Load failed, cold start: {:?}",
+                        e
+                    );
+                    atrium_memory::growth_feedback::GrowthFeedbackBridge::new()
+                }
+            }
+        } else {
+            atrium_memory::growth_feedback::GrowthFeedbackBridge::new()
+        };
         Self {
             window: Mutex::new(window),
             resonance: Mutex::new(resonance),
@@ -250,6 +274,8 @@ impl VulnerabilitySubsystem {
             authentic_expression: Mutex::new(authentic_expression),
             ritual: Mutex::new(ritual),
             warmth: Mutex::new(warmth),
+            growth_bridge: Mutex::new(growth_bridge),
+            growth_bridge_store: growth_bridge_store.map(Mutex::new),
             authentic_imperfection: Mutex::new(authentic_imperfection),
             store: store.map(Mutex::new),
         }

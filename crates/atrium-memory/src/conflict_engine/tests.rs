@@ -219,7 +219,7 @@ fn test_pattern_new() {
     assert_eq!(p.frequency, 1);
     assert_eq!(p.avg_intensity, 1.0);
     assert_eq!(p.decay_weight, 1.0);
-    assert_eq!(p.stage_distribution, [0; 4]);
+    assert_eq!(p.stage_distribution, [0; 8]);
 }
 
 #[test]
@@ -229,7 +229,8 @@ fn test_pattern_absorb() {
     p.absorb(&sig, &acquaintance(), 2000);
     assert_eq!(p.frequency, 2);
     assert_eq!(p.last_seen_epoch, 2000);
-    assert_eq!(p.stage_distribution[0], 1);
+    // Acquaintance 现为 idx 1 / Acquaintance is now idx 1
+    assert_eq!(p.stage_distribution[1], 1);
     assert!(!p.trigger_keywords.is_empty());
 }
 
@@ -243,8 +244,9 @@ fn test_pattern_absorb_multiple_stages() {
     let sig3 = make_signal(ConflictType::ValueConflict, "反对", 3000);
     p.absorb(&sig3, &deep_stage(), 3000);
     assert_eq!(p.frequency, 4);
-    assert_eq!(p.stage_distribution[0], 1);
-    assert_eq!(p.stage_distribution[3], 2);
+    // Acquaintance 现为 idx 1, Deep 现为 idx 6 / Acquaintance is now idx 1, Deep is now idx 6
+    assert_eq!(p.stage_distribution[1], 1);
+    assert_eq!(p.stage_distribution[6], 2);
 }
 
 #[test]

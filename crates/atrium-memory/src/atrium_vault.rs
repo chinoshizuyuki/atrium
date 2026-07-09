@@ -13,9 +13,19 @@
 //! | 域 | 生物学对应 | 包含 Store |
 //! |----|-----------|-----------|
 //! | 情感中枢 (Limbic) | 边缘系统·杏仁核 | Emotion + Irrationality |
-//! | 叙事皮层 (Narrative) | 默认模式网络 | NarrativeSelf + Diary |
+//! | 叙事皮层 (Narrative) | 默认模式网络 | NarrativeSelf + Diary + Episodic |
 //! | 关系海马体 (Relational) | 社交脑 | Conflict + Ritual + Vulnerability + Anticipation |
 //! | 前额工具区 (Prefrontal) | 前额叶皮层 | Reminder + File |
+//!
+//! P2-B 注：EpisodicMemoryStore 使用独立 SQLite 后端（`episodic.db`，参照 FactStore 架构），
+//! 不挂载于 AtriumVault 的 sled::Db 之下。在认知域归属上属"叙事皮层"——
+//! 自传事件记忆是默认模式网络的核心功能，与 NarrativeSelf + Diary 共同构成数字生命的"自传体记忆"。
+//!
+//! P2-B note: EpisodicMemoryStore uses a standalone SQLite backend (`episodic.db`,
+//! mirroring FactStore's architecture), not mounted under AtriumVault's sled::Db.
+//! Cognitively it belongs to the "Narrative cortex" — autobiographical event
+//! memory is a core function of the default mode network, forming digital life's
+//! "autobiographical memory" together with NarrativeSelf + Diary.
 //!
 //! # 性能影响 / Performance Impact
 //!

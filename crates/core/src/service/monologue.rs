@@ -205,7 +205,19 @@ impl CoreService {
                     let fact = Fact::new("Atrium", "思考", &thought.content)
                         .with_confidence(thought.confidence)
                         .with_source("InnerMonologue");
-                    if let Ok(true) = self.fact_store.insert(fact.clone()) {
+                    // P1-B: spawn_blocking 包装 FactStore::insert — SQLite 写入不阻塞 reactor
+                    // P1-B: spawn_blocking wraps FactStore::insert — SQLite write never blocks reactor
+                    let fact_store = self.fact_store.clone();
+                    let fact_for_insert = fact.clone();
+                    let insert_ok = tokio::task::spawn_blocking(move || {
+                        fact_store.insert(fact_for_insert).unwrap_or(false)
+                    })
+                    .await
+                    .unwrap_or_else(|e| {
+                        tracing::error!("fact_store.insert spawn_blocking panic: {} — 数字生命自愈 / digital life self-healing", e);
+                        false
+                    });
+                    if insert_ok {
                         let mut graph = self.graph.lock();
                         graph.add_fact(&fact);
                         self.graph_dirty.store(true, Ordering::Relaxed);
@@ -346,15 +358,25 @@ impl CoreService {
                 }
             }
 
-            // 写入 Markdown 文件 / Write markdown file
+            // P1-B: 写入 Markdown 文件 — spawn_blocking 包装 fs I/O，不阻塞 reactor
+            // P1-B: Write markdown file — spawn_blocking wraps fs I/O, never blocks reactor
             if let Some(ref diary_dir) = self.diary_dir {
-                let _ = std::fs::create_dir_all(diary_dir);
-                let md_path = format!("{}/{}.md", diary_dir, today_prefix);
-                if let Err(e) = std::fs::write(&md_path, &thought.content) {
-                    tracing::warn!("[内在独白] 日记 markdown 写入失败: {}", e);
-                } else {
-                    tracing::info!("[内在独白] 日记 Markdown: {}", md_path);
-                }
+                let diary_dir_owned = diary_dir.clone();
+                let today_prefix_owned = today_prefix.clone();
+                let content_owned = thought.content.clone();
+                tokio::task::spawn_blocking(move || {
+                    let _ = std::fs::create_dir_all(&diary_dir_owned);
+                    let md_path = format!("{}/{}.md", diary_dir_owned, today_prefix_owned);
+                    if let Err(e) = std::fs::write(&md_path, &content_owned) {
+                        tracing::warn!("[内在独白] 日记 markdown 写入失败: {}", e);
+                    } else {
+                        tracing::info!("[内在独白] 日记 Markdown: {}", md_path);
+                    }
+                })
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::error!("diary markdown write spawn_blocking panic: {} — 数字生命自愈 / digital life self-healing", e);
+                });
             }
 
             // 记录日记触发 + 添加思考 / Record diary trigger + add thought
@@ -380,7 +402,7 @@ impl CoreService {
 
         // 获取 ACK 列表 / Get ACK titles
         let titles: Vec<String> = {
-            let canned = self.canned.lock();
+            let canned = self.canned.read();
             canned.titles().iter().map(|s| s.to_string()).collect()
         };
 
@@ -411,7 +433,7 @@ impl CoreService {
 
         // 读取 ACK 内容 / Get ACK content
         let ack_content = {
-            let canned = self.canned.lock();
+            let canned = self.canned.read();
             canned
                 .get(ack_name)
                 .map(|ack| ack.to_injection(2000))
@@ -475,7 +497,19 @@ impl CoreService {
                     let fact = Fact::new("Atrium", "学习了", ack_name)
                         .with_confidence(thought.confidence)
                         .with_source("AutonomousLearning");
-                    if let Ok(true) = self.fact_store.insert(fact.clone()) {
+                    // P1-B: spawn_blocking 包装 FactStore::insert — SQLite 写入不阻塞 reactor
+                    // P1-B: spawn_blocking wraps FactStore::insert — SQLite write never blocks reactor
+                    let fact_store = self.fact_store.clone();
+                    let fact_for_insert = fact.clone();
+                    let insert_ok = tokio::task::spawn_blocking(move || {
+                        fact_store.insert(fact_for_insert).unwrap_or(false)
+                    })
+                    .await
+                    .unwrap_or_else(|e| {
+                        tracing::error!("fact_store.insert spawn_blocking panic: {} — 数字生命自愈 / digital life self-healing", e);
+                        false
+                    });
+                    if insert_ok {
                         let mut graph = self.graph.lock();
                         graph.add_fact(&fact);
                         self.graph_dirty.store(true, Ordering::Relaxed);
@@ -600,7 +634,19 @@ impl CoreService {
         let fact = Fact::new("Atrium", "梦境", &thought.content)
             .with_confidence(thought.confidence)
             .with_source("Daydream");
-        if let Ok(true) = self.fact_store.insert(fact.clone()) {
+        // P1-B: spawn_blocking 包装 FactStore::insert — SQLite 写入不阻塞 reactor
+        // P1-B: spawn_blocking wraps FactStore::insert — SQLite write never blocks reactor
+        let fact_store = self.fact_store.clone();
+        let fact_for_insert = fact.clone();
+        let insert_ok = tokio::task::spawn_blocking(move || {
+            fact_store.insert(fact_for_insert).unwrap_or(false)
+        })
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!("fact_store.insert spawn_blocking panic: {} — 数字生命自愈 / digital life self-healing", e);
+            false
+        });
+        if insert_ok {
             let mut graph = self.graph.lock();
             graph.add_fact(&fact);
             self.graph_dirty.store(true, Ordering::Relaxed);
@@ -637,7 +683,15 @@ impl CoreService {
 
         // 获取事实摘要 / Get fact summary
         let fact_summary = {
-            let facts = self.fact_store.all_facts();
+            // P1-B: spawn_blocking 包装 FactStore::all_facts — O(N) SQLite 读克隆不阻塞 reactor
+            // P1-B: spawn_blocking wraps FactStore::all_facts — O(N) SQLite read clone never blocks reactor
+            let fact_store = self.fact_store.clone();
+            let facts = tokio::task::spawn_blocking(move || fact_store.all_facts())
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::error!("fact_store.all_facts spawn_blocking panic: {} — 数字生命自愈 / digital life self-healing", e);
+                    Vec::new()
+                });
             facts
                 .iter()
                 .take(10)

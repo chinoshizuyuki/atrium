@@ -21,13 +21,13 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::resonance_core::ResonanceEngine;
+use crate::resonance_core::{pad_delta_to_array, PadSource, ResonanceEngine};
 
 // ── 配置 / Config ──
 
 /// 仪式共振配置 / Ritual resonance configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ResonanceConfig {
+pub struct RitualResonanceCfg {
     /// 基础愉悦脉冲 / Base pleasure pulse
     pub base_pleasure_pulse: f32,
     /// 基础唤醒脉冲 / Base arousal pulse
@@ -44,7 +44,7 @@ pub struct ResonanceConfig {
     pub anniversary_multiplier: f32,
 }
 
-impl Default for ResonanceConfig {
+impl Default for RitualResonanceCfg {
     fn default() -> Self {
         Self {
             base_pleasure_pulse: 0.08,
@@ -142,19 +142,19 @@ pub struct RitualResonance {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RitualResonanceEngine {
     /// 配置 / Configuration
-    pub config: ResonanceConfig,
+    pub config: RitualResonanceCfg,
 }
 
 impl RitualResonanceEngine {
     /// 创建默认配置的共振引擎 / Create resonance engine with default config
     pub fn new() -> Self {
         Self {
-            config: ResonanceConfig::default(),
+            config: RitualResonanceCfg::default(),
         }
     }
 
     /// 创建指定配置的共振引擎 / Create resonance engine with custom config
-    pub fn with_config(config: ResonanceConfig) -> Self {
+    pub fn with_config(config: RitualResonanceCfg) -> Self {
         Self { config }
     }
 
@@ -331,6 +331,19 @@ impl ResonanceEngine for RitualResonanceEngine {
 }
 
 // ── 测试 / Tests ──
+
+// PadSource trait 桥接 — 统一 PAD 情感源接口 / PadSource trait bridge
+impl PadSource for RitualResonanceEngine {
+    /// 当前仪式共振 PAD 增量 / Current ritual resonance PAD delta
+    #[inline]
+    fn pad_delta(&self) -> [f64; 3] {
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as f64;
+        pad_delta_to_array(self.current_pad_delta(now_secs))
+    }
+}
 
 #[cfg(test)]
 mod tests {

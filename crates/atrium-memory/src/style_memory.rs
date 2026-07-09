@@ -177,36 +177,40 @@ pub struct StyleMemoryStore {
 
 impl StyleMemoryStore {
     /// 打开或创建风格记忆存储
-    pub fn open(db: &sled::Db) -> Result<Self, StyleMemoryError> {
+    pub fn open(db: &sled::Db) -> Result<Self, crate::store_core::StoreError> {
         let tree = db
             .open_tree("style_memory")
-            .map_err(|e| StyleMemoryError::SledError(e.to_string()))?;
+            .map_err(|e| crate::store_core::StoreError::Sled(e.to_string()))?;
         Ok(Self { tree })
     }
 
     /// 获取用户的风格偏移
-    pub fn get(&self, user_id: &str) -> Result<StyleOffset, StyleMemoryError> {
+    pub fn get(&self, user_id: &str) -> Result<StyleOffset, crate::store_core::StoreError> {
         let key = user_id.as_bytes();
         match self.tree.get(key) {
             Ok(Some(value)) => bincode::deserialize(&value)
-                .map_err(|e| StyleMemoryError::DeserializeError(e.to_string())),
+                .map_err(|e| crate::store_core::StoreError::Codec(e.to_string())),
             Ok(None) => Ok(StyleOffset::zero()),
-            Err(e) => Err(StyleMemoryError::SledError(e.to_string())),
+            Err(e) => Err(crate::store_core::StoreError::Sled(e.to_string())),
         }
     }
 
     /// 保存用户的风格偏移
-    pub fn set(&self, user_id: &str, offset: &StyleOffset) -> Result<(), StyleMemoryError> {
+    pub fn set(
+        &self,
+        user_id: &str,
+        offset: &StyleOffset,
+    ) -> Result<(), crate::store_core::StoreError> {
         let key = user_id.as_bytes();
         let value = bincode::serialize(offset)
-            .map_err(|e| StyleMemoryError::SerializeError(e.to_string()))?;
+            .map_err(|e| crate::store_core::StoreError::Codec(e.to_string()))?;
         self.tree
             .insert(key, value)
-            .map_err(|e| StyleMemoryError::SledError(e.to_string()))?;
+            .map_err(|e| crate::store_core::StoreError::Sled(e.to_string()))?;
         // sled 自动 flush，但可以显式 flush 确保持久化
         self.tree
             .flush()
-            .map_err(|e| StyleMemoryError::SledError(e.to_string()))?;
+            .map_err(|e| crate::store_core::StoreError::Sled(e.to_string()))?;
         Ok(())
     }
 
@@ -216,7 +220,7 @@ impl StyleMemoryStore {
         user_id: &str,
         target_style: &StyleEmbedding,
         current_style: &StyleEmbedding,
-    ) -> Result<StyleOffset, StyleMemoryError> {
+    ) -> Result<StyleOffset, crate::store_core::StoreError> {
         let mut offset = self.get(user_id)?;
         offset.apply_positive_feedback(target_style, current_style);
         self.set(user_id, &offset)?;
@@ -229,7 +233,7 @@ impl StyleMemoryStore {
         user_id: &str,
         rejected_style: &StyleEmbedding,
         current_style: &StyleEmbedding,
-    ) -> Result<StyleOffset, StyleMemoryError> {
+    ) -> Result<StyleOffset, crate::store_core::StoreError> {
         let mut offset = self.get(user_id)?;
         offset.apply_negative_feedback(rejected_style, current_style);
         self.set(user_id, &offset)?;
@@ -237,61 +241,38 @@ impl StyleMemoryStore {
     }
 
     /// 删除用户的风格偏移（重置）
-    pub fn remove(&self, user_id: &str) -> Result<(), StyleMemoryError> {
+    pub fn remove(&self, user_id: &str) -> Result<(), crate::store_core::StoreError> {
         let key = user_id.as_bytes();
         self.tree
             .remove(key)
-            .map_err(|e| StyleMemoryError::SledError(e.to_string()))?;
+            .map_err(|e| crate::store_core::StoreError::Sled(e.to_string()))?;
         self.tree
             .flush()
-            .map_err(|e| StyleMemoryError::SledError(e.to_string()))?;
+            .map_err(|e| crate::store_core::StoreError::Sled(e.to_string()))?;
         Ok(())
     }
 
     /// 列出所有有风格偏移的用户
-    pub fn list_users(&self) -> Result<Vec<String>, StyleMemoryError> {
+    pub fn list_users(&self) -> Result<Vec<String>, crate::store_core::StoreError> {
         let mut users = Vec::new();
         for item in self.tree.iter() {
-            let (key, _) = item.map_err(|e| StyleMemoryError::SledError(e.to_string()))?;
+            let (key, _) = item.map_err(|e| crate::store_core::StoreError::Sled(e.to_string()))?;
             let user_id = String::from_utf8(key.to_vec())
-                .map_err(|e| StyleMemoryError::DeserializeError(e.to_string()))?;
+                .map_err(|e| crate::store_core::StoreError::Codec(e.to_string()))?;
             users.push(user_id);
         }
         Ok(users)
     }
 
     /// 获取存储中的用户数量
-    pub fn count(&self) -> Result<usize, StyleMemoryError> {
+    pub fn count(&self) -> Result<usize, crate::store_core::StoreError> {
         Ok(self.tree.len())
     }
 }
 
-// ════════════════════════════════════════════════════════════════════
-// 错误类型
-// ════════════════════════════════════════════════════════════════════
-
-/// 风格记忆错误
-#[derive(Debug)]
-pub enum StyleMemoryError {
-    /// sled 存储错误
-    SledError(String),
-    /// 序列化错误
-    SerializeError(String),
-    /// 反序列化错误
-    DeserializeError(String),
-}
-
-impl std::fmt::Display for StyleMemoryError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            StyleMemoryError::SledError(e) => write!(f, "sled error: {}", e),
-            StyleMemoryError::SerializeError(e) => write!(f, "serialize error: {}", e),
-            StyleMemoryError::DeserializeError(e) => write!(f, "deserialize error: {}", e),
-        }
-    }
-}
-
-impl std::error::Error for StyleMemoryError {}
+// 统一使用 store_core::StoreError / Unified StoreError from store_core
+// StyleMemoryError 已移除，所有方法返回 crate::store_core::StoreError。
+// Old StyleMemoryError removed; all methods return crate::store_core::StoreError.
 
 // ════════════════════════════════════════════════════════════════════
 // 测试

@@ -207,6 +207,8 @@ mod tests {
             activation_count: 0,
             created_at: 12345,
             last_activated: 0,
+            pinned: false,
+            emotional_salience: 0.0,
         };
         store.save_edge(&edge).unwrap();
 
@@ -299,6 +301,7 @@ mod tests {
             created_at: 99999,
             access_count: 1,
             last_access: 99999,
+            pinned: false,
         };
         store.save_node(&node).unwrap();
 

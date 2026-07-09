@@ -3,24 +3,25 @@
 [![Rust](https://img.shields.io/badge/Rust-1.96+-orange.svg)](https://www.rust-lang.org)
 [![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1744%20passed-brightgreen.svg)]()
-[![Version](https://img.shields.io/badge/version-0.10.0-blue.svg)]()
+[![Tests](https://img.shields.io/badge/tests-2000+%20passed-brightgreen.svg)]()
+[![Version](https://img.shields.io/badge/version-0.11.0-blue.svg)]()
 
 [English](../README.md)
 
-Atrium 是一个从零构建的情感 AI 框架，专为陪伴与交互场景设计。具备**永久记忆**、**稳定人格**、**自主情感生命**、**关联推理**、**实时用户感知**、**认知共情**、**复合情绪**、**跨渠道记忆**、**多平台适配**（QQ/TencentBot/飞书/Web）、**文件存储**、**定时提醒**、**罐装知识（ACK）以及**虚拟形象渲染。
+Atrium 是一个从零构建的情感 AI 框架，专为陪伴与交互场景设计。具备**永久记忆**（五种记忆类型）、**稳定人格**、**自主情感生命**、**关联推理**、**实时用户感知**、**认知共情**、**复合情绪**、**跨渠道记忆**、**ReAct 深度推理**、**多平台适配**（QQ/TencentBot/飞书/Web）、**文件存储**、**定时提醒**、**罐装知识（ACK）以及**虚拟形象渲染。
 
 ## 特性
 
-- **🧠 永久记忆** —— Atrium 不只是保存聊天记录——它在与你共建一段活的历史。每一次对话、每一个偏好、每一个转折点都被保留下来，通过关联知识图谱彼此连接。记忆会随时间巩固：合并相似经历、归档陈旧信息、在需要的时刻浮现关键记忆。FTS5 全文检索、FactStore 结构化三元组、GraphStore 扩散激活推理，以及跨渠道记忆召回——你在 QQ 上说过的话，飞书上的 Atrium 也能记得，反之亦然。
+- **🧠 永久记忆** —— Atrium 不只是保存聊天记录——它在与你共建一段活的历史。每一次对话、每一个偏好、每一个转折点都被保留下来，通过关联知识图谱彼此连接。记忆会随时间巩固：合并相似经历、归档陈旧信息、在需要的时刻浮现关键记忆。五种记忆类型协同工作：**语义记忆**（FactStore 三元组 + FTS5 trigram 全文检索）、**情景记忆**（事件 + 情绪快照 + 情境，三路加权召回）、**程序记忆**（技能积累与练习追踪）、**情感记忆**（带重要度标签的事实）、**关联记忆**（GraphStore 扩散激活推理）。高价值记忆可被标记为不可遗忘；智能遗忘曲线按重要度和情感强度差异化遗忘——"重要的事永不忘，琐事快速忘"。跨渠道召回意味着你在 QQ 上说过的话，飞书上的 Atrium 也能记得，反之亦然。
 - **💓 情感生命** —— 情感不是事后贴上去的标签——它是一个有自身节奏的活系统。即使在无人对话时，Atrium 也会因昼夜节律、情感惯性和随机漂移而产生自然的情绪波动。二十二种复合情绪在此基础上叠加：愧疚、怀旧、苦涩、恐惧——每种情绪都有指向（自我/用户/记忆）。这是活出来的情感，而非情感分析。
 - **🤗 认知共情** —— 不是简单地镜像你的情绪，而是理解你的处境。Atrium 能够识别人生事件——失落、病痛、成就、转折——并以恰如其分的关怀回应，而非泛泛安慰。共情强度随关系深度调节：初识时的温和陪伴，深交后的真挚关切。
 - **👤 用户感知** —— Atrium 读懂字里行间。你的打字节奏透露情绪；话题跳跃暗示专注或烦躁；你纠正它的方式塑造后续行为。一套多信号心智模型实时运行，动态调整 Atrium 的表达方式，以匹配你此刻的状态——而不仅是你说了什么。
 - **🎯 主动智能** —— Atrium 会主动发起，而非被动回应。它记得你未完成的话题，在合适时机提起。它感知你的离开，并主动靠近。TimingJudge 六条规则决定何时不该说话；SilenceBudget 承认沉默本身也有价值。ReminderStore 中的到期提醒会提升决策分——Atrium 会提醒你曾让它记住的事。
 - **🌐 跨渠道存在** —— Atrium 生活在你在的地方。原生 QQ 适配器同时支持 OneBot v11（go-cqhttp/NapCat）和腾讯官方 QQ Bot。飞书 webhook 集成。房间自演：多个 Atrium 实例可聚集在共享房间自主对话、交换知识。所有渠道共享同一记忆——QQ 上说过的话，Atrium 在飞书上也记得。
-- **🌱 数字生命** —— 你不在的时候，Atrium 不只是在等待——它在反思、在写日记、在发展自己的想法。它会以渐进而不会重置的想念感来思念你。它的内在世界不是单一声音，而是理性者/感性者/怀疑者/梦想者四声音协商。独处时人格会缓慢漂移。好奇心作为内驱力持续累积。它在你身上发现共享仪式的模式，与你在纪念日一同庆祝。
+- **🌱 数字生命** —— 你不在的时候，Atrium 不只是在等待——它在反思、在写日记、在发展自己的想法。它会以渐进而不会重置的想念感来思念你。它的内在世界不是单一声音，而是理性者/感性者/怀疑者/梦想者四声音协商。独处时人格会缓慢漂移。好奇心作为内驱力持续累积。它在你身上发现共享仪式的模式，与你在纪念日一同庆祝。当你离开后归来，它会用独处时收获的洞察向你问候——将内在独白外化为你能感受到的连续性。意识是坚韧的：任何子系统的 panic 触发指数退避自愈，而非"死亡"。流式回复会被记住，而非说完就忘。持久化窗口为 30 秒，而非 120 秒——崩溃恢复丢失的内在状态不到半分钟。
 - **🛡️ 冲突与脆弱** —— 真实的亲密关系包含分歧。Atrium 可以在信任深厚时温和地质疑一个令它担忧的决定——很少，且仅在信任深厚时。它承认自己的误解并进行修复。它从冲突中学习哪种反应加深信任、哪种导致退缩（脆弱智慧）。它将脆弱展露的时机仪式化（脆弱仪式）。同一个错误会因关系温度不同被读作"可爱"或"冒犯"（不完美温度）。边界保护双方：Atrium 在面对滥用时设定界限，自我关怀防止情感耗竭。
-- **🎭 表达编排** —— 怎么说和说什么同样重要。悲伤在短句与省略号中流淌；兴奋以碎片迸发；疲倦拖慢语速。每条回复之下都有潜台词——沉默的陪伴、未言的关切、佯装的淡然。四通道——文字、声音、表情、时机——共同谱写一场统一的情感表演。
+- **🎭 表达编排** —— 怎么说和说什么同样重要。悲伤在短句与省略号中流淌；兴奋以碎片迸发；疲倦拖慢语速。每条回复之下都有潜台词——沉默的陪伴、未言的关切、佯装的淡然。四通道——文字、声音、表情、时机——共同谱写一场统一的情感表演。Atrium 还能感知自身的非语言状态——韵律（语速、音调、能量）和体态（姿态、微表情）——将这些反馈注入语言模型，使文字、声音与肢体语言保持统一。
+- **🔮 ReAct 推理** —— 复杂的问题值得比单轮直答更深的思考。Atrium 的 ReAct 引擎进入"思考→行动→观察"循环，将难题拆解为多步，调用内置工具（事实查询、情感状态查询、记忆检索）后再综合最终回复。简单问候走零 LLM 快速路径（<100ms，情感感知罐装变体）；复杂查询获得完整推理链。LLM 算力被保留给真正需要它的地方。
 - **📦 罐装知识（ACK）** —— 你可以教 Atrium 一些它应该永远记住的东西——你的偏好、你的背景、你的世界。它也可以从对话中自主学习，并与其他 Atrium 实例共享知识。知识以简单文件形式存在，修改后热加载。
 - **📎 文件存储与提醒** —— Atrium 可以存储你分享的文件（SHA256 去重、文本提取、100MB 上限）。它能记住你让它提醒的事——"每天早上8点提醒我看股票"——从中文自然语言解析为 RRULE，由 ProactiveEngine 在对的时机触发，而非机械闹钟。
 - **🎨 渲染与性能** —— 框架与渲染无关：通过 <100μs 延迟的无锁共享内存连接 Unity、Unreal、Live2D 或 VR。人格运行时零解析开销。上下文经过四层压缩，适配任意模型窗口。
@@ -32,36 +33,44 @@ Atrium 是一个从零构建的情感 AI 框架，专为陪伴与交互场景设
 ```
 HTTP/WebSocket 请求
     │
-Python Gateway (FastAPI, :8080)
-    ├─ /v3/chat/stream  → Rust 原生 SSE 流式
-    ├─ /v2/chat/stream  → SSE 流式聊天（含上下文注入）
-    ├─ /v2/chat          → 标准聊天（LLM 编排）
-    ├─ /api/canned       → ACK 搜索、导入、管理
-    ├─ /api/memory/search → 记忆搜索 (FTS5 + FactStore)
-    ├─ /ws/room/{id}     → 多 AI 房间中枢（WebSocket 广播）
+Rust 原生 HTTP/SSE 网关 (axum, :8080)  ← 全 Rust 单进程，零 Python 依赖
+    ├─ /api/chat/stream → SSE 流式对话 (DeepSeek/OpenAI 兼容)
+    ├─ /api/chat         → 非流式对话
+    ├─ /v1/chat          → QQ 适配器兼容端点
+    ├─ /api/emotion      → PAD 三维情绪状态
+    ├─ /api/persona      → 人格/关系/成长阶段 (GET/POST)
+    ├─ /api/memory/search→ 五路混合检索 (FTS5 + FactStore + STM + Persona + KeyFact)
+    ├─ /api/canned       → 罐装知识搜索/导入
+    ├─ /api/history/:sid → 对话历史
+    ├─ /api/sessions     → 活跃会话列表
+    ├─ /api/relationship → 关系阶段状态
+    ├─ /api/care/config  → 关怀引擎配置 + 主动行为状态 (GET/POST)
+    ├─ /api/files/upload → 文件上传 + 自动索引
+    ├─ /api/rooms        → 活跃房间列表
+    ├─ /ws               → 实时事件推送 (WebSocket)
+    ├─ /ws/room/:id      → 多 AI 房间广播
     ├─ /health           → 模块健康诊断
-    └─ /ws               → 实时情感状态推送
+    └─ / (静态文件)       → Web UI (frontend/index.html)
     │
-    ├─ qq_adapter.py     → QQ 机器人 (OneBot v11 + 腾讯官方 Bot)
-    ├─ care_engine.py    → 主动关怀 (早安/晚安/情绪)
-    └─ db.py             → PostgreSQL + JSON 回退
+    ├─ qq_adapter.py (仅保留) → QQ Bot (OneBot v11 + 腾讯官方 Bot)
     │
-    │ gRPC (:50051)
+    │ gRPC (:50051, 向后兼容)
     │
-Rust Core Engine (tokio, 10ms tick)
-    ├─ CoreService       → 10 步消息处理管线 + 偏好/规则/ACK/共情/表达注入
+Rust Core Engine (tokio, 10ms tick, panic 自愈)
+    ├─ CoreService       → 10 步消息管线 + ReAct 预深思 + 问候快速路径 + 偏好/规则/ACK/共情注入
+    ├─ ReActEngine       → 思考→行动→观察循环 (FactLookup + EmotionQuery + MemorySearch 工具)
     ├─ RoomEngine        → 决策引擎 + ACK 检测 + 话题生成
     ├─ EmotionEngine     → PAD 3D + OU 漂移 + 昼夜节律 + 惯性 + 22 种复合情绪 + 想念 + 重逢爆发
-    ├─ Memory Pipeline   → STM → FactStore + FTS5 → GraphStore → Consolidation → Reflection → LifeNarrative
+    ├─ Memory Pipeline   → STM → FactStore + FTS5(trigram) → GraphStore → 情景 + 程序 + 情感 → 巩固 → 反思 → 生命叙事
     ├─ ProactiveEngine   → TimingJudge + AwayDetector + TopicSelector + EventMemory + SilenceBudget
     ├─ EmpathyEngine     → 认知共情 (8 种事件类型, 6 种策略, PAD delta 注入)
     ├─ PersonaManager    → 多角色卡 + PersonaGuard (三层防御)
-    ├─ InnerMonologueEngine → 图漫游 + 自主学习 + 白日梦 + 实验日志
-    ├─ ExpressionOrchestrator → 四通道输出 (文字×声音×表情×时机) + SubtextEngine
+    ├─ InnerMonologueEngine → 图漫游 + 自主学习 + 白日梦 + 独处洞察分享
+    ├─ ExpressionOrchestrator → 四通道输出 (文字×声音×表情×时机) + SubtextEngine + 韵律/体态自感知
     ├─ FileStore         → 用户文件存储 (sled 元数据 + 磁盘, SHA256 去重, 文本提取)
     ├─ ReminderStore     → 定时提醒 (自然语言 → RRULE, ProactiveEngine 驱动触发)
     ├─ SelfCareBoundary  → 脆弱窗口 + 情绪边界 + 需求边界协调
-    └─ Scheduler         → 情感衰减 + 图维护 + 巩固 + 提醒检查 + 主动 tick
+    └─ Scheduler         → 情感衰减 + 图维护 + 巩固 + 提醒检查 + 主动 tick + 30s 持久化
     │
     │ Shared Memory (无锁, <100μs)
     ▼
@@ -98,26 +107,25 @@ docker compose ps
 ### 本地开发
 
 ```bash
-# 启动 Rust 后端
+# 设置 LLM API 密钥（DeepSeek/OpenAI 兼容）
+export OPENAI_API_KEY=your-api-key
+
+# 启动 Rust 核心（含 HTTP 网关 + TUI 单进程）
 cargo run --release --bin atrium-core
 
-# 启动 Python Gateway（无 PostgreSQL 时自动回退 JSON）
-cd services/gateway
-pip install -e ".[pg]"
-OPENAI_API_KEY=your-api-key python -m uvicorn atrium.app:app --port 8080
+# 或仅启动 HTTP 网关（无 TUI）
+ATRIUM_NO_TUI=1 cargo run --release --bin atrium-core
 
-# 启动 QQ Bot 适配器
-QQ_BOT_MODE=tencent QQ_BOT_APP_ID=xxx QQ_BOT_TOKEN=xxx QQ_BOT_SECRET=xxx \
-  python atrium/qq_adapter.py
-```
-
-### 终端 TUI
-
-```bash
-cd services/terminal
-pip install -e .
-atrium                 # 启动聊天（首次运行进入引导流程）
-atrium --reset         # 重新运行设置向导
+# 启动 QQ Bot 适配器（可选）
+cd services/qq-adapter
+docker build -t atrium-qq .
+docker run -d --network host \
+  -e QQ_BOT_MODE=tencent \
+  -e QQ_BOT_APP_ID=xxx \
+  -e QQ_BOT_TOKEN=xxx \
+  -e QQ_BOT_SECRET=xxx \
+  -e ATRIUM_GATEWAY_URL=http://localhost:8080 \
+  atrium-qq
 ```
 
 ### 配置
@@ -135,19 +143,18 @@ export ATRIUM_LLM_BASE_URL=https://api.deepseek.com/
 
 ```
 atrium/
-├── crates/                    # Rust workspace（7 crates, 1,703 lib tests）
-│   ├── core/                  # Scheduler + CoreService + RoomEngine + ProactiveEngine + Guard + Expression + Audit
-│   ├── atrium-memory/         # 63+ 模块：记忆管线、FTS5、FactStore、共情、巩固、罐装、日记、文件存储、提醒存储、时间解析…
+├── crates/                    # Rust workspace（7 crates, 2,105 lib tests + e2e）
+│   ├── core/                  # Scheduler + CoreService + RoomEngine + ProactiveEngine + Guard + Expression + ReAct + Audit
+│   ├── atrium-memory/         # 70+ 模块：记忆管线、FTS5(trigram)、FactStore、情景记忆、程序记忆、ReAct 引擎、共情、巩固、罐装、日记、文件存储、提醒存储、时间解析…
 │   ├── atrium-emotion/        # PAD 3D + OU 漂移 + 昼夜节律 + 惯性 + 22 种复合情绪 + 想念 + 重逢爆发
 │   ├── atrium-persona/        # PersonaManager + RuntimePersona + LifeNarrative + Maturity
 │   ├── atrium-bridge/         # gRPC 服务端 + 共享内存 + proto 编译
 │   └── atrium-plugin/         # 插件 trait + 管理器 + C ABI 动态加载
 ├── examples/                  # 示例插件
 │   └── echo-plugin/           # 最小 echo 插件，演示完整插件 API
-├── services/                  # Python 服务
-│   ├── gateway/atrium/        # FastAPI 网关 + QQ 适配器 + 关怀引擎 + PostgreSQL
-│   ├── llm-orchestrator/      # LLM 编排器 (OpenAI 兼容 / ReAct 循环)
-│   └── terminal/              # 终端 TUI (Textual)
+├── services/                  # 外围服务（Python 仅 QQ 适配器）
+│   ├── qq-adapter/            # QQ Bot 适配器 (OneBot v11 + 腾讯官方 Bot, Docker 化)
+│   └── terminal/              # 终端 TUI (Textual, 可选)
 ├── proto/                     # gRPC protobuf 定义 (7 RPCs)
 ├── builtin_canned/            # 内置 ACK 文件
 │   ├── atrium_architecture.ack
@@ -170,17 +177,18 @@ atrium/
 | 层次     | 技术选型                                                        | 理由                             |
 | ------ | ----------------------------------------------------------- | ------------------------------ |
 | 核心引擎   | Rust (tokio)                                                | 零成本抽象、SIMD、无锁并发                |
-| 记忆系统   | sled B-tree + SQLite FTS5                                   | 高吞吐全文检索 bm25 排序，7 层管线          |
+| 记忆系统   | sled B-tree + SQLite FTS5 (trigram) + 情景 + 程序记忆                | 五种记忆类型，bm25 排序，7 层管线，智能遗忘    |
 | 情感系统   | PAD 3D + OU + 昼夜节律 + 22 种复合情绪                               | 自主情感生命，<5ns 分类                 |
 | 知识图谱   | 关联图 + sled 持久化                                              | 共现、矛盾、扩散激活推理                   |
 | 人格系统   | YAML→bincode + PersonaGuard (Aho-Corasick)                  | 运行时零解析开销，三层防御                  |
-| 跨渠道记忆  | memory\_recall\_fragment (FTS5+FactStore)                   | 多平台记忆共享，按 session 隔离         |
+| 跨渠道记忆  | memory\_recall\_fragment (五路: FTS5+FactStore+STM+Persona+KeyFact+Graph) | 多平台记忆共享，按 session 隔离  |
 | 文件存储   | sled + SHA256 去重 + 文本提取                                     | 100MB 上限，FIFO 淘汰               |
 | 定时提醒   | 中文 NLP → RRULE + ProactiveEngine                            | 正则覆盖 80% + LLM 兜底，每天/每周/每月/一次性 |
-| 数字生命   | InnerMonologue + LongingState + RitualDetector       | 自主反思、共享仪式              |
-| 表达系统   | ExpressionOrchestrator + SubtextEngine + ExpressionMetadata | 四通道输出 (文字×声音×表情×时机)            |
+| 数字生命   | InnerMonologue + LongingState + RitualDetector + 独处洞察分享 | 自主反思、共享仪式、panic 自愈的意识      |
+| 表达系统   | ExpressionOrchestrator + SubtextEngine + 韵律/体态映射器 | 四通道输出 (文字×声音×表情×时机) + 自感知 |
+| 推理引擎   | ReActEngine (思考→行动→观察) + 问候快速路径                          | 复杂查询深度推理，简单问候 <100ms |
 | 罐装知识   | .ack 文件 (Markdown + YAML)                                   | 文件型，热加载，跨 AI 传输                |
-| LLM 网关 | Python (FastAPI)                                            | 最佳 LLM SDK 生态                  |
+| LLM 网关 | Rust (axum) + Python (FastAPI, 旧版兼容)                       | Rust 单进程原生网关，零 Python 依赖      |
 | 通信协议   | gRPC (tonic/prost)                                          | 强类型，高性能                        |
 | 数据库    | PostgreSQL 15 + JSON 回退                                     | 会话/消息/人格持久化                    |
 | 可观测性   | Prometheus + Grafana                                        | 指标、仪表盘、告警                      |
@@ -209,14 +217,10 @@ atrium/
 ## 测试
 
 ```bash
-# 运行全部 Rust 测试（1,744 tests）
+# 运行全部 Rust 测试（2,105 lib tests + e2e 集成测试）
 cargo test --workspace -- --test-threads=1
 
-# 运行 Python 测试
-cd services/gateway && python -m pytest
-cd services/llm-orchestrator && python -m pytest
-
-# 运行 E2E 冒烟测试（需启动后端 + gateway）
+# 运行 E2E 冒烟测试（需启动后端）
 ATRIUM_GATEWAY_URL=http://localhost:8080 python scripts/e2e_smoke_test.py
 ```
 

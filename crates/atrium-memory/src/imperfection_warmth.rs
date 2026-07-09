@@ -13,8 +13,21 @@
 //! Phase: 极致打磨 / Extreme Polishing | 2026-07-03
 
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
+
+use crate::resonance_core::ema;
 
 // ═══════════════════════════════════════════════════════════════════════════
+// 信任损害常量 — 每种不完美对信任的侵蚀程度 / Trust damage constants
+// P2-C: 从硬编码魔法数字提取为命名常量，便于审计与调整
+// P2-C: Extracted from hardcoded magic numbers for auditability and tuning
+const TRUST_DAMAGE_MEMORY_DEVIATION: f64 = 0.3; // 记忆偏差 — 中等损害 / medium damage
+const TRUST_DAMAGE_HESITATION: f64 = 0.1; // 表达犹豫 — 轻微损害 / light damage
+const TRUST_DAMAGE_OVER_CARE: f64 = 0.2; // 过度关心 — 较轻损害 / mild damage
+const TRUST_DAMAGE_STUBBORNNESS: f64 = 0.4; // 偶尔固执 — 较重损害 / heavy damage
+const TRUST_DAMAGE_EMOTIONAL_LEAK: f64 = 0.3; // 情绪泄露 — 中等损害 / medium damage
+const TRUST_DAMAGE_PACING_MISS: f64 = 0.15; // 节奏失误 — 轻微损害 / light damage
+
 // §1 不完美类型 — Imperfection Type
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -51,12 +64,12 @@ impl ImperfectionKind {
     /// 信任损害 [0, 1] — 此类不完美对信任的损害 / Trust damage.
     pub fn trust_damage(&self) -> f64 {
         match self {
-            Self::MemoryDeviation => 0.3,
-            Self::Hesitation => 0.1,
-            Self::OverCare => 0.2,
-            Self::Stubbornness => 0.4,
-            Self::EmotionalLeak => 0.3,
-            Self::PacingMiss => 0.15,
+            Self::MemoryDeviation => TRUST_DAMAGE_MEMORY_DEVIATION,
+            Self::Hesitation => TRUST_DAMAGE_HESITATION,
+            Self::OverCare => TRUST_DAMAGE_OVER_CARE,
+            Self::Stubbornness => TRUST_DAMAGE_STUBBORNNESS,
+            Self::EmotionalLeak => TRUST_DAMAGE_EMOTIONAL_LEAK,
+            Self::PacingMiss => TRUST_DAMAGE_PACING_MISS,
         }
     }
 
@@ -98,7 +111,8 @@ pub struct ImperfectionEvent {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ImperfectionWarmth {
     /// 不完美历史 / Imperfection history.
-    events: Vec<ImperfectionEvent>,
+    /// P2-A: Vec→VecDeque，头部删除 O(N)→O(1) / P2-A: Vec→VecDeque, O(N)→O(1) front removal
+    events: VecDeque<ImperfectionEvent>,
     /// 累计不完美数 / Total imperfections.
     total: u32,
     /// 正面反应数 — 用户觉得可爱 / Positive reactions.
@@ -118,7 +132,7 @@ pub struct ImperfectionWarmth {
 impl Default for ImperfectionWarmth {
     fn default() -> Self {
         Self {
-            events: Vec::new(),
+            events: VecDeque::new(),
             total: 0,
             positive_reactions: 0,
             negative_reactions: 0,
@@ -134,6 +148,21 @@ impl ImperfectionWarmth {
     /// 创建新引擎 / Create new engine.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// 当前温度 [0, 1] — 综合人味分数 / Current warmth.
+    pub fn current_warmth(&self) -> f64 {
+        self.current_warmth
+    }
+
+    /// 信任余额 [0, 1] — 可用信任额度 / Trust balance.
+    pub fn trust_balance(&self) -> f64 {
+        self.trust_balance
+    }
+
+    /// 累计不完美数 / Total imperfections.
+    pub fn total_imperfections(&self) -> u32 {
+        self.total
     }
 
     /// 记录不完美事件 / Record an imperfection event.
@@ -153,7 +182,7 @@ impl ImperfectionWarmth {
         // 更新温度 / Update warmth.
         let warmth = event.kind.warmth();
         let alpha = 0.15;
-        self.current_warmth += alpha * (warmth - self.current_warmth);
+        self.current_warmth = ema(self.current_warmth, warmth, alpha);
 
         // 更新信任余额 / Update trust balance.
         let damage = event.kind.trust_damage();
@@ -165,10 +194,62 @@ impl ImperfectionWarmth {
         }
         self.trust_balance = self.trust_balance.clamp(0.0, 1.0);
 
-        self.events.push(event);
+        self.events.push_back(event);
         if self.events.len() > 200 {
-            self.events.remove(0);
+            self.events.pop_front();
         }
+    }
+
+    /// 记录环境反馈 — 弱信号持续微调温度与信任余额 / Record ambient feedback — weak signal micro-adjustment
+    ///
+    /// G-08: 区分"不完美事件反馈"（强信号，record，alpha=0.15）和
+    /// "环境反馈"（弱信号，本方法，alpha×0.1=0.015）。
+    /// 环境反馈来自 FeedbackLoop 的每条用户消息信号，不依赖不完美事件触发，
+    /// 使成长由真实互动反馈驱动而非时间流逝。
+    ///
+    /// G-08: Distinguishes "imperfection event feedback" (strong signal, record, alpha=0.15)
+    /// from "ambient feedback" (weak signal, this method, alpha×0.1=0.015).
+    /// Ambient feedback comes from FeedbackLoop's per-message signals, not requiring
+    /// imperfection triggers, making growth driven by real interaction feedback.
+    ///
+    /// 势头驱动学习率 — momentum 直接调制弱信号学习速度 / Momentum-driven learning rate — momentum directly modulates weak signal learning speed
+    /// growth_rate ∈ [0.8, 1.2] 由 GrowthAccumulator 输出：高势头加速学习（×1.2），
+    /// 低势头减速学习（×0.8），默认 1.0 保持原行为。
+    /// / growth_rate ∈ [0.8, 1.2] output by GrowthAccumulator: high momentum accelerates (×1.2),
+    /// low momentum decelerates (×0.8), default 1.0 preserves original behavior.
+    ///
+    /// 设计决策 / Design decisions:
+    /// - 微调 current_warmth 和 trust_balance，不记录到 events 历史
+    /// - 正向反馈→温度微升+信任微升（用户接纳度高，可更"人味"）
+    /// - 负向反馈→温度微降+信任微降（用户不满，收敛不完美）
+    /// - 中性反馈→不更新（无信息量）
+    /// - alpha ×0.1 ×growth_rate（弱信号学习率衰减 + 势头调制，避免环境噪声覆盖不完美事件学习）
+    ///
+    /// @param signal 环境反馈信号 / Ambient feedback signal
+    /// @param growth_rate 成长势头速率系数 [0.8, 1.2] / Growth momentum rate coefficient
+    pub fn record_ambient_feedback(
+        &mut self,
+        signal: &crate::growth_feedback::AmbientFeedback,
+        growth_rate: f32,
+    ) {
+        // 中性信号无信息量，跳过 / Neutral signal carries no info, skip
+        if signal.valence.abs() < 0.001 {
+            return;
+        }
+
+        // 势头驱动弱信号学习率 = 原始 alpha × 0.1 × growth_rate / Weak signal learning rate = original alpha × 0.1 × growth_rate
+        let weak_alpha = 0.15 * 0.1 * growth_rate as f64; // 0.015 × growth_rate
+
+        // 根据效价确定温度目标 / Target warmth based on valence
+        // 正向反馈→目标温度 0.7（用户接纳度高，可更"人味"）/ Positive → target 0.7
+        // 负向反馈→目标温度 0.2（用户不满，收敛不完美）/ Negative → target 0.2
+        let warmth_target = if signal.valence > 0.0 { 0.7 } else { 0.2 };
+        self.current_warmth = ema(self.current_warmth, warmth_target, weak_alpha);
+
+        // 信任余额微调 — 正向微升，负向微降 / Trust balance micro-adjustment
+        // 弱信号信任调整幅度 ×0.1，避免环境噪声大幅影响信任 / Weak signal trust adjustment ×0.1
+        let trust_delta = signal.valence as f64 * 0.05; // valence ∈ [-1,1] → delta ∈ [-0.05, 0.05]
+        self.trust_balance = (self.trust_balance + trust_delta).clamp(0.0, 1.0);
     }
 
     /// 计算不完美净值 — 温度 - 信任损害 / Compute net imperfection value.
@@ -401,5 +482,87 @@ mod tests {
         engine.current_warmth = 0.4;
         let injection = engine.prompt_injection();
         assert!(injection.contains("恰到好处"));
+    }
+
+    #[test]
+    fn test_record_ambient_feedback_positive_raises_warmth() {
+        let mut warmth = ImperfectionWarmth::new();
+        let initial = warmth.current_warmth();
+        // 正向环境反馈 — Praise 信号 / Positive ambient feedback — Praise signal
+        let signal = crate::growth_feedback::AmbientFeedback::new(
+            crate::growth_feedback::FeedbackKind::Praise,
+            1000,
+        );
+        warmth.record_ambient_feedback(&signal, 1.0);
+        // current_warmth 应微升（从 0.0 向 0.7 移动）/ current_warmth should slightly increase
+        assert!(warmth.current_warmth() > initial);
+    }
+
+    #[test]
+    fn test_record_ambient_feedback_negative_lowers_trust() {
+        let mut warmth = ImperfectionWarmth::new();
+        let initial_trust = warmth.trust_balance();
+        // 负向环境反馈 — Frustration 信号 / Negative ambient feedback — Frustration signal
+        let signal = crate::growth_feedback::AmbientFeedback::new(
+            crate::growth_feedback::FeedbackKind::Frustration,
+            1000,
+        );
+        warmth.record_ambient_feedback(&signal, 1.0);
+        // trust_balance 应微降 / trust_balance should slightly decrease
+        assert!(warmth.trust_balance() < initial_trust);
+    }
+
+    #[test]
+    fn test_ambient_feedback_neutral_skipped() {
+        let mut warmth = ImperfectionWarmth::new();
+        let initial_warmth = warmth.current_warmth();
+        let initial_trust = warmth.trust_balance();
+        // 中性信号应被跳过 / Neutral signal should be skipped
+        let signal = crate::growth_feedback::AmbientFeedback::new(
+            crate::growth_feedback::FeedbackKind::Neutral,
+            1000,
+        );
+        warmth.record_ambient_feedback(&signal, 1.0);
+        assert_eq!(warmth.current_warmth(), initial_warmth);
+        assert_eq!(warmth.trust_balance(), initial_trust);
+    }
+
+    #[test]
+    fn test_ambient_feedback_does_not_pollute_events_history() {
+        let mut warmth = ImperfectionWarmth::new();
+        let signal = crate::growth_feedback::AmbientFeedback::new(
+            crate::growth_feedback::FeedbackKind::Praise,
+            1000,
+        );
+        warmth.record_ambient_feedback(&signal, 1.0);
+        // events 历史应仍为空 — 环境反馈不记录到不完美事件统计
+        // events history should remain empty — ambient feedback not recorded
+        // Note: need to check if there's a getter for events; if not, verify total == 0
+        assert_eq!(warmth.total_imperfections(), 0);
+    }
+
+    #[test]
+    fn test_momentum_growth_rate_modulates_warmth_learning() {
+        // growth_rate=1.2 应比 0.8 让 current_warmth 上升更快（正向反馈，目标 0.7）
+        // growth_rate=1.2 should raise current_warmth faster than 0.8 (positive feedback, target 0.7)
+        let mut warmth_high = ImperfectionWarmth::new();
+        let mut warmth_low = ImperfectionWarmth::new();
+        let signal = crate::growth_feedback::AmbientFeedback::new(
+            crate::growth_feedback::FeedbackKind::Praise,
+            1000,
+        );
+        for _ in 0..10 {
+            warmth_high.record_ambient_feedback(&signal, 1.2);
+            warmth_low.record_ambient_feedback(&signal, 0.8);
+        }
+        assert!(
+            warmth_high.current_warmth() > warmth_low.current_warmth(),
+            "高势头 warmth ({}) 应大于低势头 ({})",
+            warmth_high.current_warmth(),
+            warmth_low.current_warmth()
+        );
+        // 两者都应从 0.0 上升 / Both should rise from 0.0
+        assert!(warmth_high.current_warmth() > 0.0);
+        assert!(warmth_low.current_warmth() > 0.0);
     }
 }

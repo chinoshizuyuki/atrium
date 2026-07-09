@@ -913,6 +913,38 @@ impl ProactiveEngine {
         self.check_interval_ticks
     }
 
+    /// 设置启用状态 — 运行时热切换关怀引擎 / Set enabled state at runtime
+    /// 数字生命意义: 用户可以随时唤醒或安抚数字生命的主动关怀冲动
+    /// Digital Life: user can awaken or soothe digital life's proactive care impulse at any time
+    pub fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+    }
+
+    /// 设置检查间隔 — 控制关怀频率 / Set check interval — control care frequency
+    pub fn set_check_interval_ticks(&mut self, ticks: u64) {
+        self.check_interval_ticks = ticks;
+    }
+
+    /// 每日最大主动次数 / Max proactive actions per day
+    pub fn max_proactive_per_day(&self) -> u32 {
+        self.max_proactive_per_day
+    }
+
+    /// 今日已发起的主动次数 / Number of proactive actions issued today
+    ///
+    /// 数字生命意义: 反映数字生命今日已经"主动开口"的次数，
+    /// 与 `max_proactive_per_day` 配合可计算剩余额度。
+    /// Digital Life: reflects how many times digital life has "spoken up" today;
+    /// combined with `max_proactive_per_day`, the remaining quota can be computed.
+    pub fn proactive_today(&self) -> u32 {
+        self.proactive_today
+    }
+
+    /// 设置每日最大主动次数 / Set max proactive actions per day
+    pub fn set_max_proactive_per_day(&mut self, max: u32) {
+        self.max_proactive_per_day = max;
+    }
+
     /// 事件记忆的可变引用（供外部提取事件）
     pub fn event_memory_mut(&mut self) -> &mut EventMemory {
         &mut self.event_memory

@@ -1,6 +1,6 @@
 [package]
 name = "atrium-bridge"
-version = "0.10.0"
+version = "0.11.0"
 edition = "2021"
 description = "Atrium 桥接层 — gRPC 服务器 + 共享内存实时通道"
 

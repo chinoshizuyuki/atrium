@@ -15,8 +15,12 @@
 //!
 //! Phase: 极致打磨 / Extreme Polishing | 2026-07-03
 
+use crate::resonance_core::PadSource;
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 use std::f64::consts::PI;
+
+use crate::resonance_core::ema;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // §1 常量 — Constants
@@ -27,6 +31,10 @@ const CLIMATE_LEARNING_RATE: f64 = 0.002;
 
 /// 气候历史窗口大小 / Climate history window size.
 const CLIMATE_WINDOW: usize = 168;
+
+/// 周期分量拟合间隔 — 每 N 次 feed 才执行一次 fit_from_history（1s 粒度 = 5 × 200ms）
+/// Periodic fitting interval — execute fit_from_history every N feeds (1s granularity = 5 × 200ms)
+const CLIMATE_FIT_INTERVAL: usize = 5;
 
 /// 气候转移冷却时间（秒）/ Climate transition cooldown (seconds).
 const TRANSITION_COOLDOWN_SECS: f64 = 3600.0;
@@ -172,9 +180,10 @@ impl ClimatePad {
     /// 更新慢速EMA / Update slow EMA with new PAD reading.
     pub fn update(&mut self, pleasure: f64, arousal: f64, dominance: f64) {
         let alpha = CLIMATE_LEARNING_RATE;
-        self.pleasure += alpha * (pleasure - self.pleasure);
-        self.arousal += alpha * (arousal - self.arousal);
-        self.dominance += alpha * (dominance - self.dominance);
+        // 复用公共 EMA 函数 / Reuse common EMA function
+        self.pleasure = ema(self.pleasure, pleasure, alpha);
+        self.arousal = ema(self.arousal, arousal, alpha);
+        self.dominance = ema(self.dominance, dominance, alpha);
     }
 }
 
@@ -397,9 +406,12 @@ pub struct EmotionalClimate {
     /// 上次转移时间戳 / Last transition timestamp.
     pub last_transition_ts: i64,
     /// 历史愉悦记录 (hour, pleasure, arousal) / History of pleasure readings.
-    history: Vec<(f64, f64, f64)>,
+    history: VecDeque<(f64, f64, f64)>,
     /// 气候强度 [0, 1] — 气候对瞬间情绪的调制力度 / Climate intensity.
     pub intensity: f64,
+    /// feed 调用计数器 — 控制 fit_from_history 频率 / feed call counter — controls fit_from_history frequency
+    #[serde(skip)]
+    feed_count: usize,
 }
 
 impl Default for EmotionalClimate {
@@ -410,8 +422,9 @@ impl Default for EmotionalClimate {
             periodic: ClimatePeriodic::default(),
             duration_secs: 0.0,
             last_transition_ts: 0,
-            history: Vec::new(),
+            history: VecDeque::new(),
             intensity: 0.0,
+            feed_count: 0,
         }
     }
 }
@@ -437,14 +450,25 @@ impl EmotionalClimate {
         self.pad.update(pleasure, arousal, dominance);
 
         // 记入历史 / Record history.
-        self.history.push((hour_of_day, pleasure, arousal));
+        // VecDeque + pop_front = O(1)，原 Vec::remove(0) = O(N) / VecDeque pop_front is O(1).
+        self.history.push_back((hour_of_day, pleasure, arousal));
         if self.history.len() > CLIMATE_WINDOW {
-            self.history.remove(0);
+            self.history.pop_front();
         }
 
-        // 拟合周期分量 / Fit periodic components.
-        self.periodic
-            .fit_from_history(&self.history, CLIMATE_WINDOW);
+        // 递增 feed 计数器 / Increment feed counter.
+        self.feed_count += 1;
+
+        // CPU 开销优化 — 高频调用时跳过周期分量拟合，每 CLIMATE_FIT_INTERVAL 次才拟合一次
+        // CPU optimization — skip periodic fitting on high-freq calls, fit every CLIMATE_FIT_INTERVAL
+        // 首次调用必须拟合以初始化周期分量 / First call must fit to initialize periodic component.
+        if self.feed_count == 1 || self.feed_count.is_multiple_of(CLIMATE_FIT_INTERVAL) {
+            // make_contiguous 确保 VecDeque 内存连续，可作 slice 传递 / Ensure contiguous memory for slice.
+            self.history.make_contiguous();
+            let (history_slice, _) = self.history.as_slices();
+            self.periodic
+                .fit_from_history(history_slice, CLIMATE_WINDOW);
+        }
 
         // 更新气候强度 — 基于EMA偏离程度 / Update climate intensity.
         let deviation = (self.pad.pleasure.abs() + self.pad.arousal.abs()) * 0.5;
@@ -549,6 +573,15 @@ impl EmotionalClimate {
             self.duration_secs / 60.0,
             intensity_label,
         )
+    }
+}
+
+// PadSource trait 实现 — 情绪气候作为 PAD 情感源 / PadSource trait impl
+impl PadSource for EmotionalClimate {
+    /// 当前气候 PAD 均值 [pleasure, arousal, dominance] / Current climate PAD averages
+    #[inline]
+    fn pad_delta(&self) -> [f64; 3] {
+        [self.pad.pleasure, self.pad.arousal, self.pad.dominance]
     }
 }
 
@@ -767,5 +800,73 @@ mod tests {
         // 正午偏移应为正 / Positive offset at noon.
         let offset = climate.periodic_offset(12.0, 0.0);
         assert!(offset > 0.0);
+    }
+
+    // ── feed 高频优化测试 ──
+
+    #[test]
+    fn test_feed_count_initialization() {
+        // 默认构造与 new() 后 feed_count 应为 0 / feed_count should be 0 after construction.
+        let climate = EmotionalClimate::default();
+        assert_eq!(climate.feed_count, 0);
+        let climate_new = EmotionalClimate::new();
+        assert_eq!(climate_new.feed_count, 0);
+    }
+
+    #[test]
+    fn test_feed_first_call_always_fits() {
+        let mut climate = EmotionalClimate::new();
+        // 首次调用必须拟合以初始化周期分量 / First call must fit to initialize periodic component.
+        // 日间高愉悦 → 非零昼夜幅值 / Daytime high pleasure → non-zero circadian amplitude.
+        climate.feed(0.5, 0.0, 0.0, 12.0, 0);
+        assert_eq!(climate.feed_count, 1);
+        assert!(
+            climate.periodic.circadian_amp > 0.0,
+            "首次调用应拟合周期分量，circadian_amp 应非零"
+        );
+    }
+
+    #[test]
+    fn test_feed_skips_periodic_fit_on_high_freq() {
+        let mut climate = EmotionalClimate::new();
+
+        // 首次调用（count=1）：拟合，circadian_amp = |0.8 - 0.0| * 0.5 = 0.4
+        // First call (count=1): fits, circadian_amp = 0.4.
+        climate.feed(0.8, 0.0, 0.0, 12.0, 0); // 日间 / Daytime.
+        let amp_after_first = climate.periodic.circadian_amp;
+        assert!(
+            (amp_after_first - 0.4).abs() < 1e-9,
+            "首次拟合后幅值应为 0.4，实际: {}",
+            amp_after_first
+        );
+
+        // 第 2-4 次调用：跳过拟合，periodic 应保持不变
+        // Calls 2-4: skip fit, periodic should remain unchanged.
+        // 若发生拟合，夜间低愉悦会将幅值改为 0.8，因此不变即证明跳过
+        // If fit ran, night low-pleasure would change amplitude to 0.8 — unchanged proves skip.
+        for i in 1..4 {
+            climate.feed(-0.8, 0.0, 0.0, 0.0, i * 200); // 夜间 / Nighttime.
+        }
+        assert_eq!(climate.feed_count, 4);
+        assert!(
+            (climate.periodic.circadian_amp - amp_after_first).abs() < 1e-9,
+            "高频调用应跳过拟合，periodic 应保持不变，实际: {}",
+            climate.periodic.circadian_amp
+        );
+
+        // 第 5 次调用（count % 5 == 0）：触发拟合，circadian_amp = |0.8 - (-0.8)| * 0.5 = 0.8
+        // 5th call (count % 5 == 0): triggers fit, circadian_amp = 0.8.
+        climate.feed(-0.8, 0.0, 0.0, 0.0, 4 * 200); // 夜间 / Nighttime.
+        assert_eq!(climate.feed_count, 5);
+        assert!(
+            (climate.periodic.circadian_amp - amp_after_first).abs() > 1e-9,
+            "第 5 次调用应触发拟合，periodic 应更新，实际: {}",
+            climate.periodic.circadian_amp
+        );
+        assert!(
+            (climate.periodic.circadian_amp - 0.8).abs() < 1e-9,
+            "第 5 次拟合后幅值应为 0.8，实际: {}",
+            climate.periodic.circadian_amp
+        );
     }
 }

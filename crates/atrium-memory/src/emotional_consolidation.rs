@@ -125,7 +125,7 @@ pub struct TrajectoryPoint {
 
 /// 固化配置 / Consolidation configuration.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ConsolidationConfig {
+pub struct EmotionalConsolidationConfig {
     /// 重要性阈值 / Importance threshold.
     pub importance_threshold: f64,
     /// 琐碎衰减率 / Trivial decay rate.
@@ -136,7 +136,7 @@ pub struct ConsolidationConfig {
     pub max_per_batch: usize,
 }
 
-impl Default for ConsolidationConfig {
+impl Default for EmotionalConsolidationConfig {
     fn default() -> Self {
         Self {
             importance_threshold: IMPORTANCE_THRESHOLD,
@@ -181,7 +181,7 @@ pub struct ConsolidationResult {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EmotionalConsolidation {
     /// 配置 / Configuration.
-    pub config: ConsolidationConfig,
+    pub config: EmotionalConsolidationConfig,
     /// 待固化体验缓冲 / Pending experiences buffer.
     pending: VecDeque<EmotionalExperience>,
     /// 长期情绪轨迹 / Long-term emotional trajectory.
@@ -195,7 +195,7 @@ pub struct EmotionalConsolidation {
 impl Default for EmotionalConsolidation {
     fn default() -> Self {
         Self {
-            config: ConsolidationConfig::default(),
+            config: EmotionalConsolidationConfig::default(),
             pending: VecDeque::with_capacity(PENDING_CAPACITY),
             trajectory: VecDeque::with_capacity(TRAJECTORY_CAPACITY),
             next_id: 0,
@@ -551,7 +551,7 @@ mod tests {
 
     #[test]
     fn test_consolidation_max_per_batch() {
-        let config = ConsolidationConfig {
+        let config = EmotionalConsolidationConfig {
             max_per_batch: 2,
             ..Default::default()
         };

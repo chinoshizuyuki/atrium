@@ -375,12 +375,13 @@ async fn test_phase15_relationship_stage_initial() {
         stage
     );
 
-    // 初始乘数应为 0.8（初识 Acquaintance 阶段）
+    // 初始乘数应为 0.9（初识 Acquaintance 阶段）
+    // Initial multiplier should be 0.9 (Acquaintance stage)
     let mult = svc.relationship_affect_multiplier();
     println!("初始情感乘数: {:.3}", mult);
-    assert!((mult - 0.8).abs() < 0.01, "初识乘数应为 0.8, got {}", mult);
+    assert!((mult - 0.9).abs() < 0.01, "初识乘数应为 0.9, got {}", mult);
 
-    println!("⑤ 关系阶段初始状态: OK (初识 + 乘数 1.0)");
+    println!("⑤ 关系阶段初始状态: OK (初识 + 乘数 0.9)");
 }
 
 #[tokio::test]
@@ -466,6 +467,7 @@ mod real_api {
             model: "deepseek-v4-flash".into(),
             max_tokens: 512,
             timeout_secs: 30,
+            max_concurrency: 4,
         }
     }
 

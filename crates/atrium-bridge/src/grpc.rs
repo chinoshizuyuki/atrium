@@ -49,6 +49,10 @@ pub trait AtriumCoreService: Send + Sync + 'static {
         &self,
         req: atrium::ProcessMessageRequest,
     ) -> ProcessMessageStreamSink;
+
+    /// 上传文件 — 数字生命的工具记忆入口
+    /// Upload file — Tool memory entry point of digital life
+    async fn upload_file(&self, req: atrium::UploadFileRequest) -> atrium::UploadFileResponse;
 }
 
 // gRPC 服务实现
@@ -212,6 +216,34 @@ impl atrium::atrium_core_server::AtriumCore for GrpcServer {
         );
         Ok(tonic::Response::new(stream))
     }
+
+    /// 文件上传 RPC — 用户文件 → FileStore 存储
+    /// File upload RPC — user file → FileStore persistence
+    async fn upload_file(
+        &self,
+        request: tonic::Request<atrium::UploadFileRequest>,
+    ) -> Result<tonic::Response<atrium::UploadFileResponse>, tonic::Status> {
+        let t0 = std::time::Instant::now();
+        let req = request.into_inner();
+        info!(
+        target: "atrium.audit.grpc",
+        op = "UploadFile",
+        filename = %req.filename,
+        data_len = req.data.len(),
+        session_id = %req.session_id,
+        "gRPC call start"
+        );
+
+        let resp = self.service.upload_file(req).await;
+        info!(
+        target: "atrium.audit.grpc",
+        op = "UploadFile",
+        duration_us = t0.elapsed().as_micros(),
+        hash = %resp.hash,
+        "gRPC call completed"
+        );
+        Ok(tonic::Response::new(resp))
+    }
 }
 
 impl GrpcServer {
@@ -298,6 +330,18 @@ impl AtriumCoreService for PlaceholderCoreService {
             imported: 0,
             names: vec![],
             error: "not connected to canned manager".into(),
+        }
+    }
+
+    /// 占位文件上传实现 / Placeholder file upload implementation
+    async fn upload_file(&self, _req: atrium::UploadFileRequest) -> atrium::UploadFileResponse {
+        atrium::UploadFileResponse {
+            hash: String::new(),
+            original_name: String::new(),
+            size: 0,
+            text_extracted: false,
+            extracted_text: String::new(),
+            error: "placeholder: file store not connected".into(),
         }
     }
 

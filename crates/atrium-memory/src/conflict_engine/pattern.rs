@@ -38,9 +38,9 @@ pub struct ConflictPattern {
     pub first_seen_epoch: i64,
     /// 平均强度 (0.0~4.0, 映射到 ConflictIntensity) / Average intensity
     pub avg_intensity: f64,
-    /// 关系阶段分布：Acquaintance/Familiar/Trusted/Deep 各出现次数
-    /// Relationship stage distribution: counts per stage
-    pub stage_distribution: [u32; 4], // [Acquaintance, Building, Deep, Mature]
+    /// 关系阶段分布：8 阶段各出现次数
+    /// Relationship stage distribution: counts per stage (8 stages)
+    pub stage_distribution: [u32; 8], // [Stranger, Acquaintance, Familiar, Friendly, Trusted, Close, Deep, Intimate]
     /// 衰减权重 (0.0~1.0)，随时间降低 / Decay weight
     pub decay_weight: f64,
 }
@@ -55,7 +55,7 @@ impl ConflictPattern {
             last_seen_epoch: epoch,
             first_seen_epoch: epoch,
             avg_intensity: 1.0,
-            stage_distribution: [0; 4],
+            stage_distribution: [0; 8],
             decay_weight: 1.0,
         }
     }
@@ -135,10 +135,14 @@ impl ConflictPattern {
     /// 成熟阶段：最高灵敏度（1.0），但配合更多和解空间
     pub fn stage_sensitivity(stage: &RelationshipStage) -> f64 {
         match stage {
+            RelationshipStage::Stranger { .. } => 0.5,
             RelationshipStage::Acquaintance { .. } => 0.6,
             RelationshipStage::Familiar { .. } => 0.8,
+            RelationshipStage::Friendly { .. } => 0.9,
             RelationshipStage::Trusted { .. } => 1.0,
+            RelationshipStage::Close { .. } => 1.1,
             RelationshipStage::Deep { .. } => 1.2,
+            RelationshipStage::Intimate { .. } => 1.3,
         }
     }
 
@@ -543,12 +547,16 @@ pub struct PatternLearnerStats {
 // 辅助函数 / Helper functions
 // ════════════════════════════════════════════════════════════════════
 
-/// 关系阶段 → 索引 / Relationship stage → index
+/// 关系阶段 → 索引 / Relationship stage → index (0-7)
 pub(crate) fn stage_to_idx(stage: &RelationshipStage) -> usize {
     match stage {
-        RelationshipStage::Acquaintance { .. } => 0,
-        RelationshipStage::Familiar { .. } => 1,
-        RelationshipStage::Trusted { .. } => 2,
-        RelationshipStage::Deep { .. } => 3,
+        RelationshipStage::Stranger { .. } => 0,
+        RelationshipStage::Acquaintance { .. } => 1,
+        RelationshipStage::Familiar { .. } => 2,
+        RelationshipStage::Friendly { .. } => 3,
+        RelationshipStage::Trusted { .. } => 4,
+        RelationshipStage::Close { .. } => 5,
+        RelationshipStage::Deep { .. } => 6,
+        RelationshipStage::Intimate { .. } => 7,
     }
 }

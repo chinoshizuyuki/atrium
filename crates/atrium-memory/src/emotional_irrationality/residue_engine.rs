@@ -2,6 +2,7 @@
 // ! 管理情绪残留的衰减、合并、交互
 
 use super::types::*;
+use crate::resonance_core::exponential_decay;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -95,7 +96,7 @@ impl ResidueEngine {
         for residue in &self.active_residues {
             let elapsed = (now - residue.created_at) as f64;
             let factor = if residue.half_life_secs < f64::MAX {
-                2.0_f64.powf(-elapsed / residue.half_life_secs)
+                exponential_decay(elapsed, residue.half_life_secs)
             } else {
                 1.0
             };
@@ -121,7 +122,7 @@ impl ResidueEngine {
         for residue in &mut self.active_residues {
             let elapsed_secs = (now - residue.updated_at) as f64;
             if residue.half_life_secs < f64::MAX {
-                residue.intensity *= 2.0_f64.powf(-elapsed_secs / residue.half_life_secs);
+                residue.intensity *= exponential_decay(elapsed_secs, residue.half_life_secs);
             }
             residue.updated_at = now;
         }

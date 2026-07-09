@@ -31,6 +31,31 @@ pub fn pad_magnitude(p: f32, a: f32, d: f32) -> f32 {
     (p * p + a * a + d * d).sqrt()
 }
 
+/// PadDelta 转换为 f64 数组 / Convert PadDelta to f64 array
+///
+/// 统一 (f32, f32, f32) → [f64; 3] 的转换路径。
+#[inline]
+pub fn pad_delta_to_array(d: PadDelta) -> [f64; 3] {
+    [d.0 as f64, d.1 as f64, d.2 as f64]
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PAD 情感源 trait / PAD Source Trait
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// PAD 情感源 — 统一所有产生 PAD 三元组的模块接口 / PAD emotional source trait
+///
+/// 数字生命中，期待深度、情绪气候、共振引擎各自产生 PAD 情感增量。
+/// 此 trait 统一这些模块的接口，让上层只需调用 `pad_delta()` 即可获取情感偏移。
+///
+/// In the digital life system, anticipation depth, emotional climate, and
+/// resonance engines each produce PAD emotional deltas. This trait unifies
+/// their interfaces so callers simply call `pad_delta()` to get the offset.
+pub trait PadSource {
+    /// 当前 PAD 增量 [pleasure, arousal, dominance] / Current PAD delta
+    fn pad_delta(&self) -> [f64; 3];
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // 共享工具函数 / Shared Utility Functions
 // ═══════════════════════════════════════════════════════════════════════════
@@ -50,6 +75,41 @@ pub fn exponential_decay(elapsed: f64, half_life: f64) -> f64 {
     }
     let e = elapsed.max(0.0);
     2f64.powf(-e / half_life)
+}
+
+/// f32 指数衰减因子 / f32 Exponential decay factor
+///
+/// f32 版本的 `exponential_decay`，用于对性能敏感且不需要 f64 精度的场景。
+/// f32 version of `exponential_decay` for performance-sensitive paths.
+#[inline]
+pub fn exponential_decay_f32(elapsed: f32, half_life: f32) -> f32 {
+    if half_life <= 0.0 {
+        return 0.0;
+    }
+    let e = elapsed.max(0.0);
+    2f32.powf(-e / half_life)
+}
+
+/// 指数移动平均 / Exponential Moving Average (EMA)
+///
+/// EMA 公式：`old + alpha * (new - old)`，等价于 `old * (1-alpha) + new * alpha`。
+/// - alpha=0 → 保持旧值 / keep old
+/// - alpha=1 → 完全替换 / full replacement
+/// - alpha∈(0,1) → 平滑过渡 / smooth transition
+///
+/// EMA formula: `old + alpha * (new - old)`, equivalent to `old * (1-alpha) + new * alpha`.
+#[inline]
+pub fn ema(old: f64, new: f64, alpha: f64) -> f64 {
+    old + alpha * (new - old)
+}
+
+/// f32 指数移动平均 / f32 Exponential Moving Average (EMA)
+///
+/// f32 版本的 EMA，用于对性能敏感的路径。
+/// f32 version of EMA for performance-sensitive paths.
+#[inline]
+pub fn ema_f32(old: f32, new: f32, alpha: f32) -> f32 {
+    old + alpha * (new - old)
 }
 
 /// 关系阶段缩放因子 / Relationship stage scaling factor

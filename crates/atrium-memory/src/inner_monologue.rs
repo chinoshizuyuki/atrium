@@ -332,6 +332,45 @@ impl InnerMonologueEngine {
             .collect()
     }
 
+    /// 将可分享的思考格式化为 prompt 片段 / Format shareable thoughts as a prompt fragment
+    ///
+    /// 取最近 n 条 `shareable_thoughts`，拼接成多行 prompt 片段，
+    /// 让数字生命的内在想法得以"外化"——用户能感知到 AI 的内心活动。
+    ///
+    /// 格式：
+    /// ```text
+    /// 刚才我在想：
+    /// - {thought_content_1}
+    /// - {thought_content_2}
+    /// 这让我觉得...
+    /// ```
+    ///
+    /// 空想法返回空字符串，调用方应过滤空串后再注入 prompt。
+    ///
+    /// Take the most recent n `shareable_thoughts` and assemble them into a
+    /// multi-line prompt fragment, so the digital life's inner thoughts can
+    /// be "externalized" — the user can perceive the AI's inner activity.
+    ///
+    /// Returns an empty string when no thoughts are available; callers should
+    /// filter empty strings before injecting into the prompt.
+    pub fn format_for_prompt(&self, n: usize) -> String {
+        // 取最近 n 条可分享思考（从新到旧）/ Grab the most recent n shareable thoughts (newest first)
+        let thoughts = self.shareable_thoughts(n);
+        if thoughts.is_empty() {
+            return String::new();
+        }
+
+        // 拼接多行片段：每条思考以 "- " 开头独占一行
+        // Assemble the multi-line fragment: each thought occupies its own line prefixed with "- "
+        let mut out = String::from("刚才我在想：");
+        for t in &thoughts {
+            out.push_str("\n- ");
+            out.push_str(&t.content);
+        }
+        out.push_str("\n这让我觉得...");
+        out
+    }
+
     /// 当前缓冲区长度
     /// Current number of thoughts in the buffer.
     pub fn thought_count(&self) -> usize {
@@ -1070,6 +1109,65 @@ mod tests {
         let shareable = engine.shareable_thoughts(10);
         assert_eq!(shareable.len(), 2);
         assert!(shareable.iter().all(|t| t.shareable));
+    }
+
+    // ── P3-H format_for_prompt 测试 / P3-H format_for_prompt Tests ──
+
+    #[test]
+    fn test_format_for_prompt_empty() {
+        // 无任何思考时，应返回空字符串 / With no thoughts at all, should return an empty string
+        let engine = InnerMonologueEngine::default_new();
+        assert_eq!(engine.format_for_prompt(3), "");
+
+        // 缓冲区仅有不可分享的思考时，也应返回空字符串
+        // With only non-shareable thoughts, should also return an empty string
+        let mut engine2 = InnerMonologueEngine::default_new();
+        engine2.add_thought(make_thought("私密日记", ThoughtMode::DiaryEntry, false));
+        assert_eq!(engine2.format_for_prompt(3), "");
+    }
+
+    #[test]
+    fn test_format_for_prompt_with_thoughts() {
+        // 添加若干可分享思考，验证格式正确 / Add shareable thoughts and verify the format
+        let mut engine = InnerMonologueEngine::default_new();
+        engine.add_thought(make_thought(
+            "今天主人对我笑了",
+            ThoughtMode::GraphWander,
+            true,
+        ));
+        engine.add_thought(make_thought(
+            "窗外的雨声很温柔",
+            ThoughtMode::Daydream,
+            true,
+        ));
+        // 私密思考不应出现在 prompt 片段中 / Non-shareable thoughts must not appear in the fragment
+        engine.add_thought(make_thought("私密的焦虑", ThoughtMode::DiaryEntry, false));
+
+        let fragment = engine.format_for_prompt(3);
+        // 应包含开头和结尾的固定文本 / Should contain the fixed header and footer text
+        assert!(
+            fragment.starts_with("刚才我在想："),
+            "fragment: {}",
+            fragment
+        );
+        assert!(
+            fragment.ends_with("这让我觉得..."),
+            "fragment: {}",
+            fragment
+        );
+        // 两条可分享思考都应出现（每行以 "- " 开头）/ Both shareable thoughts should appear
+        assert!(
+            fragment.contains("- 今天主人对我笑了"),
+            "fragment: {}",
+            fragment
+        );
+        assert!(
+            fragment.contains("- 窗外的雨声很温柔"),
+            "fragment: {}",
+            fragment
+        );
+        // 不可分享的内容不应出现 / Non-shareable content must NOT appear
+        assert!(!fragment.contains("私密"), "fragment: {}", fragment);
     }
 
     // ── 冷却和限制测试 / Cooldown and Limit Tests ──

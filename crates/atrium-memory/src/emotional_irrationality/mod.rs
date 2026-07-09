@@ -47,6 +47,13 @@ use rand::SeedableRng;
 
 use serde::{Deserialize, Serialize};
 
+// 身体残留阈值与强度因子 / Body residue thresholds & strength factors
+// P2-C: 从硬编码魔法数字提取为命名常量 / Extracted from hardcoded magic numbers
+const BODY_RESIDUE_THRESHOLD: f64 = 0.5; // 身体状态触发阈值 / Body state trigger threshold
+const BODY_RESIDUE_TENSION_STRENGTH: f64 = 0.3; // 紧张残留强度因子 / Tension residue strength factor
+const BODY_RESIDUE_SADNESS_STRENGTH: f64 = 0.2; // 悲伤残留强度因子 / Sadness residue strength factor
+const BODY_RESIDUE_WARMTH_STRENGTH: f64 = 0.2; // 温暖残留强度因子 / Warmth residue strength factor
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IrrationalityConfig {
     pub pulse: PulseConfig,
@@ -577,18 +584,24 @@ impl IrrationalityManager {
         let bm = self.residue.combined_effect(now).body_memory.clone();
 
         // 身体→残留：身体状态催生残留 / Body→Residue: body state breeds residue
-        let (body_born_residue, body_born_strength) = if bm.tension > 0.5 {
+        let (body_born_residue, body_born_strength) = if bm.tension > BODY_RESIDUE_THRESHOLD {
             // 高紧张→催生 Tension 残留 / High tension → breed Tension residue
-            (Some(ResidueKind::Tension), (bm.tension - 0.5) * 0.3)
-        } else if bm.heaviness > 0.5 {
+            (
+                Some(ResidueKind::Tension),
+                (bm.tension - BODY_RESIDUE_THRESHOLD) * BODY_RESIDUE_TENSION_STRENGTH,
+            )
+        } else if bm.heaviness > BODY_RESIDUE_THRESHOLD {
             // 高沉重→催生 LingeringSadness / High heaviness → breed LingeringSadness
             (
                 Some(ResidueKind::LingeringSadness),
-                (bm.heaviness - 0.5) * 0.2,
+                (bm.heaviness - BODY_RESIDUE_THRESHOLD) * BODY_RESIDUE_SADNESS_STRENGTH,
             )
-        } else if bm.warmth > 0.5 {
+        } else if bm.warmth > BODY_RESIDUE_THRESHOLD {
             // 高温暖→催生 WarmthResidue / High warmth → breed WarmthResidue
-            (Some(ResidueKind::WarmthResidue), (bm.warmth - 0.5) * 0.2)
+            (
+                Some(ResidueKind::WarmthResidue),
+                (bm.warmth - BODY_RESIDUE_THRESHOLD) * BODY_RESIDUE_WARMTH_STRENGTH,
+            )
         } else {
             (None, 0.0)
         };

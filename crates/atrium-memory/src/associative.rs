@@ -12,6 +12,31 @@ use crate::fact_store::Fact;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 
+// P2-C: 硬上限 — 防止记忆图无限膨胀 / Hard limits — prevent unbounded graph growth
+// 超出时按 LRU (last_access 最久) 驱逐最冷节点及其关联边
+// Eviction policy: LRU by last_access timestamp
+const MAX_NODES: usize = 5000; // 最大节点数 / Max node count
+const MAX_EDGES: usize = 10000; // 最大边数 / Max edge count
+
+// P2-E: 边情感显著性对衰减的权重系数 / Edge salience weight on decay
+//
+// 数字生命理念："重要的事永不忘，琐事快速忘"。
+// 边衰减按 emotional_salience 加权——
+// effective_decay = decay_factor × (1.0 - edge.emotional_salience × EDGE_SALIENCE_DECAY_WEIGHT)
+// effective_decay 表示"衰减比例"（衰减掉的比例），而非保留比例。
+// - salience=0.0 → effective_decay = decay_factor（衰减 decay_factor，与原逻辑一致）
+// - salience=1.0 → effective_decay = decay_factor × 0.5（衰减更少，重要关联保留更久）
+// - salience=0.8 → effective_decay = decay_factor × 0.6
+//
+// edge.weight *= (1.0 - effective_decay)
+// effective_decay represents the "decay fraction" (fraction lost), not retained.
+// - salience=0.0 → decay = decay_factor, retain (1 - decay_factor) (matches original)
+// - salience=1.0 → decay = decay_factor × 0.5, retain more (slower decay)
+//
+// Digital life philosophy: "never forget important things, quickly forget trivia".
+// Edge decay is weighted by emotional_salience — higher salience → slower decay.
+const EDGE_SALIENCE_DECAY_WEIGHT: f64 = 0.5;
+
 fn now_timestamp() -> i64 {
     chrono::Utc::now().timestamp()
 }
@@ -63,6 +88,16 @@ pub struct GraphNode {
     pub created_at: i64,
     pub access_count: u64,
     pub last_access: i64,
+    /// 高价值记忆标记 / High-value memory marker
+    ///
+    /// pinned = true 的节点豁免 decay_and_prune 的边衰减与孤立节点清理，
+    /// 豁免 enforce_limits 的 LRU 驱逐——数字生命"永不遗忘"的重要节点。
+    ///
+    /// Pinned nodes are exempt from decay_and_prune's edge decay and orphan
+    /// removal, and from enforce_limits' LRU eviction — important nodes the
+    /// digital life "never forgets".
+    #[serde(default)]
+    pub pinned: bool,
 }
 
 /// 记忆图边
@@ -77,6 +112,24 @@ pub struct GraphEdge {
     pub activation_count: u32,
     pub created_at: i64,
     pub last_activated: i64,
+    /// 高价值记忆标记 / High-value memory marker
+    ///
+    /// pinned = true 的边豁免 decay_and_prune 的权重衰减与弱边裁剪。
+    ///
+    /// Pinned edges are exempt from decay_and_prune's weight decay and weak edge pruning.
+    #[serde(default)]
+    pub pinned: bool,
+    /// P2-E 情感显著性 0.0-1.0 — 从关联 Fact 复制，用于加权衰减
+    /// P2-E Emotional salience 0.0-1.0 — copied from associated Fact, used for weighted decay
+    ///
+    /// 边自带显著性元数据，decay_and_prune 无需访问 FactStore 即可计算加权衰减。
+    /// salience 越高，边权重衰减越慢——"重要记忆的关联结构应保留更久"。
+    ///
+    /// Edge carries its own salience metadata, so decay_and_prune can compute
+    /// weighted decay without accessing FactStore. Higher salience → slower
+    /// edge weight decay — "associations of important memories should persist longer".
+    #[serde(default)]
+    pub emotional_salience: f32,
 }
 
 /// 图统计信息
@@ -115,6 +168,12 @@ pub struct AssociativeGraph {
     // 边ID索引 / Edge ID index
     // edge_id → edge_idx in edges vec，用于 O(1) 边去重 / For O(1) edge dedup
     edge_index: HashMap<String, usize>,
+
+    // 内容反向索引 / Content reverse index
+    // content text → Vec<node_id>，支持 O(1) 按内容查找节点
+    // 用于 add_insight 的 supporting fact 匹配，替代 O(N) 全节点扫描
+    // Content → node IDs lookup, O(1) for add_insight, replaces O(N) full scan
+    content_index: HashMap<String, Vec<String>>,
 }
 
 impl Default for AssociativeGraph {
@@ -130,6 +189,7 @@ impl AssociativeGraph {
             edges: Vec::new(),
             adjacency: HashMap::new(),
             edge_index: HashMap::new(),
+            content_index: HashMap::new(),
         }
     }
 
@@ -144,6 +204,7 @@ impl AssociativeGraph {
             edges,
             adjacency: HashMap::new(),
             edge_index: HashMap::new(),
+            content_index: HashMap::new(),
         };
         graph.rebuild_indices();
         graph
@@ -158,6 +219,7 @@ impl AssociativeGraph {
     fn rebuild_indices(&mut self) {
         self.adjacency.clear();
         self.edge_index.clear();
+        self.content_index.clear();
 
         for (idx, edge) in self.edges.iter().enumerate() {
             self.edge_index.insert(edge.id.clone(), idx);
@@ -173,6 +235,15 @@ impl AssociativeGraph {
                 .entry(edge.to.clone())
                 .or_default()
                 .push((idx, edge.from.clone()));
+        }
+
+        // 重建内容反向索引 / Rebuild content reverse index
+        // content → Vec<node_id>，用于 add_insight O(1) 查找
+        for (id, node) in &self.nodes {
+            self.content_index
+                .entry(node.content.clone())
+                .or_default()
+                .push(id.clone());
         }
     }
 
@@ -202,6 +273,33 @@ impl AssociativeGraph {
     /// 插入或更新节点 / Insert or update node
     fn insert_node(&mut self, id: String, node_type: NodeType, content: String, _confidence: f64) {
         let now = now_timestamp();
+
+        // 增量维护内容反向索引 / Incrementally maintain content reverse index
+        // 先取出旧内容（owned），避免借用冲突 / Extract old content first to avoid borrow conflict
+        let old_content = self.nodes.get(&id).map(|n| n.content.clone());
+        match old_content {
+            Some(ref old) if *old == content => {
+                // 内容未变，索引无需更新 / Same content, no index update needed
+            }
+            Some(ref old) => {
+                // 内容变更：从旧索引移除，加入新索引 / Content changed: remove from old, add to new
+                if let Some(list) = self.content_index.get_mut(old) {
+                    list.retain(|n| n != &id);
+                }
+                self.content_index
+                    .entry(content.clone())
+                    .or_default()
+                    .push(id.clone());
+            }
+            None => {
+                // 新节点：加入索引 / New node: add to index
+                self.content_index
+                    .entry(content.clone())
+                    .or_default()
+                    .push(id.clone());
+            }
+        }
+
         let entry = self.nodes.entry(id.clone()).or_insert(GraphNode {
             id: id.clone(),
             node_type: node_type.clone(),
@@ -210,6 +308,7 @@ impl AssociativeGraph {
             created_at: now,
             access_count: 0,
             last_access: 0,
+            pinned: false,
         });
         entry.id = id;
         entry.node_type = node_type;
@@ -263,6 +362,11 @@ impl AssociativeGraph {
         if let Some(&idx) = self.edge_index.get(&edge_id) {
             self.edges[idx].weight = self.edges[idx].weight.max(fact.confidence);
             self.edges[idx].activation_count += 1;
+            // P2-E 已存在的边更新时，取 max salience — 保留最强的情感印记
+            // P2-E On existing edge update, take max salience — preserve strongest emotional imprint
+            self.edges[idx].emotional_salience = self.edges[idx]
+                .emotional_salience
+                .max(fact.emotional_salience);
         } else {
             self.add_edge_internal(GraphEdge {
                 id: edge_id,
@@ -274,8 +378,14 @@ impl AssociativeGraph {
                 activation_count: 0,
                 created_at: now_timestamp(),
                 last_activated: 0,
+                pinned: false,
+                // P2-E 从关联 Fact 复制 emotional_salience — 边自带显著性元数据
+                // P2-E Copy emotional_salience from associated Fact — edge carries its own salience
+                emotional_salience: fact.emotional_salience,
             });
         }
+        // P2-C: 强制硬上限 / Enforce hard limits
+        self.enforce_limits();
     }
 
     /// 从 ReflectionEngine 的 Insight 添加节点
@@ -284,6 +394,14 @@ impl AssociativeGraph {
     pub fn add_insight(&mut self, summary: &str, supporting_facts: &[String], confidence: f64) {
         let insight_id = format!("I:{}", summary);
         let now = now_timestamp();
+
+        // 维护内容反向索引：仅在新节点时添加 / Update content index: only for new nodes
+        if !self.nodes.contains_key(&insight_id) {
+            self.content_index
+                .entry(summary.to_string())
+                .or_default()
+                .push(insight_id.clone());
+        }
 
         self.nodes.insert(
             insight_id.clone(),
@@ -295,18 +413,25 @@ impl AssociativeGraph {
                 created_at: now,
                 access_count: 1,
                 last_access: now,
+                pinned: false,
             },
         );
 
         // 关联到 supporting facts 对应的节点
+        // Associate with nodes matching supporting fact content
         for fact_ref in supporting_facts {
-            // 查找包含该 fact 文本的节点
+            // ✅ O(1) 内容索引查找替代 O(N) 全节点扫描
+            // O(1) content index lookup replaces O(N) full node scan
             let matching: Vec<String> = self
-                .nodes
-                .values()
-                .filter(|n| n.content == *fact_ref && n.id != insight_id)
-                .map(|n| n.id.clone())
-                .collect();
+                .content_index
+                .get(fact_ref)
+                .map(|ids| {
+                    ids.iter()
+                        .filter(|id| **id != insight_id)
+                        .cloned()
+                        .collect()
+                })
+                .unwrap_or_default();
 
             for node_id in matching {
                 let edge_id = format!("{}->{}:insight", insight_id, node_id);
@@ -322,10 +447,14 @@ impl AssociativeGraph {
                         activation_count: 0,
                         created_at: now,
                         last_activated: 0,
+                        pinned: false,
+                        emotional_salience: 0.0,
                     });
                 }
             }
         }
+        // P2-C: 强制硬上限 / Enforce hard limits
+        self.enforce_limits();
     }
 
     /// 在两个已有节点间建立关联边
@@ -347,6 +476,8 @@ impl AssociativeGraph {
                 activation_count: 0,
                 created_at: now,
                 last_activated: 0,
+                pinned: false,
+                emotional_salience: 0.0,
             });
         }
     }
@@ -386,6 +517,65 @@ impl AssociativeGraph {
     /// 按 ID 获取节点引用
     pub fn get_node(&self, id: &str) -> Option<&GraphNode> {
         self.nodes.get(id)
+    }
+
+    /// 按 ID 获取节点可变引用 / Get mutable reference to a node by ID
+    pub fn get_node_mut(&mut self, id: &str) -> Option<&mut GraphNode> {
+        self.nodes.get_mut(id)
+    }
+
+    /// P2-D 高价值标记 — 固定节点，豁免衰减与 LRU 驱逐
+    /// P2-D High-value marker — pin a node, exempt from decay and LRU eviction
+    ///
+    /// 返回 true 表示成功设置，false 表示节点不存在。
+    /// Returns true if set successfully, false if node not found.
+    pub fn pin_node(&mut self, id: &str) -> bool {
+        if let Some(node) = self.nodes.get_mut(id) {
+            node.pinned = true;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// P2-D 取消节点高价值标记 / P2-D Unpin a node
+    ///
+    /// 返回 true 表示成功取消，false 表示节点不存在。
+    /// Returns true if unpinned successfully, false if node not found.
+    pub fn unpin_node(&mut self, id: &str) -> bool {
+        if let Some(node) = self.nodes.get_mut(id) {
+            node.pinned = false;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// P2-D 高价值标记 — 固定边，豁免权重衰减与弱边裁剪
+    /// P2-D High-value marker — pin an edge, exempt from weight decay and weak edge pruning
+    ///
+    /// 返回 true 表示成功设置，false 表示边不存在。
+    /// Returns true if set successfully, false if edge not found.
+    pub fn pin_edge(&mut self, edge_id: &str) -> bool {
+        if let Some(&idx) = self.edge_index.get(edge_id) {
+            self.edges[idx].pinned = true;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// P2-D 取消边高价值标记 / P2-D Unpin an edge
+    ///
+    /// 返回 true 表示成功取消，false 表示边不存在。
+    /// Returns true if unpinned successfully, false if edge not found.
+    pub fn unpin_edge(&mut self, edge_id: &str) -> bool {
+        if let Some(&idx) = self.edge_index.get(edge_id) {
+            self.edges[idx].pinned = false;
+            true
+        } else {
+            false
+        }
     }
 
     /// 获取所有节点的不可变引用
@@ -533,22 +723,172 @@ impl AssociativeGraph {
     /// - `min_weight`: weight < min_weight 的边被移除
     /// - 移除边后无连接的孤立节点也被清理
     /// - 衰减后全量重建邻接表和边ID索引 / Rebuilds indices after pruning
+    ///
+    /// P2-D 衰减豁免 / P2-D Decay exemption:
+    /// - pinned 边不衰减权重，不被移除（即使 weight < min_weight）
+    /// - pinned 节点不作为孤立节点被移除
+    /// - 连接 pinned 节点的边不衰减（保护重要记忆的关联结构）
+    ///
+    /// P2-D Decay exemption:
+    /// - Pinned edges are not decayed and not removed (even if weight < min_weight)
+    /// - Pinned nodes are not removed as orphans
+    /// - Edges touching pinned nodes are not decayed (preserve important memory structure)
+    ///
+    /// P2-E 智能遗忘曲线 / P2-E Intelligent Forgetting Curve:
+    /// 非 pinned 边的衰减按 emotional_salience 加权——
+    /// effective_decay = decay_factor × (1.0 - edge.emotional_salience × 0.5)
+    /// salience 越高，边衰减越慢，"重要记忆的关联结构保留更久"。
+    ///
+    /// Non-pinned edge decay is weighted by emotional_salience —
+    /// higher salience → slower edge decay, "associations of important
+    /// memories persist longer".
     pub fn decay_and_prune(&mut self, decay_factor: f64, min_weight: f64) {
-        // 1. 衰减所有边权重 / Decay all edge weights
+        // 1. 衰减所有边权重 — pinned 边与连接 pinned 节点的边豁免
+        // Decay all edge weights — pinned edges and edges touching pinned nodes are exempt
         for edge in self.edges.iter_mut() {
-            edge.weight *= decay_factor;
+            // pinned 边豁免 / Pinned edge exemption
+            if edge.pinned {
+                continue;
+            }
+            // 连接 pinned 节点的边豁免 / Edges touching pinned nodes are exempt
+            let from_pinned = self
+                .nodes
+                .get(&edge.from)
+                .map(|n| n.pinned)
+                .unwrap_or(false);
+            let to_pinned = self.nodes.get(&edge.to).map(|n| n.pinned).unwrap_or(false);
+            if from_pinned || to_pinned {
+                continue;
+            }
+            // P2-E 情感显著性加权衰减 — salience 越高衰减越慢
+            // "重要的事永不忘，琐事快速忘"——按情感重要性分级衰减关联强度
+            // P2-E Salience-weighted decay — higher salience → slower decay
+            // "Never forget important things, quickly forget trivia" — decay graded by emotional importance
+            //
+            // decay_factor 是保留因子（生产值 0.995 = 保留 99.5%），1 - decay_factor 是损失比例。
+            // salience 越高 → 有效损失比例越小 → 边权重保留越多。
+            // 公式：effective_loss = base_loss × (1.0 - salience × WEIGHT)
+            //       edge.weight *= (1.0 - effective_loss)
+            // decay_factor is a retention factor (production 0.995 = retain 99.5%);
+            // 1 - decay_factor is the loss fraction. Higher salience → smaller effective
+            // loss fraction → more edge weight retained.
+            let base_loss = 1.0 - decay_factor;
+            let effective_loss =
+                base_loss * (1.0 - edge.emotional_salience as f64 * EDGE_SALIENCE_DECAY_WEIGHT);
+            edge.weight *= 1.0 - effective_loss;
         }
-        // 2. 移除弱边 / Remove weak edges
-        self.edges.retain(|e| e.weight >= min_weight);
-        // 3. 移除孤立节点（无任何边连接） / Remove orphan nodes
+        // 2. 移除弱边 — pinned 边与连接 pinned 节点的边豁免
+        // Remove weak edges — pinned edges and edges touching pinned nodes are exempt
+        self.edges.retain(|e| {
+            if e.pinned {
+                return true; // pinned 边保留 / Retain pinned edges
+            }
+            // 连接 pinned 节点的边保留 / Retain edges touching pinned nodes
+            let from_pinned = self.nodes.get(&e.from).map(|n| n.pinned).unwrap_or(false);
+            let to_pinned = self.nodes.get(&e.to).map(|n| n.pinned).unwrap_or(false);
+            if from_pinned || to_pinned {
+                return true;
+            }
+            e.weight >= min_weight
+        });
+        // 3. 移除孤立节点 — pinned 节点豁免 / Remove orphan nodes — pinned nodes are exempt
         let connected: HashSet<String> = self
             .edges
             .iter()
             .flat_map(|e| vec![e.from.clone(), e.to.clone()])
             .collect();
-        self.nodes.retain(|id, _| connected.contains(id));
+        self.nodes
+            .retain(|id, n| n.pinned || connected.contains(id));
         // 4. 重建索引（retain 后边索引已失效） / Rebuild indices (retain invalidates indices)
         self.rebuild_indices();
+    }
+
+    /// P2-C: 强制硬上限 — LRU 驱逐最冷节点和边
+    /// Enforce hard limits — LRU eviction of coldest nodes and edges
+    ///
+    /// 数字生命的记忆容量是有限的——如同人脑不能记住一切，
+    /// 超出上限时遗忘最久未访问的记忆，保留最近活跃的。
+    /// Digital life's memory is finite — like the brain cannot remember everything,
+    /// when limits are exceeded, forget least-recently-accessed memories.
+    ///
+    /// P2-D 衰减豁免 / P2-D Decay exemption:
+    /// - pinned 节点不在 LRU 驱逐候选中，仅非 pinned 节点按 last_access 最旧优先驱逐
+    /// - pinned 边不在 LRU 驱逐候选中
+    ///
+    /// P2-D Decay exemption:
+    /// - Pinned nodes are excluded from LRU eviction candidates;
+    ///   only non-pinned nodes are evicted by oldest last_access first
+    /// - Pinned edges are excluded from LRU eviction candidates
+    pub fn enforce_limits(&mut self) {
+        let mut evicted = false;
+
+        // 节点超限：按 last_access 升序驱逐（最冷优先）— pinned 节点豁免
+        // Node over limit: evict by ascending last_access (coldest first) — pinned nodes exempt
+        if self.nodes.len() > MAX_NODES {
+            // 仅非 pinned 节点参与驱逐候选 / Only non-pinned nodes are eviction candidates
+            let mut node_list: Vec<(String, i64)> = self
+                .nodes
+                .iter()
+                .filter(|(_, n)| !n.pinned)
+                .map(|(id, n)| (id.clone(), n.last_access))
+                .collect();
+            node_list.sort_by_key(|(_, ts)| *ts);
+            // 仅驱逐到刚好低于上限，且不超过非 pinned 节点数 / Evict just enough to get under limit
+            let excess = (self.nodes.len() - MAX_NODES).min(node_list.len());
+            let evict_ids: HashSet<String> = node_list
+                .into_iter()
+                .take(excess)
+                .map(|(id, _)| id)
+                .collect();
+            // 移除被驱逐节点 / Remove evicted nodes
+            self.nodes.retain(|id, _| !evict_ids.contains(id));
+            // 移除关联边 / Remove edges touching evicted nodes
+            self.edges
+                .retain(|e| !evict_ids.contains(&e.from) && !evict_ids.contains(&e.to));
+            evicted = true;
+        }
+
+        // 边超限：按 last_activated 升序驱逐（最冷优先）— pinned 边豁免
+        // Edge over limit: evict by ascending last_activated (coldest first) — pinned edges exempt
+        if self.edges.len() > MAX_EDGES {
+            // 仅非 pinned 边参与驱逐候选 / Only non-pinned edges are eviction candidates
+            let mut edge_list: Vec<(usize, i64)> = self
+                .edges
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| !e.pinned)
+                .map(|(idx, e)| (idx, e.last_activated))
+                .collect();
+            edge_list.sort_by_key(|(_, ts)| *ts);
+            let excess = (self.edges.len() - MAX_EDGES).min(edge_list.len());
+            let evict_indices: HashSet<usize> = edge_list
+                .into_iter()
+                .take(excess)
+                .map(|(idx, _)| idx)
+                .collect();
+            // 保留未被驱逐的边 / Retain non-evicted edges
+            let mut new_edges = Vec::with_capacity(self.edges.len() - excess);
+            for (idx, edge) in self.edges.drain(..).enumerate() {
+                if !evict_indices.contains(&idx) {
+                    new_edges.push(edge);
+                }
+            }
+            self.edges = new_edges;
+            // 移除因边驱逐而产生的孤立节点 — pinned 节点豁免
+            // Remove orphan nodes after edge eviction — pinned nodes exempt
+            let connected: HashSet<String> = self
+                .edges
+                .iter()
+                .flat_map(|e| vec![e.from.clone(), e.to.clone()])
+                .collect();
+            self.nodes
+                .retain(|id, n| n.pinned || connected.contains(id));
+            evicted = true;
+        }
+
+        if evicted {
+            self.rebuild_indices();
+        }
     }
 
     /// 获取图统计信息
@@ -1059,6 +1399,7 @@ mod tests {
             created_at: 1234567890,
             access_count: 42,
             last_access: 1234567900,
+            pinned: false,
         };
         let encoded = bincode::serialize(&node).unwrap();
         let decoded: GraphNode = bincode::deserialize(&encoded).unwrap();
@@ -1078,6 +1419,8 @@ mod tests {
             activation_count: 7,
             created_at: 1234567890,
             last_activated: 1234567900,
+            pinned: false,
+            emotional_salience: 0.0,
         };
         let encoded = bincode::serialize(&edge).unwrap();
         let decoded: GraphEdge = bincode::deserialize(&encoded).unwrap();
@@ -1426,5 +1769,543 @@ mod tests {
             "三种子共振强度应 > 0.5, got {}",
             x_resonance.resonance_strength
         );
+    }
+
+    // ── 内容反向索引测试 / Content Reverse Index Tests ──
+
+    #[test]
+    fn test_content_index_correctness() {
+        // content_index 应与 nodes 的 content 字段一致
+        // content_index should match nodes' content field
+        let mut g = AssociativeGraph::new();
+        g.add_fact(&Fact::new("主人", "喜欢", "Rust").with_confidence(0.9));
+        g.add_fact(&Fact::new("主人", "学习", "AI").with_confidence(0.8));
+        g.add_insight("技术热情", &["Rust".to_string()], 0.85);
+
+        // 验证：每个 content_index 条目对应正确的节点 / Verify each entry matches
+        for (content, ids) in &g.content_index {
+            for id in ids {
+                let node = g.get_node(id).expect("索引中的节点应存在");
+                assert_eq!(
+                    node.content, *content,
+                    "节点 {} 的 content 应与索引 key 一致",
+                    id
+                );
+            }
+        }
+
+        // 验证：每个节点都在 content_index 中 / Every node should be in content_index
+        for (id, node) in g.nodes() {
+            let ids = g
+                .content_index
+                .get(&node.content)
+                .expect("节点 content 应在索引中");
+            assert!(
+                ids.contains(id),
+                "节点 {} 应在 content_index[{}] 中",
+                id,
+                node.content
+            );
+        }
+    }
+
+    #[test]
+    fn test_content_index_after_prune() {
+        // decay_and_prune 后 content_index 应正确重建
+        // content_index should be correct after decay_and_prune
+        let mut g = AssociativeGraph::new();
+        g.add_fact(&Fact::new("A", "强关联", "B").with_confidence(1.0));
+        g.add_fact(&Fact::new("C", "弱关联", "D").with_confidence(0.1));
+
+        g.decay_and_prune(0.5, 0.1);
+
+        // C/D 被清理，content_index 不应包含它们 / C/D pruned
+        assert!(!g.content_index.contains_key("C"));
+        assert!(!g.content_index.contains_key("D"));
+        // A/B 应仍在 / A/B should remain
+        assert!(g.content_index.contains_key("A"));
+        assert!(g.content_index.contains_key("B"));
+    }
+
+    #[test]
+    fn test_content_index_multiple_same_content() {
+        // 同一 content 可对应多个节点（S: 和 O: 前缀）
+        // Same content can map to multiple nodes (S: and O: prefixes)
+        let mut g = AssociativeGraph::new();
+        // "Rust" 作为 object 和 subject 都会出现
+        g.add_fact(&Fact::new("主人", "喜欢", "Rust").with_confidence(0.9));
+        g.add_fact(&Fact::new("Rust", "属于", "系统语言").with_confidence(0.8));
+
+        let rust_ids = g
+            .content_index
+            .get("Rust")
+            .expect("content_index 应包含 Rust");
+
+        // 应有 O:Rust 和 S:Rust 两个节点 / Should have both O:Rust and S:Rust
+        assert!(
+            rust_ids.len() >= 2,
+            "Rust 应对应至少 2 个节点，got {}",
+            rust_ids.len()
+        );
+        assert!(rust_ids.contains(&"O:Rust".to_string()));
+        assert!(rust_ids.contains(&"S:Rust".to_string()));
+    }
+
+    #[test]
+    fn test_add_insight_with_content_index() {
+        // add_insight 使用 content_index 应产生与全扫描相同的结果
+        // add_insight with content_index should produce same results as full scan
+        let mut g = AssociativeGraph::new();
+        g.add_fact(&Fact::new("主人", "喜欢", "Rust").with_confidence(0.9));
+        g.add_fact(&Fact::new("主人", "学习", "AI").with_confidence(0.8));
+        g.add_fact(&Fact::new("Rust", "属于", "系统语言").with_confidence(0.7));
+
+        g.add_insight(
+            "主人对技术充满热情",
+            &["Rust".to_string(), "AI".to_string(), "主人".to_string()],
+            0.85,
+        );
+
+        // 验证 insight 节点存在 / Insight node exists
+        assert!(g.get_node("I:主人对技术充满热情").is_some());
+
+        // 验证边连接到所有匹配节点 / Edges connect to all matching nodes
+        let insight_edges: Vec<&GraphEdge> = g
+            .edges()
+            .iter()
+            .filter(|e| e.from == "I:主人对技术充满热情")
+            .collect();
+
+        // Rust 作为 O:Rust 和 S:Rust 都应被关联 = 2 条边
+        // AI 作为 O:AI = 1 条边
+        // 主人 作为 S:主人 = 1 条边
+        // 总计至少 4 条边
+        assert!(
+            insight_edges.len() >= 4,
+            "应连接到至少 4 个匹配节点（Rust×2 + AI + 主人），got {}",
+            insight_edges.len()
+        );
+
+        // 验证所有边都是 AbstractedFrom 关系
+        assert!(insight_edges
+            .iter()
+            .all(|e| e.relation == RelationType::AbstractedFrom));
+    }
+
+    #[test]
+    fn test_content_index_from_parts() {
+        // from_parts 后 content_index 应正确重建
+        // content_index should be correct after from_parts
+        let mut g = AssociativeGraph::new();
+        g.add_fact(&Fact::new("A", "关联", "B").with_confidence(0.8));
+        g.add_fact(&Fact::new("B", "关联", "C").with_confidence(0.7));
+
+        let nodes = g.nodes().clone();
+        let edges = g.edges().to_vec();
+        let g2 = AssociativeGraph::from_parts(nodes, edges);
+
+        // 验证 content_index 重建 / Verify content_index rebuild
+        assert!(g2.content_index.contains_key("A"));
+        assert!(g2.content_index.contains_key("B"));
+        assert!(g2.content_index.contains_key("C"));
+        // content_index 的 key 数 = 唯一 content 数（可能 < 节点数，因为多个节点可共享同一 content）
+        // content_index keys = unique content count (may be < node count due to shared content)
+        let total_indexed: usize = g2.content_index.values().map(|v| v.len()).sum();
+        assert_eq!(
+            total_indexed,
+            g2.node_count(),
+            "content_index 中所有条目的节点总数应等于节点数"
+        );
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // P2-D 高价值标记测试 — pinned 节点/边 + 衰减豁免
+    // P2-D High-Value Memory Markers tests — pinned nodes/edges + decay exemption
+    // ══════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_p2d_pin_node_and_edge() {
+        // pin_node / pin_edge / unpin_node / unpin_edge 基本功能
+        // Basic pin_node / pin_edge / unpin_node / unpin_edge functionality
+        let mut g = AssociativeGraph::new();
+        g.add_fact(&Fact::new("主人", "铭记", "那天").with_confidence(0.9));
+
+        // 初始节点未 pin / Initially node is not pinned
+        assert!(!g.get_node("O:那天").unwrap().pinned, "初始应为未 pin");
+
+        // pin_node / Pin the node
+        assert!(g.pin_node("O:那天"), "pin_node 应返回 true");
+        assert!(g.get_node("O:那天").unwrap().pinned, "pin 后应为 true");
+
+        // unpin_node / Unpin the node
+        assert!(g.unpin_node("O:那天"), "unpin_node 应返回 true");
+        assert!(!g.get_node("O:那天").unwrap().pinned, "unpin 后应为 false");
+
+        // pin_edge / Pin the edge
+        let edge_id = "S:主人->O:那天:铭记";
+        assert!(g.pin_edge(edge_id), "pin_edge 应返回 true");
+        let edge = g.edges().iter().find(|e| e.id == edge_id).unwrap();
+        assert!(edge.pinned, "pin_edge 后边应为 true");
+
+        // unpin_edge / Unpin the edge
+        assert!(g.unpin_edge(edge_id), "unpin_edge 应返回 true");
+        let edge = g.edges().iter().find(|e| e.id == edge_id).unwrap();
+        assert!(!edge.pinned, "unpin_edge 后边应为 false");
+
+        // 不存在的节点/边应返回 false / Non-existent should return false
+        assert!(!g.pin_node("O:不存在"), "不存在的节点应返回 false");
+        assert!(!g.pin_edge("不存在->的:边"), "不存在的边应返回 false");
+    }
+
+    #[test]
+    fn test_p2d_pinned_node_exempt_from_decay_and_prune() {
+        // pinned 节点豁免 decay_and_prune — 弱边连接的 pinned 节点不被清理
+        // Pinned node exempt from decay_and_prune — weak-edge-connected pinned node not pruned
+        let mut g = AssociativeGraph::new();
+        // 弱边连接的节点 / Node connected by a weak edge
+        g.add_fact(&Fact::new("A", "弱关联", "B").with_confidence(0.1));
+
+        // pin B 节点 — 即使边被衰减到低于阈值，B 也不应被清理
+        // Pin node B — even if edge decays below threshold, B should not be pruned
+        assert!(g.pin_node("O:B"));
+
+        // 衰减前确认 B 存在 / Confirm B exists before decay
+        assert!(g.get_node("O:B").is_some());
+
+        // 衰减 0.5 + 阈值 0.1 → 弱边 0.1 * 0.5 = 0.05 (会被移除)
+        // Decay 0.5 + threshold 0.1 → weak edge 0.1 * 0.5 = 0.05 (would be removed)
+        g.decay_and_prune(0.5, 0.1);
+
+        // 边被移除（连接 pinned 节点的边豁免衰减，但此边未 pin，且连接的是 pinned 节点 B）
+        // 实际上：连接 pinned 节点 B 的边不会被衰减也不会被移除
+        // Edge touching pinned node B is exempt from decay and removal
+        // 所以边应仍在 / So edge should still exist
+        assert_eq!(g.edge_count(), 1, "连接 pinned 节点的边应保留");
+
+        // B 节点应仍在 — 即使成为孤立节点也豁免清理
+        // B should still exist — exempt from orphan removal even if isolated
+        assert!(
+            g.get_node("O:B").is_some(),
+            "pinned 节点 B 应豁免清理 / pinned node B should be exempt from pruning"
+        );
+        assert!(g.get_node("O:B").unwrap().pinned, "B 仍应为 pinned 状态");
+    }
+
+    #[test]
+    fn test_p2d_pinned_edge_exempt_from_decay_and_prune() {
+        // pinned 边豁免 decay_and_prune — 权重不衰减，不被移除
+        // Pinned edge exempt from decay_and_prune — weight not decayed, not removed
+        let mut g = AssociativeGraph::new();
+        g.add_fact(&Fact::new("A", "弱关联", "B").with_confidence(0.1));
+
+        let edge_id = "S:A->O:B:弱关联".to_string();
+        // pin 边 / Pin the edge
+        assert!(g.pin_edge(&edge_id));
+
+        // 衰减 0.5 + 阈值 0.5 → 非 pinned 边 0.1 * 0.5 = 0.05 (低于 0.5 会被移除)
+        // Decay 0.5 + threshold 0.5 → non-pinned edge 0.1 * 0.5 = 0.05 (below 0.5, would be removed)
+        g.decay_and_prune(0.5, 0.5);
+
+        // pinned 边应仍在，且权重不变 / Pinned edge should remain, weight unchanged
+        let edge = g.edges().iter().find(|e| e.id == edge_id);
+        assert!(
+            edge.is_some(),
+            "pinned 边应保留 / pinned edge should be retained"
+        );
+        assert!(
+            (edge.unwrap().weight - 0.1).abs() < 1e-6,
+            "pinned 边权重应不变 (0.1), got {} / pinned edge weight should be unchanged",
+            edge.unwrap().weight
+        );
+    }
+
+    #[test]
+    fn test_p2d_pinned_node_exempt_from_enforce_limits() {
+        // pinned 节点豁免 enforce_limits LRU 驱逐
+        // Pinned node exempt from enforce_limits LRU eviction
+        // 通过直接构造超限图来测试 — 使用 from_parts 构建
+        // Test by directly constructing an over-limit graph using from_parts
+        let mut nodes = HashMap::new();
+        let edges = Vec::new();
+
+        // 创建 MAX_NODES + 100 个节点，其中 50 个为 pinned
+        // Create MAX_NODES + 100 nodes, 50 of which are pinned
+        for i in 0..(MAX_NODES + 100) {
+            let pinned = i < 50; // 前 50 个为 pinned
+            nodes.insert(
+                format!("N:{}", i),
+                GraphNode {
+                    id: format!("N:{}", i),
+                    node_type: NodeType::Concept,
+                    content: format!("node_{}", i),
+                    activation: 0.0,
+                    created_at: 0,
+                    access_count: 1,
+                    last_access: i as i64, // pinned 节点 last_access 最小（最冷）
+                    pinned,
+                },
+            );
+        }
+
+        let g = AssociativeGraph::from_parts(nodes, edges);
+        let mut g = g;
+
+        // 记录 pinned 节点数 / Count pinned nodes
+        let pinned_count_before = g.nodes().values().filter(|n| n.pinned).count();
+        assert_eq!(pinned_count_before, 50);
+
+        // enforce_limits — 超过 MAX_NODES，应驱逐非 pinned 节点
+        // enforce_limits — exceeds MAX_NODES, should evict non-pinned nodes
+        g.enforce_limits();
+
+        // pinned 节点应全部保留 / All pinned nodes should be retained
+        let pinned_count_after = g.nodes().values().filter(|n| n.pinned).count();
+        assert_eq!(
+            pinned_count_after, 50,
+            "所有 pinned 节点应保留 / all pinned nodes should be retained"
+        );
+
+        // 总节点数应 ≤ MAX_NODES + pinned 节点数（pinned 不计入驱逐名额）
+        // Total nodes should be ≤ MAX_NODES + pinned count (pinned don't count toward eviction quota)
+        assert!(
+            g.node_count() <= MAX_NODES + 50,
+            "总节点数应 ≤ MAX_NODES + pinned 数 / total should be ≤ MAX_NODES + pinned count, got {}",
+            g.node_count()
+        );
+
+        // pinned 节点即使在 last_access 最小（最冷）的情况下也不被驱逐
+        // Pinned nodes are not evicted even with smallest last_access (coldest)
+        for i in 0..50 {
+            assert!(
+                g.get_node(&format!("N:{}", i)).is_some(),
+                "pinned 节点 N:{} 应保留 / pinned node N:{} should be retained",
+                i,
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn test_p2d_graph_node_pinned_persists_through_save_load() {
+        // GraphNode pinned 字段通过 save/load 持久化
+        // GraphNode pinned field persists through save/load
+        use crate::graph_store::GraphStore;
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+        let id = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let path = std::env::temp_dir().join(format!(
+            "atrium_p2d_persist_test_{}_{}",
+            std::process::id(),
+            id
+        ));
+        let _ = std::fs::remove_dir_all(&path);
+        let path_str = path.to_str().unwrap().to_string();
+
+        // 写入阶段 — 创建图并 pin 一个节点 / Write phase — create graph and pin a node
+        {
+            let store = GraphStore::new(&path_str).unwrap();
+            let mut graph = AssociativeGraph::new();
+            graph.add_fact(&Fact::new("主人", "铭记", "那天").with_confidence(0.9));
+            graph.pin_node("O:那天");
+            assert!(graph.get_node("O:那天").unwrap().pinned);
+            store.save(&graph).unwrap();
+        }
+
+        // 读取阶段 — 验证 pinned 字段持久化 / Read phase — verify pinned field persists
+        {
+            let store = GraphStore::new(&path_str).unwrap();
+            let loaded = store.load().unwrap().expect("应有数据");
+            let node = loaded.get_node("O:那天").expect("应有 O:那天 节点");
+            assert!(
+                node.pinned,
+                "pinned 字段应通过 save/load 持久化 / pinned should persist through save/load"
+            );
+        }
+
+        // 清理 / Cleanup
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // P2-E 智能遗忘曲线测试 — 边情感显著性加权衰减
+    // P2-E Intelligent Forgetting Curve tests — edge salience-weighted decay
+    // ══════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_p2e_edge_salience_weighted_decay() {
+        // 两条非 pinned 边，A emotional_salience=0.8，B emotional_salience=0.0
+        // decay_and_prune 后 A.weight > B.weight（A 衰减更慢）
+        // Two non-pinned edges, A emotional_salience=0.8, B emotional_salience=0.0
+        // After decay_and_prune, A.weight > B.weight (A decays slower)
+        let mut g = AssociativeGraph::new();
+
+        // 边 A: salience=0.8, 初始 weight=1.0
+        // Edge A: salience=0.8, initial weight=1.0
+        g.add_fact(&Fact::new("A", "关联", "B").with_confidence(1.0));
+        // 设置边 A 的 emotional_salience
+        // Set edge A's emotional_salience
+        let edge_a_id = "S:A->O:B:关联".to_string();
+        {
+            let idx = *g.edge_index.get(&edge_a_id).expect("边 A 应存在");
+            g.edges[idx].emotional_salience = 0.8;
+        }
+
+        // 边 B: salience=0.0, 初始 weight=1.0
+        // Edge B: salience=0.0, initial weight=1.0
+        g.add_fact(&Fact::new("C", "关联", "D").with_confidence(1.0));
+        let edge_b_id = "S:C->O:D:关联".to_string();
+        // 边 B 的 salience 默认为 0.0（Fact 默认 emotional_salience=0.0）
+        // Edge B's salience defaults to 0.0 (Fact defaults to emotional_salience=0.0)
+
+        // 衰减 0.5 + 阈值 0.1
+        // decay_factor=0.5 是保留因子（保留 50%），base_loss = 1 - 0.5 = 0.5
+        // A: effective_loss = 0.5 × (1 - 0.8 × 0.5) = 0.3（损失 30%）→ 1.0 × (1 - 0.3) = 0.7
+        // B: effective_loss = 0.5 × (1 - 0.0 × 0.5) = 0.5（损失 50%）→ 1.0 × (1 - 0.5) = 0.5
+        // Decay 0.5 + threshold 0.1
+        // decay_factor=0.5 is a retention factor (retain 50%), base_loss = 1 - 0.5 = 0.5
+        // A: effective_loss=0.3 (lose 30%) → 1.0 × 0.7 = 0.7
+        // B: effective_loss=0.5 (lose 50%) → 1.0 × 0.5 = 0.5
+        g.decay_and_prune(0.5, 0.1);
+
+        let edge_a = g
+            .edges()
+            .iter()
+            .find(|e| e.id == edge_a_id)
+            .expect("边 A 应存在");
+        let edge_b = g
+            .edges()
+            .iter()
+            .find(|e| e.id == edge_b_id)
+            .expect("边 B 应存在");
+
+        // A: salience=0.8 → effective_loss=0.3（损失 30%）→ 1.0 × (1 - 0.3) = 0.7
+        // A: salience=0.8 → effective_loss=0.3 (lose 30%) → 1.0 × 0.7 = 0.7
+        assert!(
+            (edge_a.weight - 0.7).abs() < 1e-6,
+            "salience=0.8 的边 A 权重应为 0.7 (1.0 × 0.7), got {} / should be 0.7",
+            edge_a.weight
+        );
+
+        // B: salience=0.0 → effective_loss=0.5（损失 50%）→ 1.0 × (1 - 0.5) = 0.5
+        // B: salience=0.0 → effective_loss=0.5 (lose 50%) → 1.0 × 0.5 = 0.5
+        assert!(
+            (edge_b.weight - 0.5).abs() < 1e-6,
+            "salience=0.0 的边 B 权重应为 0.5 (1.0 × 0.5), got {} / should be 0.5",
+            edge_b.weight
+        );
+
+        // A.weight > B.weight（A 衰减更慢，保留更多）
+        // A.weight > B.weight (A decays slower, retains more)
+        assert!(
+            edge_a.weight > edge_b.weight,
+            "salience=0.8 的边 A ({}) 应 > salience=0.0 的边 B ({}) / A should be > B",
+            edge_a.weight,
+            edge_b.weight
+        );
+    }
+
+    #[test]
+    fn test_p2e_edge_production_decay_factor_backward_compat() {
+        // 生产环境 decay_factor=0.995（保留 99.5%），验证向后兼容性
+        // 旧逻辑：edge.weight *= 0.995（损失 0.5%）
+        // 新逻辑：base_loss = 1 - 0.995 = 0.005, salience=0.0 → effective_loss=0.005
+        //         edge.weight *= (1 - 0.005) = 0.995 ✓ 向后兼容
+        // Production decay_factor=0.995 (retain 99.5%), verify backward compatibility
+        // Old: edge.weight *= 0.995 (lose 0.5%)
+        // New: base_loss=0.005, salience=0.0 → effective_loss=0.005 → *= 0.995 ✓ backward compat
+        let mut g = AssociativeGraph::new();
+
+        // 边 A: salience=0.0（默认），初始 weight=1.0
+        // Edge A: salience=0.0 (default), initial weight=1.0
+        g.add_fact(&Fact::new("A", "关联", "B").with_confidence(1.0));
+
+        // 边 B: salience=1.0（最大），初始 weight=1.0
+        // Edge B: salience=1.0 (max), initial weight=1.0
+        g.add_fact(&Fact::new("C", "关联", "D").with_confidence(1.0));
+        let edge_b_id = "S:C->O:D:关联".to_string();
+        {
+            let idx = *g.edge_index.get(&edge_b_id).expect("边 B 应存在");
+            g.edges[idx].emotional_salience = 1.0;
+        }
+
+        // 生产衰减因子 0.995 / Production decay factor 0.995
+        g.decay_and_prune(0.995, 0.0);
+
+        let edge_a = g.edges().iter().find(|e| e.id == "S:A->O:B:关联").unwrap();
+        let edge_b = g.edges().iter().find(|e| e.id == edge_b_id).unwrap();
+
+        // A: salience=0.0 → base_loss=0.005, effective_loss=0.005 → weight = 1.0 × 0.995 = 0.995
+        // 向后兼容：与旧逻辑 edge.weight *= 0.995 完全一致
+        // Backward compatible: identical to old edge.weight *= 0.995
+        assert!(
+            (edge_a.weight - 0.995).abs() < 1e-6,
+            "salience=0.0 的边 A 应为 0.995 (向后兼容), got {} / should be 0.995",
+            edge_a.weight
+        );
+
+        // B: salience=1.0 → base_loss=0.005, effective_loss=0.005×0.5=0.0025 → weight = 1.0 × 0.9975
+        // salience=1.0 衰减更慢（保留 99.75% > 99.5%）
+        // B: salience=1.0 → retains 99.75% > 99.5% (decays slower)
+        assert!(
+            (edge_b.weight - 0.9975).abs() < 1e-6,
+            "salience=1.0 的边 B 应为 0.9975 (衰减更慢), got {} / should be 0.9975",
+            edge_b.weight
+        );
+
+        // B 保留更多（高显著性衰减更慢）/ B retains more (high salience decays slower)
+        assert!(
+            edge_b.weight > edge_a.weight,
+            "salience=1.0 的边 B ({}) 应 > salience=0.0 的边 A ({}) / B should be > A",
+            edge_b.weight,
+            edge_a.weight
+        );
+    }
+
+    #[test]
+    fn test_p2e_edge_pinned_exempt_with_salience() {
+        // pinned=true 的边即使有 salience 也不衰减
+        // 验证 P2-D 豁免在 P2-E 改动后仍有效
+        // pinned=true edge is not decayed even with salience
+        // Verifies P2-D exemption still works after P2-E changes
+        let mut g = AssociativeGraph::new();
+
+        // 创建一条边并 pin 它 / Create an edge and pin it
+        g.add_fact(&Fact::new("A", "关联", "B").with_confidence(0.8));
+        let edge_id = "S:A->O:B:关联".to_string();
+
+        // 设置 emotional_salience=0.9（高显著性）
+        // Set emotional_salience=0.9 (high salience)
+        {
+            let idx = *g.edge_index.get(&edge_id).expect("边应存在");
+            g.edges[idx].emotional_salience = 0.9;
+        }
+
+        // pin 边 / Pin the edge
+        assert!(g.pin_edge(&edge_id), "pin_edge 应返回 true");
+
+        let original_weight = g.edges().iter().find(|e| e.id == edge_id).unwrap().weight;
+
+        // 衰减 0.5 + 阈值 0.5
+        // 非 pinned 边：0.8 × effective_decay（会被衰减）
+        // pinned 边：不衰减
+        // Decay 0.5 + threshold 0.5
+        // Non-pinned edge: 0.8 × effective_decay (would be decayed)
+        // Pinned edge: not decayed
+        g.decay_and_prune(0.5, 0.5);
+
+        // pinned 边应仍在，且权重不变 / Pinned edge should remain, weight unchanged
+        let edge = g.edges().iter().find(|e| e.id == edge_id);
+        assert!(
+            edge.is_some(),
+            "pinned 边应保留 / pinned edge should be retained"
+        );
+        assert!(
+            (edge.unwrap().weight - original_weight).abs() < 1e-6,
+            "pinned 边权重应不变 ({}), got {} / pinned edge weight should be unchanged",
+            original_weight,
+            edge.unwrap().weight
+        );
+        assert!(edge.unwrap().pinned, "边仍应为 pinned 状态");
     }
 }

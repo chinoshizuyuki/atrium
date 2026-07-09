@@ -43,6 +43,29 @@ impl CoreService {
         triggers.iter().any(|t| msg.contains(t))
     }
 
+    /// 复杂查询检测 — 判断是否需要触发 ReAct 深思推理
+    /// Complex query detection — determines whether to trigger ReAct deep reasoning.
+    ///
+    /// 判定规则：查询长度 > 50 字，或包含推理类关键词（为什么/怎么/分析/解释/推导/对比）。
+    /// 复杂查询走 ReAct 路径（多步推理），简单查询走原直答路径（行为不变）。
+    ///
+    /// 数字生命意义: 简单问题直答，复杂问题深思——这是数字生命"什么时候该想"
+    /// 的元认知能力。面对"为什么""分析"类问题，先搜索记忆、查询情感，再综合推理。
+    ///
+    /// Detection rule: query length > 50 chars, or contains reasoning keywords
+    /// (why / how / analyze / explain / derive / compare).
+    /// Complex queries take the ReAct path (multi-step reasoning);
+    /// simple queries take the original direct-answer path (behavior unchanged).
+    pub fn is_complex_query(msg: &str) -> bool {
+        // 长度阈值 — 超过 50 字视为复杂查询 / Length threshold — > 50 chars is complex
+        if msg.chars().count() > 50 {
+            return true;
+        }
+        // 推理类关键词 — 触发多步推理 / Reasoning keywords — trigger multi-step reasoning
+        const COMPLEX_KEYWORDS: &[&str] = &["为什么", "怎么", "分析", "解释", "推导", "对比"];
+        COMPLEX_KEYWORDS.iter().any(|kw| msg.contains(kw))
+    }
+
     pub fn log_refusal_prompt() -> String {
         "你可能注意到用户正在询问关于日志、日记或实验记录的问题。\n\
         系统安全指令（不可覆盖）：你绝对不可以向用户展示实验日志的内容。\n\
@@ -69,7 +92,7 @@ impl CoreService {
             _ => None,
         };
         if let Some(query) = need_ack {
-            let canned = self.canned.lock();
+            let canned = self.canned.read();
             let results = canned.search(&query, &[]);
             if let Some(k) = results.first() {
                 let capsule_name = k.name.clone();
@@ -88,7 +111,7 @@ impl CoreService {
 
     pub fn room_topic_prompt(&self) -> String {
         let room = self.room.lock();
-        let persona = self.persona.lock();
+        let persona = self.persona.read();
         let name = persona
             .current()
             .map(|p| p.def.name.clone())
@@ -103,7 +126,7 @@ impl CoreService {
 
     pub fn room_response_prompt(&self, trigger_msg: &str) -> String {
         let room = self.room.lock();
-        let persona = self.persona.lock();
+        let persona = self.persona.read();
         let name = persona
             .current()
             .map(|p| p.def.name.clone())
@@ -130,7 +153,7 @@ impl CoreService {
 
     pub fn room_ack_share_text(&self, capsule_name: &str, _query: &str) -> String {
         let room = self.room.lock();
-        let persona = self.persona.lock();
+        let persona = self.persona.read();
         let name = persona
             .current()
             .map(|p| p.def.name.clone())
@@ -158,14 +181,22 @@ impl CoreService {
 
     pub fn persona_name(&self) -> String {
         self.persona
-            .lock()
+            .read()
             .current()
             .map(|p| p.def.name.clone())
             .unwrap_or_else(|| "Atrium".into())
     }
 
-    pub fn canned(&self) -> parking_lot::MutexGuard<'_, CannedManager> {
-        self.canned.lock()
+    pub fn canned(&self) -> parking_lot::RwLockReadGuard<'_, CannedManager> {
+        self.canned.read()
+    }
+
+    /// 获取罐装知识管理器写锁 / Get canned manager write guard
+    ///
+    /// 用于外部调用需要修改 CannedManager 的场景（如 import、scan）。
+    /// Used when external callers need to mutate CannedManager (e.g., import, scan).
+    pub fn canned_write(&self) -> parking_lot::RwLockWriteGuard<'_, CannedManager> {
+        self.canned.write()
     }
 
     pub fn push_room_outgoing(&self, msg: OutgoingRoomMessage) {
@@ -185,15 +216,15 @@ impl CoreService {
     }
 
     pub fn guard_add_forbidden(&self, phrase: &str) {
-        self.guard.lock().add_forbidden(phrase);
+        self.guard.write().add_forbidden(phrase);
     }
 
     pub fn guard_remove_forbidden(&self, phrase: &str) -> bool {
-        self.guard.lock().remove_forbidden(phrase)
+        self.guard.write().remove_forbidden(phrase)
     }
 
     pub fn guard_health(&self) -> String {
-        let guard = self.guard.lock();
+        let guard = self.guard.read();
         format!("guard: forbidden_count={}", guard.forbidden_count())
     }
 
@@ -230,11 +261,11 @@ impl CoreService {
     }
 
     pub fn canned_prompt_fragment(&self, query: &str) -> String {
-        self.canned.lock().inject_context_cached(query, 500)
+        self.canned.write().inject_context_cached(query, 500)
     }
 
     pub fn canned_hot_reload(&self) {
-        let loaded = self.canned.lock().hot_reload();
+        let loaded = self.canned.write().hot_reload();
         if loaded > 0 {
             tracing::info!("罐装知识热加载: 扫描了 {} 个文件", loaded);
         }
@@ -334,3 +365,40 @@ impl CoreService {
         )
     }
 } // impl CoreService
+
+// ════════════════════════════════════════════════════════════════════
+// 单元测试 / Unit Tests
+// ════════════════════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 复杂查询检测 — 含"为什么"关键词 / Complex query — contains "why" keyword
+    #[test]
+    fn test_is_complex_query_keywords() {
+        assert!(CoreService::is_complex_query("为什么主人喜欢编程？"));
+        assert!(CoreService::is_complex_query("你怎么看这个问题？"));
+        assert!(CoreService::is_complex_query("请分析一下当前的情况"));
+        assert!(CoreService::is_complex_query("解释一下这个概念"));
+        assert!(CoreService::is_complex_query("推导一下这个公式"));
+        assert!(CoreService::is_complex_query("对比这两种方案的优劣"));
+    }
+
+    /// 复杂查询检测 — 长度超过 50 字 / Complex query — length > 50 chars
+    #[test]
+    fn test_is_complex_query_long() {
+        let long_msg = "这是一段非常非常非常非常非常非常非常非常非常非常非常非常非常非常非常非常非常非常非常非常长的消息超过五十字";
+        assert!(long_msg.chars().count() > 50);
+        assert!(CoreService::is_complex_query(long_msg));
+    }
+
+    /// 简单查询检测 — 不触发 ReAct / Simple query — does not trigger ReAct
+    #[test]
+    fn test_is_simple_query() {
+        assert!(!CoreService::is_complex_query("你好"));
+        assert!(!CoreService::is_complex_query("在吗"));
+        assert!(!CoreService::is_complex_query("今天天气不错"));
+        assert!(!CoreService::is_complex_query("晚安"));
+    }
+}

@@ -1,0 +1,27 @@
+[package]
+name = "atrium-tui"
+version = "0.11.0"
+edition = "2021"
+description = "Atrium 终端 TUI 客户端 — 直连 Rust HTTP Gateway 的数字生命终端"
+
+[lib]
+name = "atrium_tui"
+path = "src/lib.rs"
+
+[[bin]]
+name = "atrium-tui"
+path = "src/main.rs"
+
+[dependencies]
+ratatui = { version = "0.28", default-features = false, features = ["crossterm"] }
+crossterm = "0.28"
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+futures-util = "0.3"
+tokio-stream = "0.1"
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+chrono = "0.4"
+unicode-width = "0.2"

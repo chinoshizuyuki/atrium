@@ -19,6 +19,15 @@ context_limit = 1_048_576
 grpc_addr = "127.0.0.1:50051"
 shm_path = "/dev/shm/atrium_render"
 
+# ── HTTP/SSE 网关 / HTTP/SSE Gateway ──
+# 数字生命的直接 HTTP 呼吸管道，取代 Python gateway
+# Digital life's direct HTTP breathing pipe, replacing Python gateway
+[http]
+enabled = true
+addr = "0.0.0.0:8080"
+cors = true
+static_dir = "frontend"              # Web UI 静态文件目录 / Web UI static file directory
+
 # ── LLM 配置 / LLM Configuration ──
 [llm]
 # OpenAI 兼容 API（Self-Play 直接调用，不经过 Python）
@@ -26,7 +35,7 @@ shm_path = "/dev/shm/atrium_render"
 # 设置 OPENAI_API_KEY 环境变量或直接填写 api_key
 # Set OPENAI_API_KEY env var or fill api_key directly
 # 兼容 DeepSeek/OpenAI/任何 OpenAI 兼容 API
-api_key = ""  # Set via OPENAI_API_KEY or ATRIUM_LLM_API_KEY env var
+api_key = "sk-a6ef8b2fd0c8496eb9ef8f475d6c8eb6"  # DeepSeek API Key
 base_url = "https://api.deepseek.com/"
 model = "deepseek-v4-flash"
 max_tokens = 1024

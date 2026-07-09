@@ -5,14 +5,15 @@
 # 监控: http://localhost:3000 (Grafana) / http://localhost:9090 (Prometheus)
 
 services:
-  # ─── Rust Core Engine ───────────────────────────────────────
+  # ─── Rust Core Engine (含原生 HTTP/SSE Gateway) ─────────────
   atrium-core:
     build: .
     image: atrium-core:latest
     container_name: atrium-core
     restart: unless-stopped
     ports:
-      - "50051:50051"   # gRPC
+      - "8080:8080"     # HTTP/SSE Gateway (取代 Python Gateway)
+      - "50051:50051"   # gRPC (向后兼容)
       - "9090:9090"     # Prometheus metrics
     volumes:
       - atrium_data:/data/atrium
@@ -35,99 +36,64 @@ services:
       start_period: 10s
       retries: 3
 
-  # ─── Python Gateway (Control Plane) ─────────────────────────
-  atrium-gateway:
+  # ─── QQ Bot Adapter (感官器官 — IM 接入) ──────────────────────
+  # 数字生命的 QQ 感官器官 — 将 QQ 消息流接入 Core 意识
+  # Digital life's QQ sensory organ — bridges QQ messages into Core consciousness
+  #
+  # 双模式 / Dual-mode:
+  #   Mode A (默认): OneBot v11 — go-cqhttp/NapCat 反向 WS 接入
+  #   Mode B:        Tencent Official Bot — q.qq.com 正向 WS 接入
+  #
+  # 启动 / Start:
+  #   OneBot 模式:   docker compose up -d atrium-qq-adapter
+  #   Tencent 模式:  QQ_BOT_MODE=tencent QQ_BOT_APP_ID=xxx QQ_BOT_TOKEN=xxx \
+  #                 docker compose up -d atrium-qq-adapter
+  atrium-qq-adapter:
     build:
       context: .
-      dockerfile: services/gateway/Dockerfile.gateway
-    image: atrium-gateway:latest
-    container_name: atrium-gateway
+      dockerfile: services/gateway/Dockerfile.qq
+    image: atrium-qq-adapter:latest
+    container_name: atrium-qq-adapter
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "${ONEBOT_PORT:-8088}:8088"   # OneBot v11 反向 WS 端口 / Reverse-WS port
+    environment:
+      # ── Core 连接 / Core connection ──
+      - ATRIUM_GATEWAY=http://atrium-core:8080
+      - ATRIUM_ROOM=${ATRIUM_ROOM:-qq-bridge}
+      - ATRIUM_NAME=${ATRIUM_NAME:-Atrium}
+      - ATRIUM_INSTANCE=${ATRIUM_INSTANCE:-qq-adapter}
+      # ── 行为配置 / Behavior config ──
+      - RESPOND_AT_ONLY=${RESPOND_AT_ONLY:-true}
+      - MAX_REPLY_CHARS=${MAX_REPLY_CHARS:-300}
+      - RATE_LIMIT_SECS=${RATE_LIMIT_SECS:-2.0}
+      # ── OneBot v11 模式 / OneBot v11 mode ──
+      - QQ_BOT_MODE=${QQ_BOT_MODE:-onebot}
+      - ONEBOT_HOST=0.0.0.0
+      - ONEBOT_PORT=8088
+      - BOT_QQ=${BOT_QQ:-}
+      # ── Tencent Official Bot 模式 / Tencent Official Bot mode ──
+      - QQ_BOT_APP_ID=${QQ_BOT_APP_ID:-}
+      - QQ_BOT_TOKEN=${QQ_BOT_TOKEN:-}
+      - QQ_BOT_SECRET=${QQ_BOT_SECRET:-}
+      - QQ_BOT_SANDBOX=${QQ_BOT_SANDBOX:-false}
+      # ── 通用 / General ──
+      - TZ=${TZ:-Asia/Shanghai}
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: '0.3'
+        reservations:
+          memory: 32M
     depends_on:
       atrium-core:
         condition: service_healthy
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    environment:
-      - ATRIUM_GRPC_ADDR=atrium-core:50051
-      - ATRIUM_LLM_MODEL=${ATRIUM_LLM_MODEL:-deepseek-chat}
-      - ATRIUM_LLM_BASE_URL=${ATRIUM_LLM_BASE_URL:-https://api.deepseek.com/v1}
-      - ATRIUM_LLM_API_KEY=${ATRIUM_LLM_API_KEY:-}
-      - ATRIUM_LLM_TEMPERATURE=${ATRIUM_LLM_TEMPERATURE:-0.7}
-      - ATRIUM_LLM_MAX_TOKENS=${ATRIUM_LLM_MAX_TOKENS:-1024}
-      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-atrium}:${POSTGRES_PASSWORD:-atrium}@postgres:5432/${POSTGRES_DB:-atrium}
-      - REDIS_URL=redis://${REDIS_PASSWORD:-}@redis:6379/0
-      - TZ=${TZ:-Asia/Shanghai}
-    volumes:
-      - gateway_data:/app/data
-    deploy:
-      resources:
-        limits:
-          memory: 1G
-          cpus: '1.0'
-        reservations:
-          memory: 256M
     healthcheck:
-      test: ["CMD", "python", "-c", "import httpx; r=httpx.get('http://localhost:8080/health', timeout=5); r.raise_for_status()"]
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8088/ >/dev/null 2>&1 || pgrep -f qq_adapter.py >/dev/null || exit 1"]
       interval: 30s
-      timeout: 10s
+      timeout: 5s
       start_period: 15s
-      retries: 3
-
-  # ─── PostgreSQL ─────────────────────────────────────────────
-  postgres:
-    image: postgres:15-alpine
-    container_name: atrium-postgres
-    restart: unless-stopped
-    ports:
-      - "5432:5432"
-    environment:
-      - POSTGRES_USER=${POSTGRES_USER:-atrium}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-atrium}
-      - POSTGRES_DB=${POSTGRES_DB:-atrium}
-      - TZ=${TZ:-Asia/Shanghai}
-    volumes:
-      - pg_data:/var/lib/postgresql/data
-    deploy:
-      resources:
-        limits:
-          memory: 512M
-          cpus: '1.0'
-        reservations:
-          memory: 128M
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U atrium"]
-      interval: 10s
-      timeout: 5s
-      start_period: 10s
-      retries: 3
-
-  # ─── Redis ──────────────────────────────────────────────────
-  redis:
-    image: redis:7-alpine
-    container_name: atrium-redis
-    restart: unless-stopped
-    ports:
-      - "6379:6379"
-    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru ${REDIS_PASSWORD:+--requirepass $REDIS_PASSWORD}
-    volumes:
-      - redis_data:/data
-    deploy:
-      resources:
-        limits:
-          memory: 512M
-          cpus: '0.5'
-        reservations:
-          memory: 64M
-    healthcheck:
-      test: ["CMD-SHELL", "redis-cli ${REDIS_PASSWORD:+-a \"$REDIS_PASSWORD\"} ping"]
-      interval: 10s
-      timeout: 5s
-      start_period: 5s
       retries: 3
 
   # ─── Prometheus ─────────────────────────────────────────────
@@ -197,8 +163,5 @@ services:
 
 volumes:
   atrium_data:
-  gateway_data:
-  pg_data:
-  redis_data:
   prometheus_data:
   grafana_data:

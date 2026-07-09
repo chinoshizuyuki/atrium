@@ -800,7 +800,7 @@ async fn test_teach_intent_creates_ack() {
 
     // 2. 通过 learn_from_user 创建 ACK
     {
-        let mut canned = svc.canned();
+        let mut canned = svc.canned_write();
         let result = canned.learn_from_user(&intent, 50);
         assert!(result.is_ok(), "learn_from_user 应成功: {:?}", result.err());
     }

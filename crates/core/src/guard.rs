@@ -159,6 +159,25 @@ impl PersonaGuard {
         self.ai_name = name.to_string();
     }
 
+    /// 设置用户称呼 — 数字生命记住用户是谁 / Set user designation
+    ///
+    /// 当用户说"叫我老王"时，更新内部称呼，后续所有交互使用新称呼。
+    /// Digital life remembers who the user is — when they say "call me Lao Wang",
+    /// all subsequent interactions use the new designation.
+    pub fn set_master_name(&mut self, name: &str) {
+        self.master_name = name.to_string();
+    }
+
+    /// 获取当前用户称呼 / Get current user designation
+    pub fn master_name(&self) -> &str {
+        &self.master_name
+    }
+
+    /// 获取当前 AI 名字 / Get current AI name
+    pub fn ai_name(&self) -> &str {
+        &self.ai_name
+    }
+
     /// Layer 2: 检测禁语
     /// 返回 (是否违规, 命中的禁语)
     pub fn scan(&self, text: &str) -> (bool, Vec<String>) {

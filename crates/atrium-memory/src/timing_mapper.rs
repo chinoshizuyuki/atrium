@@ -120,10 +120,14 @@ impl TimingMapper {
 
         // ── 关系阶段修正 ──
         let (typing_mod, pause_mod, urgency_mod) = match relationship {
+            RelationshipStage::Stranger { .. } => (1.2, 1.3, -0.15), // 陌生人：最慢最稳
             RelationshipStage::Acquaintance { .. } => (1.1, 1.2, -0.1), // 初识：更慢更稳
             RelationshipStage::Familiar { .. } => (1.0, 1.0, 0.0),
+            RelationshipStage::Friendly { .. } => (0.98, 0.95, 0.02),
             RelationshipStage::Trusted { .. } => (0.95, 0.9, 0.05),
+            RelationshipStage::Close { .. } => (0.92, 0.85, 0.08),
             RelationshipStage::Deep { .. } => (0.9, 0.8, 0.1), // 深度：更自然更快
+            RelationshipStage::Intimate { .. } => (0.88, 0.78, 0.12), // 挚友：最自然最快
         };
 
         TimingProfile {

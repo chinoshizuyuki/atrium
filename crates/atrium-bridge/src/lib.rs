@@ -17,12 +17,12 @@ use std::time::Instant;
 use tracing::{error, info};
 
 use crate::error::BridgeError;
-use crate::protocol::{BridgeConfig, BridgeEvent};
+use crate::protocol::{BridgeEvent, BridgeProtocolConfig};
 use crate::shm::SharedMemory;
 
 #[allow(dead_code)]
 pub struct Bridge {
-    config: BridgeConfig,
+    config: BridgeProtocolConfig,
     event_tx: Option<flume::Sender<BridgeEvent>>,
     event_rx: Option<flume::Receiver<BridgeEvent>>,
     shm: Option<SharedMemory>,
@@ -31,7 +31,7 @@ pub struct Bridge {
 }
 
 impl Bridge {
-    pub fn new(config: BridgeConfig) -> Self {
+    pub fn new(config: BridgeProtocolConfig) -> Self {
         let (tx, rx) = flume::unbounded();
         Self {
             config,
@@ -101,6 +101,8 @@ impl Bridge {
     }
 
     pub fn health(&self) -> types::BridgeSnapshot {
+        // 共享内存版本号 — 仅在 shm feature 启用时可读 / SHM version — only readable with shm feature
+        #[cfg(feature = "shm")]
         let shm_version = self
             .shm
             .as_ref()
@@ -110,6 +112,8 @@ impl Bridge {
                     .load(std::sync::atomic::Ordering::Acquire)
             })
             .unwrap_or(0);
+        #[cfg(not(feature = "shm"))]
+        let shm_version = 0u32;
 
         types::BridgeSnapshot {
             grpc_connections: 0,

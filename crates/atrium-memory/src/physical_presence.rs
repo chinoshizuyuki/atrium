@@ -19,6 +19,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::emotional_irrationality::BodyMemory;
+use crate::resonance_core::{ema, exponential_decay};
 
 // ════════════════════════════════════════════════════════════════════
 // 生理通道 / Physiological Channels
@@ -193,9 +194,10 @@ impl BodySignature {
 
     /// 用指数移动平均更新基线 / Update baseline with exponential moving average
     pub fn update_ema(&mut self, tension: f64, warmth: f64, fatigue: f64, alpha: f64) {
-        self.baseline_tension = self.baseline_tension * (1.0 - alpha) + tension * alpha;
-        self.baseline_warmth = self.baseline_warmth * (1.0 - alpha) + warmth * alpha;
-        self.fatigue_proneness = self.fatigue_proneness * (1.0 - alpha) + fatigue * alpha;
+        // 复用公共 EMA 函数 / Reuse common EMA function
+        self.baseline_tension = ema(self.baseline_tension, tension, alpha);
+        self.baseline_warmth = ema(self.baseline_warmth, warmth, alpha);
+        self.fatigue_proneness = ema(self.fatigue_proneness, fatigue, alpha);
         self.signature_label = self.infer_label();
     }
 }
@@ -488,7 +490,7 @@ impl PhysicalPresenceEngine {
         // 半衰期公式: factor = 0.5^(elapsed/half_life)
         if elapsed_secs > 0.0 {
             let half_life = self.config.fatigue_half_life_secs;
-            let decay_factor = 0.5_f64.powf(elapsed_secs / half_life);
+            let decay_factor = exponential_decay(elapsed_secs, half_life);
             self.state.decay(decay_factor);
         }
 

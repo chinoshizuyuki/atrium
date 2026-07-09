@@ -261,6 +261,118 @@ impl SemanticCache {
     }
 }
 
+// ════════════════════════════════════════════════════════════════════
+// SemanticRecallEngine — 语义召回引擎 / Semantic Recall Engine
+// ════════════════════════════════════════════════════════════════════
+
+/// 语义召回引擎 — 封装向量化 + 索引 + 缓存 / Semantic recall engine
+///
+/// 数字生命的"语义记忆皮层"——将文本转为向量，按余弦相似度召回。
+/// 当 embedding feature 开启且模型可用时，数字生命能按"意思"回忆；
+/// 否则降级为关键词召回（调用方处理）。
+///
+/// The digital life's "semantic memory cortex" — converts text to vectors,
+/// recalls by cosine similarity. When embedding feature is enabled and model
+/// is available, digital life can recall by meaning; otherwise falls back to
+/// keyword recall (handled by caller).
+#[cfg(feature = "embedding")]
+pub struct SemanticRecallEngine {
+    vectorizer: FastEmbedVectorizer,
+    index: BruteForceIndex,
+    cache: SemanticCache,
+    /// canonical_key → u64 id 映射 / canonical_key → u64 id mapping
+    key_to_id: HashMap<String, u64>,
+    /// u64 id → canonical_key 反向映射（搜索结果转回 key）/ Reverse mapping for search result conversion
+    id_to_key: HashMap<u64, String>,
+    next_id: u64,
+}
+
+#[cfg(feature = "embedding")]
+impl SemanticRecallEngine {
+    /// 创建语义召回引擎 — 尝试加载模型，失败返回 None
+    /// Create semantic recall engine — tries to load model, returns None on failure
+    pub fn new() -> Option<Self> {
+        match FastEmbedVectorizer::new() {
+            Ok(vectorizer) => {
+                tracing::info!(
+                    "FastEmbed 模型加载成功 — 语义召回引擎就绪 / FastEmbed model loaded — semantic recall engine ready"
+                );
+                Some(Self {
+                    vectorizer,
+                    index: BruteForceIndex::new(),
+                    cache: SemanticCache::new(128),
+                    key_to_id: HashMap::new(),
+                    id_to_key: HashMap::new(),
+                    next_id: 0,
+                })
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "FastEmbed 模型加载失败 — 降级为关键词召回 / FastEmbed model load failed — falling back to keyword recall: {}",
+                    e
+                );
+                None
+            }
+        }
+    }
+
+    /// 嵌入文本并存入向量索引 — key→id 映射建立
+    /// Embed text and store in vector index — establishes key→id mapping
+    ///
+    /// 同一 key 重复索引会追加新向量（BruteForceIndex 不支持更新），
+    /// 搜索时可能返回同一 key 的多个向量，调用方通过 canonical key 去重。
+    ///
+    /// Re-indexing the same key appends a new vector (BruteForceIndex has no update);
+    /// search may return multiple vectors for the same key, caller deduplicates by canonical key.
+    pub fn index_text(&mut self, key: &str, text: &str) {
+        let vec = match self.vectorizer.embed(text) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::debug!("嵌入失败 / Embedding failed: {}", e);
+                return;
+            }
+        };
+        let id = self.next_id;
+        self.next_id += 1;
+        self.key_to_id.insert(key.to_string(), id);
+        self.id_to_key.insert(id, key.to_string());
+        if let Err(e) = self.index.insert(id, vec) {
+            tracing::debug!("向量索引插入失败 / Vector index insert failed: {}", e);
+        }
+    }
+
+    /// 语义搜索 — 返回 (canonical_key, similarity) 列表
+    /// Semantic search — returns (canonical_key, similarity) list
+    ///
+    /// 内部使用 SemanticCache 缓存最近查询，避免重复嵌入 + 全盘扫描。
+    /// Uses SemanticCache internally to avoid redundant embedding + full scan.
+    pub fn search(&mut self, query: &str, top_k: usize) -> Vec<(String, f32)> {
+        // 查缓存 — 命中则直接返回 / Check cache — return on hit
+        if let Some(cached) = self.cache.get(query) {
+            return cached
+                .iter()
+                .filter_map(|(id, sim)| self.id_to_key.get(id).map(|k| (k.clone(), *sim)))
+                .collect();
+        }
+        // 缓存未命中 — 嵌入查询并搜索 / Cache miss — embed query and search
+        let query_vec = match self.vectorizer.embed(query) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::debug!("查询嵌入失败 / Query embedding failed: {}", e);
+                return Vec::new();
+            }
+        };
+        let results = self.index.search(&query_vec, top_k);
+        // 写入缓存 / Write to cache
+        self.cache.set(query.to_string(), results.clone());
+        // 转换 id → key / Convert id → key
+        results
+            .iter()
+            .filter_map(|(id, sim)| self.id_to_key.get(id).map(|k| (k.clone(), *sim)))
+            .collect()
+    }
+}
+
 /// 测试用例
 #[cfg(test)]
 mod tests {
@@ -508,5 +620,45 @@ mod tests {
         assert!(cache.get("a").is_some());
         assert!(cache.get("b").is_none());
         assert!(cache.get("c").is_some());
+    }
+
+    // ── SemanticRecallEngine 测试 / SemanticRecallEngine Tests ──
+    // 仅在 embedding feature 开启时编译 / Only compiled when embedding feature is enabled
+
+    #[cfg(feature = "embedding")]
+    #[test]
+    fn test_semantic_recall_engine_new() {
+        // 模型可能无法在 CI 下载——无论成功失败都不应 panic
+        // Model may not be downloadable in CI — should not panic regardless of success/failure
+        let engine = SemanticRecallEngine::new();
+        if engine.is_some() {
+            tracing::info!("SemanticRecallEngine 模型加载成功 / model loaded successfully");
+        } else {
+            tracing::info!(
+                "SemanticRecallEngine 模型加载失败（CI 环境可能无网络）/ model load failed (CI may have no network)"
+            );
+        }
+    }
+
+    #[cfg(feature = "embedding")]
+    #[test]
+    fn test_semantic_recall_index_and_search() {
+        // 仅在模型可用时测试往返 / Only test roundtrip when model is available
+        let mut engine = match SemanticRecallEngine::new() {
+            Some(e) => e,
+            None => return, // 模型不可用，跳过 / Model unavailable, skip
+        };
+        // 索引几条文本 / Index a few texts
+        engine.index_text("主人|喜欢|编程", "主人 喜欢 编程");
+        engine.index_text("主人|喜欢|rust", "主人 喜欢 Rust");
+        engine.index_text("主人|在|杭州", "主人 在 杭州");
+
+        // 搜索与编程相关的查询 / Search with a programming-related query
+        let results = engine.search("编程语言", 5);
+        // 应有结果返回 / Should return results
+        assert!(
+            !results.is_empty(),
+            "语义搜索应返回结果 / semantic search should return results"
+        );
     }
 }

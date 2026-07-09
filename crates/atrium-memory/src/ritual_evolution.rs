@@ -15,6 +15,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use crate::resonance_core::ema;
+
 // ═══════════════════════════════════════════════════════════════════════════
 // §1 仪式成长阶段 — Ritual Growth Stage
 // ═══════════════════════════════════════════════════════════════════════════
@@ -187,8 +189,11 @@ impl RitualGrowth {
 
         // 更新情感投入EMA / Update emotional investment EMA.
         let alpha = 0.1;
-        self.emotional_investment +=
-            alpha * (emotional_investment.clamp(0.0, 1.0) - self.emotional_investment);
+        self.emotional_investment = ema(
+            self.emotional_investment,
+            emotional_investment.clamp(0.0, 1.0),
+            alpha,
+        );
 
         // 深度增长 / Depth growth.
         let depth_delta = 0.01 * self.relationship_depth * emotional_investment.clamp(0.0, 1.0);

@@ -21,6 +21,8 @@ service AtriumCore {
   rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
   // 流式处理用户消息 / Stream-process a user message（Rust 核心直接流式输出）
   rpc ProcessMessageStream(ProcessMessageRequest) returns (stream ProcessMessageChunk);
+  // 上传文件 / Upload a file
+  rpc UploadFile(UploadFileRequest) returns (UploadFileResponse);
 }
 
 // ========== ProcessMessage / 处理消息 ==========
@@ -104,24 +106,42 @@ message ImportCannedResponse {
 }
 
 // ========== ExpressionMetadata / 表达元数据 ==========
+// Issue-2: 与 Rust protocol.rs 结构体完全同步 / Fully synced with Rust protocol.rs structs
 // D1-D3 Mapper 输出的统一协议结构 / Unified protocol structure for D1-D3 Mapper outputs
 message ExpressionMetadata {
-  // ── 体态（KinesicsMapper D1.1）──
-  float shoulder_openness = 1;   // 肩膀展开度 [0,1] / Shoulder openness
-  float body_lean = 2;           // 身体前倾/后仰 [-0.5,0.5] / Body lean
-  float gesture_activity = 3;    // 手势活跃度 [0,1] / Gesture activity
-  float breath_rate = 4;         // 呼吸频率因子 / Breath rate factor
+  ProsodyMeta prosody = 1;    // 韵律参数 / Prosody params (SSML compatible)
+  KinesicsMeta kinesics = 2;  // 体态参数 / Kinesics params (animation commands)
+  TimingMeta timing = 3;      // 节奏参数 / Timing params (reply rhythm control)
+}
 
-  // ── 韵律（ProsodyMapper D1.2）──
-  float pitch_offset = 5;        // 基频偏移（半音）/ Pitch offset (semitones)
-  float speech_rate = 6;         // 语速因子 / Speech rate factor
-  float warmth = 7;              // 音色温暖度 [0,1] / Vocal warmth
+/// 韵律元数据 — 供 TTS 引擎使用 / Prosody metadata for TTS engine
+message ProsodyMeta {
+  float pitch_offset = 1;      // 基频偏移（半音）/ Pitch offset (semitones)
+  float rate = 2;              // 语速因子（1.0=正常）/ Speech rate factor
+  float energy = 3;            // 能量因子（1.0=正常）/ Energy factor
+  float pause_duration_ms = 4; // 句间停顿（ms）/ Inter-sentence pause
+  float warmth = 5;            // 音色温暖度 [0,1] / Vocal warmth
+  string ssml_attrs = 6;       // SSML 属性字符串 / SSML attributes string
+}
 
-  // ── 自我关怀（SelfCareBoundary D3.3）──
-  int32 self_care_level = 8;     // 自我关怀等级 0=Normal 1=Cautious 2=Protective 3=Recovery
-  float proactivity_factor = 9;  // 主动性衰减系数 [0,1] / Proactivity decay factor
-  float reply_length_factor = 10;// 回复长度系数 [0,1] / Reply length factor
-  float depth_factor = 11;       // 深度探索系数 [0,1] / Depth exploration factor
+/// 体态元数据 — 供渲染引擎动画使用 / Kinesics metadata for rendering engine
+message KinesicsMeta {
+  float head_tilt = 1;          // 头部倾斜角度 / Head tilt angle
+  float shoulder_openness = 2;  // 肩膀展开度 [0,1] / Shoulder openness
+  float lean = 3;               // 前倾/后仰 [-0.5,0.5] / Body lean
+  float eye_contact = 4;        // 眼神接触强度 [0,1] / Eye contact intensity
+  float gesture_activity = 5;   // 手势活跃度 [0,1] / Gesture activity
+  float breath_rate = 6;        // 呼吸频率因子 / Breath rate factor
+  string animation_commands = 7; // 动画指令 JSON / Animation commands JSON
+}
+
+/// 节奏元数据 — 供回复调度使用 / Timing metadata for reply scheduling
+message TimingMeta {
+  float typing_delay_factor = 1;     // 打字延迟因子（1.0=正常）/ Typing delay factor
+  float inter_sentence_pause_ms = 2; // 句间停顿（ms）/ Inter-sentence pause
+  float hesitation_prob = 3;         // 犹豫概率 [0,1] / Hesitation probability
+  float segmented_send_prob = 4;     // 分段发送概率 [0,1] / Segmented send probability
+  float urgency = 5;                 // 紧迫感 [0,1] / Urgency level
 }
 
 // ========== HealthCheck / 健康检查 ==========
@@ -135,4 +155,22 @@ message HealthCheckResponse {
   uint64 event_count = 2;
   uint64 uptime_seconds = 3;
   map<string, string> module_states = 4; // 各模块状态 / Per-module status
+}
+
+// ========== UploadFile / 文件上传 ==========
+// 数字生命的工具记忆入口 — 用户上传文件成为可检索的知识载体
+// Tool memory entry of digital life — uploaded files become searchable knowledge
+message UploadFileRequest {
+  string filename = 1;    // 原始文件名 / Original filename
+  string mime_type = 2;   // MIME 类型 / MIME type
+  bytes  data = 3;        // 文件二进制数据 / File binary data
+  string session_id = 4;  // 会话 ID / Session identifier
+}
+message UploadFileResponse {
+  string hash = 1;           // 文件哈希 (SHA256) / File hash
+  string original_name = 2;  // 原始文件名 / Original filename
+  uint64 size = 3;           // 文件大小 (bytes) / File size
+  bool   text_extracted = 4; // 是否已提取文本 / Text extracted flag
+  string extracted_text = 5; // 提取的文本（截断 4096）/ Extracted text
+  string error = 6;          // 错误信息（空=成功）/ Error message
 }

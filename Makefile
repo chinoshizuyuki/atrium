@@ -17,8 +17,6 @@ check:
 
 test:
 	cargo test --workspace -- --test-threads=1
-	cd services/gateway && python -m pytest tests/ -v
-	cd services/llm-orchestrator && python -m pytest tests/ -v
 
 test-rust:
 	cargo test --workspace -- --test-threads=1

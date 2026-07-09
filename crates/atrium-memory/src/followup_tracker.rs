@@ -8,9 +8,13 @@
 //! Includes ExtractPipeline, DecayEngine, RecallEngine, TriggerJudge,
 //! ExpressionWeaver, ReactionAnalyzer, FollowUpStore, and FollowUpTracker.
 
+use chrono::{NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
+
+// 衰减函数统一入口 / Unified decay function entry
+use crate::resonance_core::exponential_decay_f32;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 1. 数据结构 — Data Structures
@@ -504,12 +508,12 @@ impl DecayEngine {
         // 基础衰减 — 按类别不同
         let base_decay = match item.category {
             // Worry: 半衰期 72h
-            FollowUpCategory::Worry => 0.5f32.powf(elapsed_hours / 72.0),
+            FollowUpCategory::Worry => exponential_decay_f32(elapsed_hours, 72.0),
             // Health: 半衰期 168h（1 周）
-            FollowUpCategory::Health => 0.5f32.powf(elapsed_hours / 168.0),
+            FollowUpCategory::Health => exponential_decay_f32(elapsed_hours, 168.0),
             // Relationship: 非单调，基础衰减 + 回避反弹项
             FollowUpCategory::Relationship => {
-                let d = 0.5f32.powf(elapsed_hours / 96.0);
+                let d = exponential_decay_f32(elapsed_hours, 96.0);
                 // 如果最近有回避，权重反弹（回避后不宜追问但事项仍在）
                 let has_recent_deflection = item
                     .follow_up_history
@@ -535,19 +539,22 @@ impl DecayEngine {
                         0.8
                     } else {
                         // 过期后 — 快速衰减
-                        0.8 * 0.5f32.powf(((-secs_left as f32 / 3600.0) - 12.0).max(0.0) / 24.0)
+                        0.8 * exponential_decay_f32(
+                            ((-secs_left as f32 / 3600.0) - 12.0).max(0.0),
+                            24.0,
+                        )
                     }
                 } else {
                     // 无预期时间，按半衰期 72h 衰减
-                    0.5f32.powf(elapsed_hours / 72.0)
+                    exponential_decay_f32(elapsed_hours, 72.0)
                 }
             }
             // Work: 半衰期 48h
-            FollowUpCategory::Work => 0.5f32.powf(elapsed_hours / 48.0),
+            FollowUpCategory::Work => exponential_decay_f32(elapsed_hours, 48.0),
             // Plan: 半衰期 72h
-            FollowUpCategory::Plan => 0.5f32.powf(elapsed_hours / 72.0),
+            FollowUpCategory::Plan => exponential_decay_f32(elapsed_hours, 72.0),
             // Interest: 半衰期 24h
-            FollowUpCategory::Interest => 0.5f32.powf(elapsed_hours / 24.0),
+            FollowUpCategory::Interest => exponential_decay_f32(elapsed_hours, 24.0),
         };
 
         // 调制因子
@@ -1269,6 +1276,15 @@ pub struct FollowUpTracker {
     judge: TriggerJudge,
     /// 持久化存储 / Persistent store
     store: FollowUpStore,
+    /// 今日追问计数 / Today's follow-up count (auto-resets on date change)
+    /// 数字生命的社交分寸感——知道今天已主动多少次，避免打扰主人
+    /// Digital life's social tact — knows how many times it has initiated today
+    today_count: parking_lot::Mutex<u32>,
+    /// 今日日期（用于跨日重置）/ Today's date (for cross-day reset)
+    today_date: parking_lot::Mutex<NaiveDate>,
+    /// 最后一次追问触发的 Unix 时间戳 / Last follow-up trigger Unix timestamp
+    /// 用于冷却间隔门控（min_interval_secs）/ For cooldown interval gating
+    last_follow_up_ts: parking_lot::Mutex<i64>,
 }
 
 impl FollowUpTracker {
@@ -1283,7 +1299,41 @@ impl FollowUpTracker {
             recall: parking_lot::Mutex::new(RecallEngine::new(recall_config)),
             judge: TriggerJudge::new(trigger_config),
             store,
+            today_count: parking_lot::Mutex::new(0),
+            today_date: parking_lot::Mutex::new(Utc::now().date_naive()),
+            last_follow_up_ts: parking_lot::Mutex::new(0),
         }
+    }
+
+    /// 获取今日追问计数（跨日自动重置）/ Get today's follow-up count (auto-resets on date change)
+    ///
+    /// 数字生命的社交分寸感：跨日清零，新的一天重新计数
+    /// Digital life's social tact: resets at midnight, fresh count for a new day
+    pub fn today_followup_count(&self) -> u32 {
+        let now_date = Utc::now().date_naive();
+        let mut date_guard = self.today_date.lock();
+        if *date_guard != now_date {
+            // 跨日重置 / Reset on date change
+            *date_guard = now_date;
+            *self.today_count.lock() = 0;
+        }
+        *self.today_count.lock()
+    }
+
+    /// 记录一次追问触发（计数+1，更新时间戳）/ Record a follow-up trigger (increment + update timestamp)
+    ///
+    /// 在追问实际触发后调用，用于每日上限门控和冷却间隔门控
+    /// Called after a follow-up is actually triggered, for daily limit and cooldown gating
+    pub fn record_followup_triggered(&self, now: i64) {
+        // 确保跨日重置 / Ensure cross-day reset
+        let _ = self.today_followup_count();
+        *self.today_count.lock() += 1;
+        *self.last_follow_up_ts.lock() = now;
+    }
+
+    /// 获取最后一次追问触发的时间戳 / Get last follow-up trigger timestamp
+    pub fn last_followup_ts(&self) -> i64 {
+        *self.last_follow_up_ts.lock()
     }
 
     /// 从用户消息提取并保存待跟进事项
@@ -1341,6 +1391,40 @@ impl FollowUpTracker {
                 }
             })
             .collect()
+    }
+
+    /// 检查所有候选事项是否应追问（自动管理计数与时间戳）
+    /// Check all candidate items for follow-up triggers (auto-managed counters).
+    ///
+    /// 数字生命的社交分寸感——自动跟踪今日追问次数和最后触发时间，
+    /// 无需外部传入 today_count / last_follow_up_secs，避免门控失效。
+    ///
+    /// Digital life's social tact — auto-tracks today's follow-up count and
+    /// last trigger timestamp, no external input needed, preventing gate bypass.
+    ///
+    /// 触发后会自动调用 `record_followup_triggered` 更新计数。
+    /// Auto-calls `record_followup_triggered` after a trigger to update counters.
+    pub fn check_for_follow_up_auto(
+        &self,
+        now: i64,
+        relationship_stage_name: &str,
+        current_pleasure: f32,
+    ) -> Vec<(FollowUpItem, TriggerVerdict)> {
+        let today_count = self.today_followup_count();
+        let last_follow_up_secs = self.last_followup_ts();
+        let triggered = self.check_for_follow_up(
+            now,
+            relationship_stage_name,
+            today_count,
+            last_follow_up_secs,
+            current_pleasure,
+        );
+        // 如果有实际触发，记录以更新计数和时间戳
+        // If any trigger occurred, record to update counters and timestamp
+        if !triggered.is_empty() {
+            self.record_followup_triggered(now);
+        }
+        triggered
     }
 
     /// 生成追问提示 / Generate a follow-up prompt.

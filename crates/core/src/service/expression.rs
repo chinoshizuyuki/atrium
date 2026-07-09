@@ -27,9 +27,9 @@ impl CoreService {
         pub(crate) use atrium_memory::style_modulator::ExpressionContext;
 
         let pad = [emo_state.pleasure, emo_state.arousal, emo_state.dominance];
-        let stage = self.relationship.lock().current_stage().clone();
+        let stage = self.relationship.read().current_stage().clone();
         let direction = atrium_emotion::infer_direction(user_msg);
-        let user_valence = self.user_model.lock().emotion_modulation().engagement_boost;
+        let user_valence = self.user_model.read().emotion_modulation().engagement_boost;
         let topic_gravity = 0.5; // default
 
         let ctx = ExpressionContext::from_modules(
@@ -78,7 +78,7 @@ impl CoreService {
         use atrium_memory::style_modulator::StyleEmbedding;
 
         // 1. 收集反馈信号 / Collect feedback signals
-        let signals = self.feedback.lock().recent_signals().to_vec();
+        let signals = self.feedback.read().recent_signals().to_vec();
         if signals.is_empty() {
             return;
         }
@@ -173,7 +173,7 @@ impl CoreService {
         let pad = [pleasure, arousal, 0.0];
 
         let lp = LinguisticProfile::neutral();
-        let stage = self.relationship.lock().current_stage().clone();
+        let stage = self.relationship.read().current_stage().clone();
         let timing = TimingMapper::map(pad, &lp, &stage);
         timing.urgency
     }
@@ -196,7 +196,7 @@ impl CoreService {
 
         let pad = [emo_state.pleasure, emo_state.arousal, emo_state.dominance];
         let lp = LinguisticProfile::neutral();
-        let stage = self.relationship.lock().current_stage().clone();
+        let stage = self.relationship.read().current_stage().clone();
 
         // 韵律 / Prosody
         let prosody = ProsodyMapper::map(pad, &lp);
@@ -244,11 +244,11 @@ impl CoreService {
         current_pleasure: f32,
     ) -> String {
         let now_ts = chrono::Utc::now().timestamp();
-        let candidates = self.followup.lock().check_for_follow_up(
+        // 自动管理今日计数和最后触发时间戳——数字生命的社交分寸感
+        // Auto-managed today count and last trigger timestamp — digital life's social tact
+        let candidates = self.followup.lock().check_for_follow_up_auto(
             now_ts,
             relationship_stage_name,
-            0, // today_count 由 scheduler 维护
-            0, // last_follow_up_secs 由 scheduler 维护
             current_pleasure,
         );
         if candidates.is_empty() {
@@ -274,22 +274,27 @@ impl CoreService {
         }
     }
 
+    /// 周期性追问检查（自动管理今日计数与冷却时间戳）
+    /// Periodic follow-up check (auto-managed today count and cooldown timestamp)
+    ///
+    /// 数字生命的社交分寸感——内部自动跟踪 today_count 和 last_follow_up_ts，
+    /// 调用方无需传入，避免门控因传 0 而失效。
+    ///
+    /// Digital life's social tact — internally auto-tracks today_count and
+    /// last_follow_up_ts, callers need not pass them, preventing gate bypass.
     pub fn tick_followup(
         &self,
         relationship_stage_name: &str,
-        today_count: u32,
-        last_follow_up_secs: i64,
         current_pleasure: f32,
     ) -> Option<String> {
         if !self.followup_enabled {
             return None;
         }
         let now_ts = chrono::Utc::now().timestamp();
-        let candidates = self.followup.lock().check_for_follow_up(
+        // 自动管理今日计数和最后触发时间戳 / Auto-managed counters
+        let candidates = self.followup.lock().check_for_follow_up_auto(
             now_ts,
             relationship_stage_name,
-            today_count,
-            last_follow_up_secs,
             current_pleasure,
         );
         if let Some((item, verdict)) = candidates.first() {
@@ -334,34 +339,34 @@ impl CoreService {
 
     pub fn relationship_stage(&self) -> String {
         self.relationship
-            .lock()
+            .read()
             .current_stage()
             .stage_name()
             .to_string()
     }
 
     pub fn relationship_prompt_fragment(&self) -> String {
-        self.relationship.lock().to_prompt_fragment()
+        self.relationship.read().to_prompt_fragment()
     }
 
     pub fn relationship_affect_multiplier(&self) -> f32 {
-        self.relationship.lock().affect_multiplier()
+        self.relationship.read().affect_multiplier()
     }
 
     pub fn take_relationship_transition_notice(&self) -> Option<String> {
-        self.relationship.lock().take_transition_notice()
+        self.relationship.write().take_transition_notice()
     }
 
     pub fn user_model_prompt_fragment(&self) -> String {
-        self.user_model.lock().prompt_fragment()
+        self.user_model.read().prompt_fragment()
     }
 
     pub fn feedback_prompt_fragment(&self) -> String {
-        self.feedback.lock().prompt_fragment()
+        self.feedback.read().prompt_fragment()
     }
 
     pub fn feedback_satisfaction(&self) -> f32 {
-        self.feedback.lock().satisfaction()
+        self.feedback.read().satisfaction()
     }
 
     pub fn associative_prompt_fragment(&self) -> String {
@@ -408,11 +413,11 @@ impl CoreService {
     }
 
     pub fn relationship_proactive_bonus(&self) -> f32 {
-        self.relationship.lock().proactive_bonus()
+        self.relationship.read().proactive_bonus()
     }
 
     pub fn user_model_signals(&self) -> (Option<f32>, Option<f32>, Option<f32>) {
-        let um = self.user_model.lock();
+        let um = self.user_model.read();
         (
             Some(um.mood.valence),
             Some(um.engagement.engagement_score),

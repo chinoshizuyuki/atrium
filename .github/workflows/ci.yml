@@ -1,4 +1,4 @@
-# Atrium CI — Rust + Python
+# Atrium CI — Rust (全 Rust 架构)
 # Runs on every push/PR to main.
 
 name: CI
@@ -21,7 +21,6 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  # ─── Rust ─────────────────────────────────────────────────────
   rust:
     name: Rust (fmt + clippy + test)
     runs-on: ubuntu-latest
@@ -58,43 +57,3 @@ jobs:
 
       - name: cargo test
         run: cargo test --workspace -- --test-threads=1
-
-  # ─── Python ───────────────────────────────────────────────────
-  python:
-    name: Python (${{ matrix.service }})
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        service: [gateway, llm-orchestrator, terminal]
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-
-      - name: Install system deps (for asyncpg + protoc)
-        run: sudo apt-get update && sudo apt-get install -y libpq-dev protobuf-compiler
-
-      - name: Install dependencies
-        run: |
-          # gateway depends on llm-orchestrator (atrium_llm)
-          if [ "${{ matrix.service }}" = "gateway" ]; then
-            pip install services/llm-orchestrator/
-          fi
-          pip install services/${{ matrix.service }}/
-          pip install pytest pytest-asyncio ruff
-
-      # 生成 gRPC stubs（atrium_pb2.py 等在 .gitignore 中，CI 需重新生成）
-      # Generate gRPC stubs (atrium_pb2.py etc. are gitignored, CI must regenerate)
-      - name: Generate gRPC stubs (gateway only)
-        if: matrix.service == 'gateway'
-        run: python services/gateway/gen_proto.py
-
-      - name: Lint (ruff)
-        run: ruff check services/${{ matrix.service }}/
-
-      - name: Run tests
-        run: cd services/${{ matrix.service }} && python -m pytest tests/ -v

@@ -11,6 +11,7 @@
 // boundary setting), apology engine, conflict memory persistence.
 
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 use std::fmt;
 
 use crate::relationship::RelationshipStage;
@@ -444,9 +445,12 @@ impl DisagreementDetector {
             }
         }
 
-        // 关系阶段过滤：初识阶段降低冲突置信度
+        // 关系阶段过滤：早期阶段降低冲突置信度
         // Relationship stage filter: reduce confidence in early stages
-        if matches!(stage, RelationshipStage::Acquaintance { .. }) {
+        if matches!(
+            stage,
+            RelationshipStage::Stranger { .. } | RelationshipStage::Acquaintance { .. }
+        ) {
             for sig in &mut signals {
                 sig.confidence *= 0.6;
             }
@@ -555,7 +559,7 @@ pub struct OverDemandDetector {
     /// 累计索取计数 / Cumulative demand count
     pub demand_count: u32,
     /// 索取窗口（最近N轮） / Demand window (recent N turns)
-    pub demand_window: Vec<f64>,
+    pub demand_window: VecDeque<f64>,
     /// 窗口大小 / Window size
     pub window_size: usize,
     /// 高频索取阈值 / High-frequency demand threshold
@@ -566,7 +570,7 @@ impl Default for OverDemandDetector {
     fn default() -> Self {
         Self {
             demand_count: 0,
-            demand_window: Vec::new(),
+            demand_window: VecDeque::new(),
             window_size: 10,
             high_freq_threshold: 0.6,
         }
@@ -578,7 +582,7 @@ impl OverDemandDetector {
     pub fn new(window_size: usize, high_freq_threshold: f64) -> Self {
         Self {
             demand_count: 0,
-            demand_window: Vec::with_capacity(window_size),
+            demand_window: VecDeque::with_capacity(window_size),
             window_size,
             high_freq_threshold: high_freq_threshold.clamp(0.3, 0.9),
         }
@@ -652,7 +656,10 @@ impl OverDemandDetector {
         }
 
         // 关系阶段过滤 / Relationship stage filter
-        if matches!(stage, RelationshipStage::Acquaintance { .. }) {
+        if matches!(
+            stage,
+            RelationshipStage::Stranger { .. } | RelationshipStage::Acquaintance { .. }
+        ) {
             for sig in &mut signals {
                 sig.confidence *= 0.5;
             }
@@ -676,9 +683,9 @@ impl OverDemandDetector {
     /// 推入窗口 / Push to window
     fn push_to_window(&mut self, score: f64) {
         if self.demand_window.len() >= self.window_size {
-            self.demand_window.remove(0);
+            self.demand_window.pop_front();
         }
-        self.demand_window.push(score);
+        self.demand_window.push_back(score);
     }
 
     /// 是否高频索取 / Whether high-frequency demand
@@ -966,15 +973,17 @@ impl ReconciliationCraft {
             ),
         };
 
-        // 关系阶段门控：初识阶段不主动和解，仅回应边界侵犯
+        // 关系阶段门控：早期阶段不主动和解，仅回应边界侵犯
         // Relationship stage gate: don't proactively reconcile in early stages
-        if matches!(stage, RelationshipStage::Acquaintance { .. })
-            && primary.conflict_type != ConflictType::BoundaryViolation
+        if matches!(
+            stage,
+            RelationshipStage::Stranger { .. } | RelationshipStage::Acquaintance { .. }
+        ) && primary.conflict_type != ConflictType::BoundaryViolation
         {
             if !self.config.proactive_enabled {
                 return None;
             }
-            // 初识阶段仅用最保守策略 / Only use most conservative strategy in early stage
+            // 早期阶段仅用最保守策略 / Only use most conservative strategy in early stage
             return Some(ReconciliationResult {
                 strategy: ReconciliationStrategy::StepBack,
                 reply_fragment: "我可能理解得不够，你能再说一下吗？".to_string(),
@@ -1130,17 +1139,9 @@ impl ApologyEngine {
     /// 判断当前关系阶段是否满足模板最低要求
     /// Check if current relationship stage meets template's minimum requirement
     fn stage_sufficient(current: &RelationshipStage, required: &RelationshipStage) -> bool {
-        use RelationshipStage::*;
-        matches!(
-            (current, required),
-            (Deep { .. }, _)
-                | (
-                    Trusted { .. },
-                    Trusted { .. } | Familiar { .. } | Acquaintance { .. }
-                )
-                | (Familiar { .. }, Familiar { .. } | Acquaintance { .. })
-                | (Acquaintance { .. }, Acquaintance { .. })
-        )
+        // 使用 ordinal 比较替代硬编码 match，支持 8 阶段
+        // Use ordinal comparison instead of hardcoded match, supports 8 stages
+        current.ordinal() >= required.ordinal()
     }
 }
 
@@ -1416,64 +1417,6 @@ impl ConflictManager {
 
         parts.join("\n")
     }
-
-    // ---- G1~G5 扩展方法 / G1~G5 extension methods ----
-
-    /// G1: 主动和解 / G1: Proactive reconciliation
-    pub fn proactive_reconcile(
-        &mut self,
-        stage: &RelationshipStage,
-        now_ts: i64,
-    ) -> Option<ReconciliationResult> {
-        self.proactive_reconciler
-            .proactive_reconcile(&self.state, stage, now_ts)
-    }
-
-    /// G2: 获取冲突对情绪的PAD增量 / G2: Get PAD delta from conflict
-    pub fn conflict_pad_delta(&self) -> (f32, f32, f32) {
-        self.pad_bridge.conflict_pad_delta(&self.state)
-    }
-
-    /// G3: 取出并清空待写入叙事的修复事件 / G3: Take and clear pending repair events
-    pub fn take_repair_events(&mut self) -> Vec<RepairEvent> {
-        std::mem::take(&mut self.pending_repairs)
-    }
-
-    /// G4: 恢复曲线周期 tick / G4: Recovery curve periodic tick
-    pub fn tick_recovery(&mut self, stage: &RelationshipStage, now_ts: i64) {
-        self.recovery_curve.tick(stage, now_ts);
-    }
-
-    /// G5: 推进和解仪式 / G5: Advance reconciliation ritual
-    pub fn advance_ritual(&mut self, now_ts: i64) -> bool {
-        if let Some(ref mut ritual) = self.ritual {
-            let advanced = ritual.try_advance(now_ts);
-            // 仪式完成后清除 / Clear when resolved
-            if ritual.phase.is_resolved() {
-                // 保留用于持久化，不立即清除
-            }
-            advanced
-        } else {
-            false
-        }
-    }
-
-    /// G5: 强制推进仪式（情绪显著改善时）/ G5: Force advance ritual (when emotion significantly improves)
-    pub fn force_advance_ritual(&mut self, now_ts: i64) {
-        if let Some(ref mut ritual) = self.ritual {
-            ritual.force_advance(now_ts);
-        }
-    }
-
-    /// G5: 获取当前仪式阶段 / G5: Get current ritual phase
-    pub fn ritual_phase(&self) -> Option<RitualPhase> {
-        self.ritual.as_ref().map(|r| r.phase)
-    }
-
-    /// G4: 获取关系健康度 / G4: Get relationship health level
-    pub fn relationship_health(&self) -> f64 {
-        self.recovery_curve.health_level()
-    }
 }
 
 /// 冲突处理结果 / Conflict process result
@@ -1541,6 +1484,7 @@ impl Default for ProactiveReconcilerConfig {
 /// 主动和解管线 — 在用户沉默时主动发起和解
 /// Proactive Reconciler — Initiates reconciliation when user is silent
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct ProactiveReconciler {
     /// 配置 / Configuration
     pub config: ProactiveReconcilerConfig,
@@ -1564,88 +1508,6 @@ impl ProactiveReconciler {
             proactive_count: 0,
             last_proactive_ts: 0,
         }
-    }
-
-    /// 检查是否应主动和解 / Check whether proactive reconciliation should trigger
-    ///
-    /// 条件：
-    /// 1. 连续冲突轮次 >= 阈值
-    /// 2. 或距上次冲突超过 time_since_conflict_secs 且无和解
-    /// 3. 且本会话主动和解次数未超限
-    pub fn should_proactive_reconcile(&self, state: &ConflictState, now_ts: i64) -> bool {
-        if self.proactive_count >= self.config.max_proactive_per_session {
-            return false;
-        }
-
-        // 条件1：连续冲突轮次超过阈值 / Condition 1: consecutive turns exceed threshold
-        if state.consecutive_turns >= self.config.unresolved_threshold_turns {
-            return true;
-        }
-
-        // 条件2：距最近冲突超过时间阈值且未和解 / Condition 2: time since conflict exceeds threshold
-        if let Some(last_recon) = state.last_reconciliation_ts {
-            let elapsed = now_ts - last_recon;
-            if elapsed > self.config.time_since_conflict_secs && state.in_conflict() {
-                return true;
-            }
-        } else if state.total_conflicts > 0 && state.in_conflict() {
-            // 有过冲突但从未和解 / Had conflicts but never reconciled
-            return true;
-        }
-
-        false
-    }
-
-    /// 执行主动和解 / Execute proactive reconciliation
-    ///
-    /// 返回和解结果，偏向保守策略（StepBack/AcknowledgeDifference）
-    pub fn proactive_reconcile(
-        &mut self,
-        state: &ConflictState,
-        stage: &RelationshipStage,
-        now_ts: i64,
-    ) -> Option<ReconciliationResult> {
-        if !self.should_proactive_reconcile(state, now_ts) {
-            return None;
-        }
-
-        self.proactive_count += 1;
-        self.last_proactive_ts = now_ts;
-
-        // 主动和解偏向保守 / Proactive reconciliation leans conservative
-        let (strategy, fragment) = if state.max_intensity >= ConflictIntensity::Severe {
-            (
-                ReconciliationStrategy::StepBack,
-                "我一直在想我们之前的分歧——如果你愿意，我想重新聊聊这件事。".to_string(),
-            )
-        } else {
-            (
-                ReconciliationStrategy::AcknowledgeDifference,
-                "我在想刚才的事，也许我们可以换个角度看看？".to_string(),
-            )
-        };
-
-        // 初识阶段更保守 / Even more conservative in early stages
-        if matches!(stage, RelationshipStage::Acquaintance { .. }) {
-            return Some(ReconciliationResult {
-                strategy: ReconciliationStrategy::StepBack,
-                reply_fragment: "如果你还想继续聊，我在这里。".to_string(),
-                expected_de_escalation: 0.15,
-                needs_confirmation: false,
-            });
-        }
-
-        Some(ReconciliationResult {
-            strategy,
-            reply_fragment: fragment,
-            expected_de_escalation: 0.2,
-            needs_confirmation: false,
-        })
-    }
-
-    /// 重置会话计数 / Reset session count
-    pub fn reset_session(&mut self) {
-        self.proactive_count = 0;
     }
 }
 
@@ -1864,10 +1726,14 @@ impl RecoveryCurve {
 
         // 关系阶段调制恢复速率 / Stage-modulated recovery rate
         let stage_multiplier = match stage {
+            RelationshipStage::Intimate { .. } => 1.6,
             RelationshipStage::Deep { .. } => 1.5,
+            RelationshipStage::Close { .. } => 1.35,
             RelationshipStage::Trusted { .. } => 1.2,
+            RelationshipStage::Friendly { .. } => 1.1,
             RelationshipStage::Familiar { .. } => 1.0,
             RelationshipStage::Acquaintance { .. } => 0.6,
+            RelationshipStage::Stranger { .. } => 0.5,
         };
 
         // 指数恢复：越接近1.0恢复越慢 / Exponential recovery: slows near 1.0

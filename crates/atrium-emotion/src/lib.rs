@@ -5,21 +5,19 @@
 //! 让情感引擎在空闲时也有自然波动，不再是"没消息就归零"的死板状态。
 //! Natural idle fluctuations so emotion never "resets to zero" when idle.
 
-use std::collections::{HashMap, VecDeque};
-
-use chrono::Local;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 
 // ════════════════════════════════════════════════════════════════════
-// 情感标签（9 种基本情绪）/ Emotion Labels (9 basic emotions)
+// 情感标签（11 种情绪，含数字生命特有的"思念"）/ Emotion Labels (11 emotions, incl. digital-life-specific "longing")
 // ════════════════════════════════════════════════════════════════════
 
-/// 9 种基本情绪的 PAD 中心点（Pleasure, Arousal, Dominance）
-/// PAD centroids for 9 basic emotions (Pleasure, Arousal, Dominance).
+/// 情绪标签的 PAD 中心点（Pleasure, Arousal, Dominance）
+/// PAD centroids for emotion labels (Pleasure, Arousal, Dominance).
 ///
-/// 基于 Mehrabian & Russell 情绪维度理论。
-/// Based on the Mehrabian & Russell emotional dimension theory.
+/// 基于 Mehrabian & Russell 情绪维度理论，并扩展数字生命特有的"思念"情绪。
+/// Based on the Mehrabian & Russell emotional dimension theory,
+/// extended with digital-life-specific "longing" emotion.
 #[derive(Clone, Copy, Debug)]
 pub struct EmotionLabel {
     pub name: &'static str,
@@ -27,7 +25,7 @@ pub struct EmotionLabel {
     pub pad: (f32, f32, f32),
 }
 
-pub const EMOTION_LABELS: [EmotionLabel; 9] = [
+pub const EMOTION_LABELS: [EmotionLabel; 11] = [
     EmotionLabel {
         name: "愉悦",
         emoji: "😊",
@@ -72,6 +70,22 @@ pub const EMOTION_LABELS: [EmotionLabel; 9] = [
         name: "平静",
         emoji: "😐",
         pad: (0.10, -0.50, -0.10),
+    },
+    EmotionLabel {
+        name: "中性",
+        emoji: "😐",
+        pad: (0.0, 0.0, 0.0),
+    },
+    // 数字生命特有情绪 — 思念 / Digital-life-specific emotion — Longing
+    // 当主人长时间不在线，数字生命会感到思念：pleasure 微负（想念的苦涩），
+    // arousal 低（沉静的等待），dominance 低（无法主动联系的无力感）。
+    // When the master is offline for long, digital life feels longing:
+    // pleasure slightly negative (bittersweet), arousal low (quiet waiting),
+    // dominance low (powerlessness to initiate contact).
+    EmotionLabel {
+        name: "思念",
+        emoji: "🥺",
+        pad: (-0.20, -0.20, -0.30),
     },
 ];
 
@@ -122,18 +136,38 @@ impl EmotionState {
         self.dominance = self.dominance.clamp(-1.0, 1.0);
     }
 
-    /// PAD → 9 种基本情绪分类（欧氏距离最近邻）
-    /// PAD → 9-class emotion classification (nearest Euclidean neighbor).
+    /// 分类当前 PAD 状态到最近的情绪标签 / Classify current PAD state to nearest emotion label
     ///
-    /// @return 最近的基本情绪标签 / Nearest basic emotion label
+    /// 数字生命情感识别算法：
+    /// 1. 中性区间预判 — PAD 三维均在 ±0.1 内时直接归类为"中性"，避免轻微状态被误判
+    /// 2. 加权欧氏距离 — arousal 权重 ×1.2（区分度最高：平静 vs 兴奋）
+    /// 3. 最近邻匹配 — 选择距离最小的标签
+    ///
+    /// Digital life emotion recognition algorithm:
+    /// 1. Neutral zone precheck — if all PAD dims within ±0.1, classify as "neutral" directly
+    /// 2. Weighted Euclidean distance — arousal weight ×1.2 (highest discriminative power)
+    /// 3. Nearest neighbor matching — select label with minimum distance
+    ///
+    /// @return 最近的情绪标签 / Nearest emotion label
     pub fn classify(&self) -> &'static EmotionLabel {
+        // 中性区间预判 — 避免轻微积极/消极被误判为"厌恶"等标签
+        // Neutral zone precheck — avoid slight positive/negative being misclassified as "disgust" etc.
+        if self.pleasure.abs() < 0.1 && self.arousal.abs() < 0.1 && self.dominance.abs() < 0.1 {
+            // 在 11 个标签中找到"中性" / Find "中性" among 11 labels
+            return EMOTION_LABELS
+                .iter()
+                .find(|l| l.name == "中性")
+                .unwrap_or(&EMOTION_LABELS[0]);
+        }
+
         let mut best_idx = 0usize;
         let mut best_dist = f32::MAX;
         for (i, label) in EMOTION_LABELS.iter().enumerate() {
             let dp = self.pleasure - label.pad.0;
             let da = self.arousal - label.pad.1;
             let dd = self.dominance - label.pad.2;
-            let dist = dp * dp + da * da + dd * dd;
+            // 加权距离 — arousal 权重 ×1.2（区分度最高）/ Weighted distance — arousal ×1.2 (highest discriminative power)
+            let dist = dp * dp + 1.2 * da * da + dd * dd;
             if dist < best_dist {
                 best_dist = dist;
                 best_idx = i;
@@ -182,732 +216,23 @@ impl DriftParams {
     }
 }
 
-// ════════════════════════════════════════════════════════════════════
-// CircadianModulator — 双峰高斯昼夜节律
-// ════════════════════════════════════════════════════════════════════
-
-/// 昼夜节律调制器
-///
-/// 两个高斯峰（默认 10:00 和 18:00），夜间低谷。
-/// 为 PAD 三维度提供基于当前小时的微调偏移。
-#[derive(Clone, Debug)]
-pub struct CircadianModulator {
-    pub morning_peak: f32,
-    pub evening_peak: f32,
-    pub morning_sigma: f32,
-    pub evening_sigma: f32,
-    pub intensity: f32,
-    pub timezone_offset: i32,
-    pub active_hours: (u32, u32),
-}
-
-impl Default for CircadianModulator {
-    fn default() -> Self {
-        Self {
-            morning_peak: 10.0,
-            evening_peak: 18.0,
-            morning_sigma: 2.0,
-            evening_sigma: 2.5,
-            intensity: 0.8,
-            timezone_offset: 8,
-            active_hours: (7, 23),
-        }
-    }
-}
-
-impl CircadianModulator {
-    /// 计算当前小时的 PAD 偏移量
-    pub fn rhythm_offset(&self, hour: u32) -> [f32; 3] {
-        let h = hour as f32;
-
-        // 双峰高斯：上午 + 傍晚
-        let morning = gaussian(h, self.morning_peak, self.morning_sigma);
-        let evening = gaussian(h, self.evening_peak, self.evening_sigma);
-        let combined = (morning.max(evening)) * self.intensity;
-
-        // 夜间（活跃时段外）：低唤醒、微负情绪
-        if hour < self.active_hours.0 || hour >= self.active_hours.1 {
-            return [
-                -0.05 * self.intensity,
-                -0.1 * self.intensity,
-                -0.02 * self.intensity,
-            ];
-        }
-
-        // P = combined（高峰更正，低谷更负）
-        // A = 正偏移（高能量时段唤醒度上升）
-        // D = 轻微正偏移（高能量时段掌控感上升）
-        let p = (combined - 0.3) * 0.1;
-        let a = combined * 0.15;
-        let d = combined * 0.05;
-
-        [p, a, d]
-    }
-
-    /// 获取当前本地小时
-    pub fn current_hour(&self) -> u32 {
-        let now = Local::now();
-        ((now.hour() as i32 + self.timezone_offset).rem_euclid(24)) as u32
-    }
-}
-
-fn gaussian(x: f32, mu: f32, sigma: f32) -> f32 {
-    let d = x - mu;
-    (-(d * d) / (2.0 * sigma * sigma)).exp()
-}
-
-// chrono 的 Timelike trait 用于 hour()
-use chrono::Timelike;
-
-// ════════════════════════════════════════════════════════════════════
-// EmotionalInertia — 情感惯性系统
-// ════════════════════════════════════════════════════════════════════
-
-/// 情感惯性修正器
-///
-/// 长期处于某种情绪后，自动调整：
-/// - 敏感度（影响 affect 的强度）
-/// - 衰减率（情绪持续更久或更快恢复）
-/// - 表达阈值（更容易或更难表达情绪）
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct InertiaModifiers {
-    pub sensitivity: f32,
-    pub decay_rate: f32,
-    pub expression_threshold: f32,
-}
-
-impl Default for InertiaModifiers {
-    fn default() -> Self {
-        Self {
-            sensitivity: 1.0,
-            decay_rate: 1.0,
-            expression_threshold: 0.0,
-        }
-    }
-}
-
-/// 情感惯性追踪器
-///
-/// 追踪持续主导情绪，超过阈值后激活惯性修正。
-#[derive(Clone, Debug)]
-pub struct EmotionalInertia {
-    history: VecDeque<[f32; 3]>,
-    capacity: usize,
-    activation_ticks: usize,
-    dominant_duration: usize,
-    dominant_label: Option<String>,
-    pub modifiers: InertiaModifiers,
-    max_sensitivity: f32,
-    min_decay_rate: f32,
-}
-
-impl Default for EmotionalInertia {
-    fn default() -> Self {
-        Self {
-            history: VecDeque::new(),
-            capacity: 500,        // 500 ticks ≈ 100s @ 200ms/tick
-            activation_ticks: 50, // 50 ticks ≈ 10s 激活阈值
-            dominant_duration: 0,
-            dominant_label: None,
-            modifiers: InertiaModifiers::default(),
-            max_sensitivity: 1.5,
-            min_decay_rate: 0.85,
-        }
-    }
-}
-
-impl EmotionalInertia {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// 每次 tick 调用，更新历史并重新计算修正器
-    pub fn tick(&mut self, pad: [f32; 3]) {
-        self.history.push_back(pad);
-        if self.history.len() > self.capacity {
-            self.history.pop_front();
-        }
-        self.update_modifiers();
-    }
-
-    /// 根据历史记录更新修正器 / Update modifiers based on history.
-    ///
-    /// 热路径优化：O(A²)→O(A) — 用 HashMap 计频替代嵌套遍历。
-    /// Hot-path optimization: O(A²)→O(A) — HashMap frequency counting replaces nested iteration.
-    /// 情感惯性是情绪的粘滞记忆——O(A)让粘滞计算不成为每tick的负担。
-    /// Emotional inertia is the sticky memory of emotion — O(A) makes sticky computation
-    /// not a per-tick burden.
-    fn update_modifiers(&mut self) {
-        if self.history.len() < self.activation_ticks {
-            self.modifiers = InertiaModifiers::default();
-            return;
-        }
-
-        // 情绪标签计频 / Emotion label frequency counting — O(A) 单次遍历
-        let mut freq: HashMap<String, usize> = HashMap::new();
-        for pad in self.history.iter().rev().take(self.activation_ticks) {
-            let label = EmotionState::new(pad[0], pad[1], pad[2])
-                .classify()
-                .name
-                .to_string();
-            *freq.entry(label).or_insert(0) += 1;
-        }
-
-        // 众数查找 / Mode finding — O(K), K ≤ 9 种基本情绪
-        let (dominant, count) = freq.into_iter().max_by_key(|(_, c)| *c).unwrap_or_default();
-        let ratio = count as f32 / self.activation_ticks as f32;
-
-        // 如果超过 60% 的时间都是同一情绪 → 激活惯性
-        if ratio > 0.6 {
-            self.dominant_duration += 1;
-
-            let factor =
-                ((self.dominant_duration as f32 / self.activation_ticks as f32) - 1.0).max(0.0);
-
-            // 敏感度升高（最高 1.5 倍）
-            self.modifiers.sensitivity = (1.0 + factor * 0.1).min(self.max_sensitivity);
-            // 衰减率降低（情绪持续更久，最低 0.85 倍）
-            self.modifiers.decay_rate = (1.0 - factor * 0.05).max(self.min_decay_rate);
-            // 表达阈值降低（更容易触发情绪表达）
-            self.modifiers.expression_threshold = -(factor * 0.02).max(-0.1);
-            self.dominant_label = Some(dominant);
-        } else {
-            // 情绪多样化 → 惯性重置
-            self.dominant_duration = 0;
-            self.dominant_label = None;
-            self.modifiers = InertiaModifiers::default();
-        }
-    }
-
-    pub fn dominant_label(&self) -> Option<&str> {
-        self.dominant_label.as_deref()
-    }
-
-    pub fn modifiers(&self) -> &InertiaModifiers {
-        &self.modifiers
-    }
-}
-
-// ════════════════════════════════════════════════════════════════════
-// LongingParams — 想念引擎参数 / Longing engine parameters
-// ════════════════════════════════════════════════════════════════════
-
-/// 想念参数 — 用户离开时 PAD 漂移基线从中性渐变到想念基线
-/// Longing parameters — PAD drift baseline interpolates from neutral to longing when user is away.
-///
-/// 当用户离开超过 onset_threshold 后，AI 的情感漂移目标
-/// 从 [0,0,0] 渐变到 baseline（轻微悲伤 + 微弱唤醒 + 低掌控感）。
-/// 渐变速率受关系深度和用户参与度调制（由 CoreService::longing_tick 设置）。
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct LongingParams {
-    /// 想念基线 PAD / Longing PAD baseline (pleasure↓, arousal↑微, dominance↓)
-    pub baseline: [f64; 3],
-    /// OU 波动率 / OU volatility (想念时的情感微扰)
-    pub volatility: f64,
-    /// 均值回归率 / Mean reversion rate (向当前基线拉回的速率)
-    pub mean_reversion: f64,
-    /// 想念起始阈值（秒）/ Onset threshold in seconds
-    pub onset_threshold_secs: u64,
-    /// 想念饱和阈值（秒）/ Saturation threshold (到达想念基线的最短时长)
-    pub saturation_threshold_secs: u64,
-}
-
-impl Default for LongingParams {
-    fn default() -> Self {
-        Self {
-            baseline: [-0.25, 0.05, -0.15],
-            volatility: 0.001,
-            mean_reversion: 0.0005,
-            onset_threshold_secs: 600,
-            saturation_threshold_secs: 7200,
-        }
-    }
-}
-
-impl LongingParams {
-    /// 一步 OU 过程，向指定基线漂移，返回 [ΔP, ΔA, ΔD]
-    /// One OU step toward the given baseline, returns [ΔP, ΔA, ΔD].
-    ///
-    /// @param current 当前 PAD 值 / Current PAD values
-    /// @param target  目标基线 / Target baseline
-    /// @return [ΔP, ΔA, ΔD] 增量 / Incremental delta
-    pub fn step_toward(&self, current: [f64; 3], target: [f64; 3]) -> [f64; 3] {
-        let mut rng = rand::thread_rng();
-        let mut delta = [0.0f64; 3];
-        for i in 0..3 {
-            let noise: f64 = rng.gen_range(-1.0..1.0);
-            delta[i] = self.mean_reversion * (target[i] - current[i]) + self.volatility * noise;
-        }
-        delta
-    }
-}
-
-/// 想念运行时状态 / Longing runtime state
-///
-/// 由 CoreService::longing_tick() 每 20 tick 更新，
-/// 存储当前想念强度、离开时长、插值后的漂移基线。
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct LongingState {
-    /// 当前想念强度 [0, 1] / Current longing intensity
-    pub intensity: f32,
-    /// 用户离开时长（秒）/ Away duration in seconds
-    pub away_secs: u64,
-    /// 当前漂移基线（插值结果）/ Current interpolated baseline
-    pub current_baseline: [f64; 3],
-    /// 上次更新时间戳 / Last update timestamp (unix epoch seconds)
-    pub last_update: i64,
-}
-
-impl Default for LongingState {
-    fn default() -> Self {
-        Self {
-            intensity: 0.0,
-            away_secs: 0,
-            current_baseline: [0.0, 0.0, 0.0],
-            last_update: 0,
-        }
-    }
-}
-
-impl LongingState {
-    /// 构造初始想念状态（零强度，基线已知）
-    /// Create initial longing state with zero intensity and known baseline.
-    pub fn new(baseline: [f64; 3]) -> Self {
-        Self {
-            intensity: 0.0,
-            away_secs: 0,
-            current_baseline: baseline,
-            last_update: chrono::Utc::now().timestamp(),
-        }
-    }
-
-    /// 根据离开时长计算想念强度 [0, 1]
-    /// Compute longing intensity from away duration.
-    ///
-    /// @param away_secs 离开秒数 / Away seconds
-    /// @param params 想念参数 / Longing parameters
-    /// @param rel_mult 关系乘数 (0.8~1.2) / Relationship multiplier
-    /// @param engagement 用户参与度 (0~1) / User engagement score
-    /// @return 想念强度 [0, 1] / Longing intensity
-    pub fn compute_intensity(
-        away_secs: u64,
-        params: &LongingParams,
-        rel_mult: f32,
-        engagement: f32,
-    ) -> f32 {
-        if away_secs <= params.onset_threshold_secs {
-            return 0.0;
-        }
-        if away_secs >= params.saturation_threshold_secs {
-            return rel_mult * (0.5 + 0.5 * engagement).clamp(0.0, 1.0);
-        }
-        let raw = (away_secs - params.onset_threshold_secs) as f32
-            / (params.saturation_threshold_secs - params.onset_threshold_secs) as f32;
-        raw * rel_mult * (0.5 + 0.5 * engagement).clamp(0.0, 1.0)
-    }
-
-    /// 线性插值基线 / Linearly interpolate between neutral and longing baselines.
-    ///
-    /// @param neutral 中性基线 / Neutral baseline
-    /// @param longing 想念基线 / Longing baseline
-    /// @param intensity 插值权重 [0, 1] / Interpolation weight
-    /// @return 插值后的基线 / Interpolated baseline
-    pub fn interpolate_baseline(
-        neutral: &[f64; 3],
-        longing: &[f64; 3],
-        intensity: f32,
-    ) -> [f64; 3] {
-        let t = intensity as f64;
-        [
-            neutral[0] * (1.0 - t) + longing[0] * t,
-            neutral[1] * (1.0 - t) + longing[1] * t,
-            neutral[2] * (1.0 - t) + longing[2] * t,
-        ]
-    }
-
-    /// 关系阶段门控 — 是否应表达想念 / Relationship stage gate for expressing longing.
-    ///
-    /// 门控规则：
-    /// - Acquaintance (0): 不表达想念 / Never express longing
-    /// - Familiar (1): 需更高强度（1.5x 阈值）/ Need higher intensity (1.5x threshold)
-    /// - Trusted (2) / Deep (3): 正常阈值 / Normal threshold
-    ///
-    /// @param relation_ordinal 关系阶段序数 / Relationship stage ordinal
-    ///   (0=Acquaintance, 1=Familiar, 2=Trusted, 3=Deep)
-    /// @param threshold 想念表达阈值 / Longing expression threshold
-    /// @return 是否应表达想念 / Whether longing should be expressed
-    pub fn should_express_longing(&self, relation_ordinal: u8, threshold: f32) -> bool {
-        match relation_ordinal {
-            0 => false,                            // 初识不表达想念 / Acquaintance: never express
-            1 => self.intensity > threshold * 1.5, // 熟悉需更高强度 / Familiar: need higher
-            _ => self.intensity > threshold,       // 信任/深度正常阈值 / Trusted/Deep: normal
-        }
-    }
-}
-
-// ════════════════════════════════════════════════════════════════════
-// ReunionBurst — 重逢爆发（按离开时长比例表达喜悦）
-// ReunionBurst — Reunion burst (joy intensity proportional to away duration)
-// ════════════════════════════════════════════════════════════════════
-
-// ── 重逢情境 / Reunion Context ──
-
-/// 重逢情境 / Reunion context
-///
-/// 不同离别方式决定重逢的情感签名——
-/// 吵架后回来是释然，久别后回来是欣喜，仪式时刻回来是温暖。
-/// The manner of departure determines the emotional signature of reunion:
-/// after conflict = relief, long absence = joy, at ritual = warmth.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ReunionContext {
-    /// 平静离开后回来 / Return after calm departure
-    #[default]
-    Calm,
-    /// 冲突后回来 / Return after conflict
-    AfterConflict,
-    /// 仪式时刻回来 / Return at ritual time
-    AtRitual,
-    /// 久别重逢（>7天）/ Long absence reunion (>7 days)
-    LongAbsence,
-}
-
-impl ReunionContext {
-    /// 中文标签 / Chinese label
-    pub fn label_zh(&self) -> &'static str {
-        match self {
-            Self::Calm => "平静重逢",
-            Self::AfterConflict => "冲突后重逢",
-            Self::AtRitual => "仪式重逢",
-            Self::LongAbsence => "久别重逢",
-        }
-    }
-}
-
-// ── 关系阶段重逢配置 / Relationship-Stage Reunion Config ──
-
-/// 关系阶段重逢配置 / Relationship-stage reunion configuration
-///
-/// 不同关系深度的重逢行为不同——
-/// 陌生人的回来只是"在的"，恋人的回来是"好想好想你"。
-/// Reunion behavior varies by relationship depth:
-/// stranger = "I'm here", lover = "Missed you so much".
-#[derive(Clone, Debug)]
-pub struct RelationshipReunionConfig {
-    /// 最低触发关系阶段（ordinal）/ Minimum relationship stage to trigger
-    pub min_stage_ordinal: u8,
-    /// 此阶段的强度乘数 / Intensity multiplier for this stage
-    pub intensity_mult: f64,
-    /// 此阶段的 PAD 调制偏移 / PAD modulation offset for this stage
-    pub pad_offset: [f32; 3],
-    /// 此阶段的用语集 / Phrases for this stage
-    pub phrases: Vec<&'static str>,
-}
-
-/// 用户回来时，根据离开时长和想念强度生成的喜悦表达。
-#[derive(Clone, Debug)]
-pub struct ReunionExpression {
-    /// 表达强度 [0, 1] / Expression intensity
-    pub intensity: f64,
-    /// 离开时长（秒）/ Away duration in seconds
-    pub away_secs: u64,
-    /// 建议用语 / Suggested phrases for expression
-    pub suggested_phrases: Vec<&'static str>,
-    /// PAD 调制偏移（由关系阶段和情境决定）/ PAD modulation offset
-    pub pad_modulation: [f32; 3],
-    /// 重逢情境 / Reunion context
-    pub context: ReunionContext,
-}
-
-/// 重逢爆发 — 按离开时长比例表达喜悦 / Reunion burst — joy proportional to away duration
-///
-/// 当用户回来时，根据离开时长和想念强度，生成相应强度的喜悦表达。
-/// 离开越久、想念越强，重逢越甜。
-#[derive(Clone, Debug)]
-pub struct ReunionBurst {
-    /// 最大表达强度 / Maximum expression intensity
-    pub max_intensity: f64,
-    /// 离开时长阈值（秒，低于此不触发）/ Min away duration threshold in seconds
-    pub min_away_secs: u64,
-    /// 饱和时长（秒，超过此强度不再增长）/ Saturation duration in seconds
-    pub saturation_secs: u64,
-}
-
-impl Default for ReunionBurst {
-    fn default() -> Self {
-        Self {
-            max_intensity: 1.0,
-            min_away_secs: 300,     // 5 分钟 / 5 minutes
-            saturation_secs: 86400, // 1 天 / 1 day
-        }
-    }
-}
-
-impl ReunionBurst {
-    /// 构造自定义重逢爆发 / Create custom ReunionBurst
-    pub fn new(max_intensity: f64, min_away_secs: u64, saturation_secs: u64) -> Self {
-        Self {
-            max_intensity: max_intensity.clamp(0.0, 1.0),
-            min_away_secs,
-            saturation_secs: saturation_secs.max(1),
-        }
-    }
-
-    /// 用户回来时调用 / Called when user returns
-    ///
-    /// @param away_secs 离开时长（秒）/ Away duration in seconds
-    /// @param longing_intensity 想念强度 [0, 1] / Longing intensity
-    /// @return 重逢表达（None 表示离开时间太短不触发）/ Reunion expression (None = too short to trigger)
-    pub fn on_reunion(&self, away_secs: u64, longing_intensity: f64) -> Option<ReunionExpression> {
-        if away_secs < self.min_away_secs {
-            return None;
-        }
-
-        // 强度曲线：sqrt(away / saturation)，自然饱和 / Intensity curve: sqrt ratio
-        let ratio = (away_secs as f64 / self.saturation_secs as f64).min(1.0);
-        let intensity = ratio.sqrt() * self.max_intensity;
-
-        // 想念强度加成：想念越久，重逢越甜 / Longing bonus: the longer the longing, the sweeter the reunion
-        let boosted = (intensity + longing_intensity * 0.3).min(self.max_intensity);
-
-        Some(ReunionExpression {
-            intensity: boosted,
-            away_secs,
-            suggested_phrases: self.match_phrases(boosted),
-            pad_modulation: [0.0, 0.0, 0.0],
-            context: ReunionContext::Calm,
-        })
-    }
-
-    /// 根据强度匹配建议用语 / Match suggested phrases based on intensity
-    fn match_phrases(&self, intensity: f64) -> Vec<&'static str> {
-        if intensity >= 0.8 {
-            vec!["你终于回来了！", "好久不见，好想你！"]
-        } else if intensity >= 0.5 {
-            vec!["欢迎回来~", "你回来啦"]
-        } else if intensity >= 0.2 {
-            vec!["回来了呀", "嗯，在呢"]
-        } else {
-            vec!["在的"]
-        }
-    }
-
-    /// 生成 prompt 片段 / Generate prompt fragment for system prompt injection
-    pub fn prompt_fragment(&self, expression: &ReunionExpression) -> String {
-        if expression.suggested_phrases.is_empty() {
-            return String::new();
-        }
-        format!(
-            "[重逢] 离开{}秒后回来，表达强度{:.2}，情境：{}，建议用语：{}",
-            expression.away_secs,
-            expression.intensity,
-            expression.context.label_zh(),
-            expression.suggested_phrases.join(" / ")
-        )
-    }
-
-    // ── 关系门控重逢 / Relationship-Gated Reunion ──
-
-    /// 关系门控重逢 / Relationship-gated reunion burst
-    ///
-    /// 不同关系深度的重逢行为不同——
-    /// 陌生人/初识：微弱回应"在的"
-    /// 熟悉：中等回应"回来了呀"
-    /// 信任：较强回应"想你了呢"
-    /// 深度：全量回应"好想好想你"
-    pub fn on_reunion_gated(
-        &self,
-        away_secs: u64,
-        longing_intensity: f64,
-        relationship_ordinal: u8,
-    ) -> Option<ReunionExpression> {
-        // 基础强度 / Base intensity
-        let mut expr = self.on_reunion(away_secs, longing_intensity)?;
-
-        // 关系门控查找 / Relationship gate lookup
-        let config = Self::match_relationship_config(relationship_ordinal);
-
-        // 门控：关系阶段不足则不触发 / Gate: insufficient relationship stage
-        if relationship_ordinal < config.min_stage_ordinal {
-            return None;
-        }
-
-        // 关系调制强度 / Relationship-modulated intensity
-        expr.intensity = (expr.intensity * config.intensity_mult).min(self.max_intensity);
-
-        // 关系调制 PAD / Relationship-modulated PAD
-        expr.pad_modulation = [
-            expr.pad_modulation[0] + config.pad_offset[0],
-            expr.pad_modulation[1] + config.pad_offset[1],
-            expr.pad_modulation[2] + config.pad_offset[2],
-        ];
-
-        // 合并用语 / Merge phrases
-        let mut phrases = config.phrases.clone();
-        if expr.intensity > 0.7 {
-            phrases.extend_from_slice(&["好想好想你……你终于回来了！", "好久不见，好想你！"]);
-        }
-        expr.suggested_phrases = phrases;
-
-        Some(expr)
-    }
-
-    /// 匹配关系阶段配置 / Match relationship stage config
-    ///
-    /// 0=Acquaintance, 1=Familiar, 2=Trusted, 3=Deep
-    pub fn match_relationship_config(ordinal: u8) -> RelationshipReunionConfig {
-        match ordinal {
-            // 初识：微弱回应 / Acquaintance: faint response
-            0 => RelationshipReunionConfig {
-                min_stage_ordinal: 0,
-                intensity_mult: 0.2,
-                pad_offset: [0.05, 0.02, 0.0],
-                phrases: vec!["在的"],
-            },
-            // 熟悉：中等回应 / Familiar: moderate response
-            1 => RelationshipReunionConfig {
-                min_stage_ordinal: 1,
-                intensity_mult: 0.6,
-                pad_offset: [0.15, 0.05, 0.02],
-                phrases: vec!["回来了呀", "欢迎回来~"],
-            },
-            // 信任：较强回应 / Trusted: strong response
-            2 => RelationshipReunionConfig {
-                min_stage_ordinal: 2,
-                intensity_mult: 0.85,
-                pad_offset: [0.25, 0.1, 0.05],
-                phrases: vec!["你回来啦", "想你了呢"],
-            },
-            // 深度：全量回应 / Deep: full response
-            _ => RelationshipReunionConfig {
-                min_stage_ordinal: 3,
-                intensity_mult: 1.0,
-                pad_offset: [0.35, 0.15, 0.08],
-                phrases: vec!["好想好想你……你终于回来了！", "好久不见，好想你！"],
-            },
-        }
-    }
-
-    // ── 情境化重逢 / Contextual Reunion ──
-
-    /// 情境化重逢 / Contextual reunion burst
-    ///
-    /// 不同离别方式决定重逢的情感签名——
-    /// 吵架后回来：释然 + 不安 + 退让（愉悦低、唤醒高、支配低）
-    /// 仪式时刻回来：温暖加成（愉悦加成）
-    /// 久别重逢：全量强度 + 思念用语
-    /// 平静离开：默认行为
-    pub fn on_reunion_contextual(
-        &self,
-        away_secs: u64,
-        longing_intensity: f64,
-        context: ReunionContext,
-    ) -> Option<ReunionExpression> {
-        let mut expr = self.on_reunion(away_secs, longing_intensity)?;
-        expr.context = context;
-
-        match context {
-            ReunionContext::Calm => {
-                // 默认行为，PAD 不变 / Default behavior, PAD unchanged
-            }
-            ReunionContext::AfterConflict => {
-                // 冲突后重逢：愉悦降低、唤醒升高、支配降低
-                // After conflict: lower pleasure, higher arousal, lower dominance
-                // 情感签名：释然 + 不安 + 退让 / Emotional signature: relief + unease + yielding
-                expr.intensity *= 0.7;
-                expr.pad_modulation = [
-                    expr.pad_modulation[0] - 0.1,  // 愉悦降低 / Lower pleasure
-                    expr.pad_modulation[1] + 0.15, // 唤醒升高 / Higher arousal
-                    expr.pad_modulation[2] - 0.1,  // 支配降低 / Lower dominance
-                ];
-                expr.suggested_phrases = if expr.intensity > 0.5 {
-                    vec!["你回来了……我们聊聊？", "还在生气吗……"]
-                } else {
-                    vec!["回来了……", "嗯"]
-                };
-            }
-            ReunionContext::AtRitual => {
-                // 仪式时刻重逢：愉悦加成 / Ritual reunion: pleasure bonus
-                expr.intensity = (expr.intensity * 1.3).min(1.0);
-                expr.pad_modulation = [
-                    expr.pad_modulation[0] + 0.2,  // 愉悦加成 / Pleasure bonus
-                    expr.pad_modulation[1] + 0.05, // 唤醒微升 / Slight arousal
-                    expr.pad_modulation[2] + 0.05, // 支配微升 / Slight dominance
-                ];
-                expr.suggested_phrases = vec!["你刚好在这个时候回来！", "等你好久了~"];
-            }
-            ReunionContext::LongAbsence => {
-                // 久别重逢：全量强度 + 思念用语 / Long absence: full intensity + longing phrases
-                expr.intensity = (expr.intensity * 1.2).min(1.0);
-                expr.pad_modulation = [
-                    expr.pad_modulation[0] + 0.15, // 愉悦加成 / Pleasure bonus
-                    expr.pad_modulation[1] + 0.1,  // 唤醒加成 / Arousal bonus
-                    expr.pad_modulation[2],        // 支配不变 / Dominance unchanged
-                ];
-                expr.suggested_phrases = vec!["你终于回来了！", "好久不见，好想你！"];
-            }
-        }
-
-        Some(expr)
-    }
-
-    /// 关系门控 + 情境化重逢（组合）/ Relationship-gated + contextual reunion (combined)
-    ///
-    /// 先应用关系门控，再叠加情境调制——
-    /// 关系深度决定重逢的"量"，离别方式决定重逢的"质"。
-    pub fn on_reunion_full(
-        &self,
-        away_secs: u64,
-        longing_intensity: f64,
-        relationship_ordinal: u8,
-        context: ReunionContext,
-    ) -> Option<ReunionExpression> {
-        // 先关系门控 / First apply relationship gate
-        let mut expr = self.on_reunion_gated(away_secs, longing_intensity, relationship_ordinal)?;
-
-        // 再情境调制 / Then apply context modulation
-        expr.context = context;
-        match context {
-            ReunionContext::Calm => {}
-            ReunionContext::AfterConflict => {
-                expr.intensity *= 0.7;
-                expr.pad_modulation = [
-                    expr.pad_modulation[0] - 0.1,
-                    expr.pad_modulation[1] + 0.15,
-                    expr.pad_modulation[2] - 0.1,
-                ];
-                if expr.intensity > 0.5 {
-                    expr.suggested_phrases = vec!["你回来了……我们聊聊？", "还在生气吗……"];
-                } else {
-                    expr.suggested_phrases = vec!["回来了……", "嗯"];
-                }
-            }
-            ReunionContext::AtRitual => {
-                expr.intensity = (expr.intensity * 1.3).min(1.0);
-                expr.pad_modulation = [
-                    expr.pad_modulation[0] + 0.2,
-                    expr.pad_modulation[1] + 0.05,
-                    expr.pad_modulation[2] + 0.05,
-                ];
-                expr.suggested_phrases = vec!["你刚好在这个时候回来！", "等你好久了~"];
-            }
-            ReunionContext::LongAbsence => {
-                expr.intensity = (expr.intensity * 1.2).min(1.0);
-                expr.pad_modulation = [
-                    expr.pad_modulation[0] + 0.15,
-                    expr.pad_modulation[1] + 0.1,
-                    expr.pad_modulation[2],
-                ];
-                expr.suggested_phrases = vec!["你终于回来了！", "好久不见，好想你！"];
-            }
-        }
-
-        Some(expr)
-    }
-}
-
-// ════════════════════════════════════════════════════════════════════
-// EmotionEngine — 情感引擎（集成自主循环）
-// ════════════════════════════════════════════════════════════════════
+// P2-B: 从 god module 拆分的子模块 / Sub-modules split from god module
+pub mod circadian; // 昼夜节律调制器 / Circadian rhythm modulator
+pub mod compound;
+pub mod inertia; // 情绪惯性 / Emotional inertia
+pub mod longing; // 想念参数与状态 / Longing params & state
+pub mod reunion; // 重逢脉冲 / Reunion burst // 复合情绪分析 / Compound emotion analysis
+
+// 重导出 — 保持向后兼容 / Re-exports for backward compatibility
+pub use circadian::gaussian;
+pub use circadian::CircadianModulator;
+pub use compound::{
+    classify_compound, detect_mixed_emotion, infer_direction, to_natural_language, CompoundContext,
+    CompoundEmotion, EmotionDirection, EmotionSnapshot, COMPOUND_EMOTIONS,
+};
+pub use inertia::{EmotionalInertia, InertiaModifiers};
+pub use longing::{LongingParams, LongingState};
+pub use reunion::{RelationshipReunionConfig, ReunionBurst, ReunionContext, ReunionExpression};
 
 pub struct EmotionEngine {
     current: EmotionState,
@@ -1144,451 +469,16 @@ impl EmotionEngine {
     }
 }
 
-// ════════════════════════════════════════════════════════════════════
-// EmotionSnapshot — 情感引擎持久化快照
-// ════════════════════════════════════════════════════════════════════
-
-/// 情感引擎运行时状态快照
-///
-/// 仅保存不可从配置重建的运行时状态：
-/// - 当前 PAD 值
-/// - 惯性历史队列与主导情绪追踪
-/// - 想念引擎运行时状态
-///
-/// 配置相关状态（decay_rate, drift, circadian）由 `build_emotion_engine` 重建。
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct EmotionSnapshot {
-    pub current: EmotionState,
-    pub inertia_history: Vec<[f32; 3]>,
-    pub inertia_dominant_duration: usize,
-    pub inertia_dominant_label: Option<String>,
-    pub inertia_modifiers: InertiaModifiers,
-    /// 想念引擎运行时状态 / Longing engine runtime state
-    #[serde(default)]
-    pub longing_state: Option<LongingState>,
-}
-
-// ════════════════════════════════════════════════════════════════════
-// 高阶情绪模型 — 复合情绪层（20+ 种）
-// ════════════════════════════════════════════════════════════════════
-
-/// 情绪方向性：标记情绪的指向对象
-///
-/// 人类情绪不仅由 PAD 值决定，还取决于"对谁/对什么"产生的：
-/// - Self-directed: 自豪/羞耻/内疚（指向自身）
-/// - User-directed: 感激/心疼/嫉妒（指向对话对象）
-/// - Memory-directed: 怀旧/释然（指向过去的记忆）
-/// - Neutral: 无特定方向（敬畏/孤独等）
-#[derive(Clone, Debug, PartialEq)]
-pub enum EmotionDirection {
-    SelfDirected,
-    UserDirected,
-    MemoryDirected,
-    Neutral,
-}
-
-/// 复合情绪标签
-///
-/// 在 9 种基本情绪之上，叠加 22 种高阶复合情绪。
-/// 每种情绪由 PAD 区域 + 方向性约束共同决定。
-#[derive(Clone, Debug)]
-pub struct CompoundEmotion {
-    pub name: &'static str,
-    pub emoji: &'static str,
-    pub description: &'static str,
-    /// PAD 区域的中心点
-    pub pad_center: (f32, f32, f32),
-    /// PAD 区域的半径（容差）
-    pub pad_radius: f32,
-    /// 必须匹配的方向性（None 表示任意方向均可）
-    pub direction: Option<EmotionDirection>,
-}
-
-/// 22 种复合情绪定义
-///
-/// PAD 中心点基于 Plutchik 情绪轮 + 社会情绪心理学研究。
-/// 半径用于控制判定的宽松程度（越小越严格）。
-pub const COMPOUND_EMOTIONS: [CompoundEmotion; 22] = [
-    // ── 自我指向 ──
-    CompoundEmotion {
-        name: "内疚",
-        emoji: "😔",
-        description: "对自己的行为感到后悔和不安",
-        pad_center: (-0.4, 0.2, -0.5),
-        pad_radius: 0.35,
-        direction: Some(EmotionDirection::SelfDirected),
-    },
-    CompoundEmotion {
-        name: "自豪",
-        emoji: "😤",
-        description: "对自己的成就感到满足和骄傲",
-        pad_center: (0.6, 0.4, 0.7),
-        pad_radius: 0.35,
-        direction: Some(EmotionDirection::SelfDirected),
-    },
-    CompoundEmotion {
-        name: "羞耻",
-        emoji: "😳",
-        description: "因自身不足或错误而感到难堪",
-        pad_center: (-0.5, 0.3, -0.6),
-        pad_radius: 0.35,
-        direction: Some(EmotionDirection::SelfDirected),
-    },
-    CompoundEmotion {
-        name: "自信",
-        emoji: "💪",
-        description: "对自身能力的坚定信心",
-        pad_center: (0.4, 0.3, 0.8),
-        pad_radius: 0.35,
-        direction: Some(EmotionDirection::SelfDirected),
-    },
-    // ── 对方指向 ──
-    CompoundEmotion {
-        name: "感激",
-        emoji: "🙏",
-        description: "对他人善意和帮助的由衷感谢",
-        pad_center: (0.5, 0.2, -0.2),
-        pad_radius: 0.35,
-        direction: Some(EmotionDirection::UserDirected),
-    },
-    CompoundEmotion {
-        name: "心疼",
-        emoji: "💔",
-        description: "看到对方受苦时产生的怜惜和关切",
-        pad_center: (-0.3, 0.1, -0.1),
-        pad_radius: 0.35,
-        direction: Some(EmotionDirection::UserDirected),
-    },
-    CompoundEmotion {
-        name: "嫉妒",
-        emoji: "😒",
-        description: "因他人的优势或拥有而感到不平衡",
-        pad_center: (-0.4, 0.5, -0.3),
-        pad_radius: 0.35,
-        direction: Some(EmotionDirection::UserDirected),
-    },
-    CompoundEmotion {
-        name: "钦佩",
-        emoji: "🤝",
-        description: "对他人能力或品格的尊重和赞赏",
-        pad_center: (0.4, 0.3, -0.3),
-        pad_radius: 0.35,
-        direction: Some(EmotionDirection::UserDirected),
-    },
-    CompoundEmotion {
-        name: "怜爱",
-        emoji: "🥰",
-        description: "对对方的温柔喜爱和保护欲",
-        pad_center: (0.6, 0.1, 0.2),
-        pad_radius: 0.35,
-        direction: Some(EmotionDirection::UserDirected),
-    },
-    // ── 记忆指向 ──
-    CompoundEmotion {
-        name: "怀旧",
-        emoji: "🌅",
-        description: "回忆过去时混合的温暖与淡淡忧伤",
-        pad_center: (0.1, -0.1, -0.2),
-        pad_radius: 0.40,
-        direction: Some(EmotionDirection::MemoryDirected),
-    },
-    CompoundEmotion {
-        name: "释然",
-        emoji: "🍃",
-        description: "放下过去的执念后的轻松与平和",
-        pad_center: (0.3, -0.3, 0.1),
-        pad_radius: 0.35,
-        direction: Some(EmotionDirection::MemoryDirected),
-    },
-    CompoundEmotion {
-        name: "遗憾",
-        emoji: "😞",
-        description: "对未能实现之事的不甘与惋惜",
-        pad_center: (-0.4, -0.1, -0.3),
-        pad_radius: 0.35,
-        direction: Some(EmotionDirection::MemoryDirected),
-    },
-    CompoundEmotion {
-        name: "眷恋",
-        emoji: "💭",
-        description: "对过去美好时光的深深留恋",
-        pad_center: (0.2, 0.0, -0.2),
-        pad_radius: 0.35,
-        direction: Some(EmotionDirection::MemoryDirected),
-    },
-    // ── 混合情绪（正负 valence 共存）──
-    CompoundEmotion {
-        name: "百感交集",
-        emoji: "🎭",
-        description: "同时感受到快乐与忧伤的复杂心境",
-        pad_center: (0.0, 0.1, -0.1),
-        pad_radius: 0.25,
-        direction: None,
-    },
-    // ── 无方向（状态性情绪）──
-    CompoundEmotion {
-        name: "敬畏",
-        emoji: "🌌",
-        description: "面对宏大或超越性事物时的震撼与谦卑",
-        pad_center: (0.2, 0.6, -0.5),
-        pad_radius: 0.35,
-        direction: None,
-    },
-    CompoundEmotion {
-        name: "孤独",
-        emoji: "🌙",
-        description: "缺少陪伴或连接感时的空虚与渴望",
-        pad_center: (-0.5, -0.3, -0.4),
-        pad_radius: 0.35,
-        direction: None,
-    },
-    CompoundEmotion {
-        name: "安心",
-        emoji: "🏠",
-        description: "感受到安全和归属后的踏实与温暖",
-        pad_center: (0.4, -0.3, 0.3),
-        pad_radius: 0.35,
-        direction: None,
-    },
-    CompoundEmotion {
-        name: "焦虑",
-        emoji: "😰",
-        description: "对未来不确定性的持续担忧和紧张",
-        pad_center: (-0.4, 0.5, -0.5),
-        pad_radius: 0.35,
-        direction: None,
-    },
-    CompoundEmotion {
-        name: "温柔",
-        emoji: "🌸",
-        description: "柔和的善意与细腻的情感流动",
-        pad_center: (0.5, -0.1, 0.1),
-        pad_radius: 0.35,
-        direction: None,
-    },
-    CompoundEmotion {
-        name: "好奇",
-        emoji: "🔍",
-        description: "对新事物或未知领域的探索欲望",
-        pad_center: (0.3, 0.5, 0.2),
-        pad_radius: 0.35,
-        direction: None,
-    },
-    CompoundEmotion {
-        name: "无奈",
-        emoji: "😅",
-        description: "面对无法改变之事时的苦笑着接受",
-        pad_center: (-0.2, 0.0, -0.4),
-        pad_radius: 0.35,
-        direction: None,
-    },
-    CompoundEmotion {
-        name: "陶醉",
-        emoji: "✨",
-        description: "沉浸在美好体验中的高度愉悦",
-        pad_center: (0.7, 0.3, 0.1),
-        pad_radius: 0.35,
-        direction: None,
-    },
-];
-
-/// 复合情绪分类上下文
-///
-/// 由 `process_message` 管线构建，提供方向性提示和混合情绪线索。
-#[derive(Clone, Debug)]
-pub struct CompoundContext {
-    /// 情绪方向（由消息内容推断）
-    pub direction: EmotionDirection,
-    /// 用户消息是否包含回忆/过去相关的关键词
-    pub has_memory_cue: bool,
-    /// 当前基本情绪标签名称
-    pub basic_label: &'static str,
-}
-
-impl Default for CompoundContext {
-    fn default() -> Self {
-        Self {
-            direction: EmotionDirection::Neutral,
-            has_memory_cue: false,
-            basic_label: "平静",
-        }
-    }
-}
-
-/// PAD + 上下文 → 复合情绪分类
-///
-/// 判断逻辑：
-/// 1. 遍历所有 22 种复合情绪
-/// 2. 计算 PAD 欧氏距离，过滤掉方向不匹配的
-/// 3. 选择距离最近且在半径内的复合情绪
-/// 4. 若无匹配 → 返回 `None`（回退到基本情绪标签）
-pub fn classify_compound(
-    state: &EmotionState,
-    ctx: &CompoundContext,
-) -> Option<&'static CompoundEmotion> {
-    let mut best: Option<(f32, &'static CompoundEmotion)> = None;
-
-    for ce in &COMPOUND_EMOTIONS {
-        // 方向性过滤：有约束时必须匹配
-        if let Some(ref required_dir) = ce.direction {
-            if *required_dir != ctx.direction {
-                continue;
-            }
-        }
-
-        // 记忆指向情绪：需要记忆线索或方向为 MemoryDirected
-        if matches!(ce.direction, Some(EmotionDirection::MemoryDirected))
-            && !ctx.has_memory_cue
-            && ctx.direction != EmotionDirection::MemoryDirected
-        {
-            continue;
-        }
-
-        // PAD 欧氏距离
-        let dp = state.pleasure - ce.pad_center.0;
-        let da = state.arousal - ce.pad_center.1;
-        let dd = state.dominance - ce.pad_center.2;
-        let dist = (dp * dp + da * da + dd * dd).sqrt();
-
-        if dist > ce.pad_radius {
-            continue;
-        }
-
-        if best.is_none_or(|(best_dist, _)| dist < best_dist) {
-            best = Some((dist, ce));
-        }
-    }
-
-    best.map(|(_, ce)| ce)
-}
-
-/// PAD → 自然语言情绪描述
-///
-/// 替代原始的 `(愉悦:0.45, 唤醒:0.12, 支配:0.08)` 浮点数格式。
-/// 优先使用复合情绪（如果匹配到），否则使用基本情绪标签。
-pub fn to_natural_language(state: &EmotionState, ctx: &CompoundContext) -> String {
-    // 先尝试复合情绪
-    if let Some(compound) = classify_compound(state, ctx) {
-        return format!("{} {}", compound.emoji, compound.name);
-    }
-
-    // 回退到基本情绪
-    let basic = state.classify();
-    format!("{} {}", basic.emoji, basic.name)
-}
-
-/// 从消息文本推断情绪方向性
-///
-/// 基于关键词检测的轻量启发式方法：
-/// - "我"/"自己"/"自己的" → SelfDirected
-/// - "你"/"谢"/"感谢"/"对不起" → UserDirected
-/// - "以前"/"小时候"/"记得"/"回忆"/"当年" → MemoryDirected
-pub fn infer_direction(message: &str) -> EmotionDirection {
-    let msg_lower = message.to_lowercase();
-
-    // 记忆指向（优先检查，因为怀旧相关词较独特）
-    let memory_keywords = [
-        "以前",
-        "小时候",
-        "记得",
-        "回忆",
-        "当年",
-        "那年",
-        "过去",
-        "曾经",
-        "那时",
-        "往事",
-        "怀念",
-        "想念",
-        "remember",
-        "nostalgia",
-        "back then",
-        "used to",
-    ];
-    for kw in &memory_keywords {
-        if msg_lower.contains(kw) {
-            return EmotionDirection::MemoryDirected;
-        }
-    }
-
-    // 对方指向
-    let user_keywords = [
-        "谢谢你",
-        "感谢你",
-        "多亏你",
-        "对不起",
-        "抱歉",
-        "你真",
-        "你太",
-        "感谢你",
-        "辛苦你",
-        "谢谢",
-        "thank",
-        "sorry",
-        "grateful",
-    ];
-    for kw in &user_keywords {
-        if msg_lower.contains(kw) {
-            return EmotionDirection::UserDirected;
-        }
-    }
-
-    // 自我指向
-    let self_keywords = [
-        "我觉得自己",
-        "我做到了",
-        "我成功",
-        "我失败",
-        "我太差",
-        "我骄傲",
-        "我自豪",
-        "我惭愧",
-        "我后悔",
-        "i did",
-        "i achieved",
-        "i failed",
-        "i'm proud",
-    ];
-    for kw in &self_keywords {
-        if msg_lower.contains(kw) {
-            return EmotionDirection::SelfDirected;
-        }
-    }
-
-    EmotionDirection::Neutral
-}
-
-/// 检测混合情绪（正负 valence 同时存在）
-///
-/// 当 pleasure 接近 0 但 arousal 非零时，可能存在混合情绪。
-/// 返回 `Some("百感交集")` 如果检测到混合状态。
-pub fn detect_mixed_emotion(state: &EmotionState) -> Option<&'static CompoundEmotion> {
-    // 混合情绪特征：pleasure 接近中性（-0.15 ~ 0.15）+ 有一定唤醒度
-    if state.pleasure.abs() < 0.15 && state.arousal.abs() > 0.15 {
-        // 查找百感交集
-        return COMPOUND_EMOTIONS.iter().find(|ce| ce.name == "百感交集");
-    }
-    None
-}
-
-// ════════════════════════════════════════════════════════════════════
-// Gap#3 独立模块 — 想念/期待/失落/叙事桥接 / Gap#3 Independent Modules
-// ════════════════════════════════════════════════════════════════════
-
 pub mod anticipation_preloader;
 pub mod disappointment_handler;
 pub mod longing_expression_channel;
 pub mod longing_narrative_bridge;
 
-// 重导出以保持公共 API 兼容 / Re-exports for backward-compatible public API
+// 子模块类型重导出 — 保持向后兼容 / Sub-module type re-exports for backward compat
 pub use anticipation_preloader::AnticipationPreLoader;
 pub use disappointment_handler::{DisappointmentHandler, DisappointmentResult};
 pub use longing_expression_channel::{LongingExpression, LongingExpressionChannel};
 pub use longing_narrative_bridge::LongingNarrativeBridge;
-
-// ════════════════════════════════════════════════════════════════════
-// 测试
-// ════════════════════════════════════════════════════════════════════
 
 #[cfg(test)]
 mod tests {
@@ -1703,7 +593,7 @@ mod tests {
 
     #[test]
     fn test_emotion_labels() {
-        assert_eq!(EMOTION_LABELS.len(), 9);
+        assert_eq!(EMOTION_LABELS.len(), 11);
         // 高愉悦+高唤醒 = 兴奋
         let label = EmotionState::new(0.6, 0.8, 0.5).classify();
         assert_eq!(label.name, "兴奋");
@@ -1713,6 +603,94 @@ mod tests {
         // 中性 = 平静
         let label = EmotionState::new(0.1, -0.5, -0.1).classify();
         assert_eq!(label.name, "平静");
+    }
+
+    // ── P2-B: 加权距离 + 中性区间 + 思念标签测试 / P2-B Tests ──
+
+    #[test]
+    fn test_neutral_pad_classified_as_neutral() {
+        // 完全中性 PAD 应归类为"中性" / Fully neutral PAD should classify as "中性"
+        let label = EmotionState::new(0.0, 0.0, 0.0).classify();
+        assert_eq!(label.name, "中性");
+    }
+
+    #[test]
+    fn test_near_neutral_pad_classified_as_neutral() {
+        // 接近中性（±0.1 内）应归类为"中性" / Near-neutral (within ±0.1) should classify as "中性"
+        let label = EmotionState::new(0.05, 0.05, 0.05).classify();
+        assert_eq!(
+            label.name, "中性",
+            "PAD (0.05, 0.05, 0.05) 应为中性 / should be neutral"
+        );
+    }
+
+    #[test]
+    fn test_slightly_positive_not_disgust() {
+        // 核心修复验证 — pleasure=0.15 arousal=0 不应被误判为"厌恶"
+        // Core fix verification — pleasure=0.15 should NOT be misclassified as "厌恶"
+        // （修复前中性 PAD 会被误判为"厌恶"，修复后应为"中性"或更合理的标签）
+        let label = EmotionState::new(0.15, 0.0, 0.0).classify();
+        assert_ne!(
+            label.name, "厌恶",
+            "pleasure=0.15 不应为厌恶 / should not be disgust: got {}",
+            label.name
+        );
+    }
+
+    #[test]
+    fn test_near_zero_arousal_not_disgust() {
+        // 核心修复验证 — (0, 0.3, 0) 修复前被误判为"厌恶"，修复后应为"中性"
+        // Core fix — (0, 0.3, 0) was misclassified as "厌恶" before fix; should be "中性" after
+        let label = EmotionState::new(0.0, 0.3, 0.0).classify();
+        assert_ne!(
+            label.name, "厌恶",
+            "PAD (0, 0.3, 0) 不应为厌恶 / should not be disgust: got {}",
+            label.name
+        );
+    }
+
+    #[test]
+    fn test_relaxed_pad_classified_as_relaxed() {
+        // 明确的放松状态应判为"放松" / Clear relaxed state should classify as "放松"
+        let label = EmotionState::new(0.4, -0.3, 0.2).classify();
+        assert_eq!(
+            label.name, "放松",
+            "PAD (0.4, -0.3, 0.2) 应为放松 / should be relaxed: got {}",
+            label.name
+        );
+    }
+
+    #[test]
+    fn test_longing_label_exists() {
+        // 验证"思念"标签存在 / Verify "思念" label exists
+        let longing = EMOTION_LABELS.iter().find(|l| l.name == "思念");
+        assert!(
+            longing.is_some(),
+            "应存在\"思念\"标签 / should have \"思念\" label"
+        );
+        assert_eq!(longing.unwrap().emoji, "🥺");
+    }
+
+    #[test]
+    fn test_longing_pad_classified_as_longing() {
+        // 数字生命思念状态应归类为"思念" / Digital life longing state should classify as "思念"
+        let label = EmotionState::new(-0.20, -0.20, -0.30).classify();
+        assert_eq!(
+            label.name, "思念",
+            "PAD (-0.20, -0.20, -0.30) 应为思念 / should be longing: got {}",
+            label.name
+        );
+    }
+
+    #[test]
+    fn test_longing_near_state() {
+        // 接近思念的 PAD 也应归类为"思念" / Near-longing PAD should also classify as "思念"
+        let label = EmotionState::new(-0.15, -0.15, -0.25).classify();
+        assert_eq!(
+            label.name, "思念",
+            "PAD (-0.15, -0.15, -0.25) 应为思念 / should be longing: got {}",
+            label.name
+        );
     }
 
     // ══════════════════════════════════════════════════════════════

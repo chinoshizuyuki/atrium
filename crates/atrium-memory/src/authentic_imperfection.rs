@@ -14,6 +14,9 @@
 //! Phase: 极致打磨 / Extreme Polishing | 2026-07-03
 
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
+
+use crate::resonance_core::ema;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // §1 完美度评估 — Perfection Assessment
@@ -119,7 +122,8 @@ impl ResponseStrategy {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AuthenticImperfection {
     /// 完美度历史 — 用于趋势分析 / Perfection history.
-    perfection_history: Vec<f64>,
+    /// P2-A: Vec→VecDeque，头部删除 O(N)→O(1) / P2-A: Vec→VecDeque, O(N)→O(1) front removal
+    perfection_history: VecDeque<f64>,
     /// 累计犯错次数 / Total mistakes.
     total_mistakes: u32,
     /// 累计回应策略使用次数 / Strategy usage counts.
@@ -133,7 +137,7 @@ pub struct AuthenticImperfection {
 impl Default for AuthenticImperfection {
     fn default() -> Self {
         Self {
-            perfection_history: Vec::new(),
+            perfection_history: VecDeque::new(),
             total_mistakes: 0,
             strategy_counts: [0; 5],
             over_apologies: 0,
@@ -151,9 +155,9 @@ impl AuthenticImperfection {
     /// 评估并建议 — 根据完美度评估给出建议 / Assess and suggest.
     pub fn assess(&mut self, assessment: &PerfectionAssessment) -> &'static str {
         let score = assessment.perfection_score();
-        self.perfection_history.push(score);
+        self.perfection_history.push_back(score);
         if self.perfection_history.len() > 100 {
-            self.perfection_history.remove(0);
+            self.perfection_history.pop_front();
         }
 
         if assessment.is_too_perfect() {
@@ -200,7 +204,7 @@ impl AuthenticImperfection {
 
         // 更新真实度 / Update authenticity.
         let alpha = 0.1;
-        self.current_authenticity += alpha * (strategy.authenticity() - self.current_authenticity);
+        self.current_authenticity = ema(self.current_authenticity, strategy.authenticity(), alpha);
 
         strategy
     }
@@ -235,11 +239,11 @@ impl AuthenticImperfection {
             return 0.0;
         }
         let start = self.perfection_history.len().saturating_sub(window);
-        let slice = &self.perfection_history[start..];
+        let slice: Vec<&f64> = self.perfection_history.range(start..).collect();
         if slice.len() < 2 {
             return 0.0;
         }
-        slice[slice.len() - 1] - slice[0]
+        *slice[slice.len() - 1] - *slice[0]
     }
 
     /// 获取当前真实度 / Get current authenticity.
@@ -396,7 +400,7 @@ mod tests {
     #[test]
     fn test_engine_perfection_trend() {
         let mut engine = AuthenticImperfection::new();
-        engine.perfection_history = vec![0.5, 0.6, 0.7, 0.8];
+        engine.perfection_history = vec![0.5, 0.6, 0.7, 0.8].into();
         let trend = engine.perfection_trend(4);
         assert!((trend - 0.3).abs() < 1e-6);
     }

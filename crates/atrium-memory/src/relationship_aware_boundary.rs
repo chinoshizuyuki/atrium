@@ -35,10 +35,14 @@ impl BoundaryLevel {
     /// 从关系阶段推导 / Derive from relationship stage
     pub fn from_stage(stage: &RelationshipStage) -> Self {
         match stage {
+            RelationshipStage::Stranger { .. } => Self::Strict,
             RelationshipStage::Acquaintance { .. } => Self::Strict,
             RelationshipStage::Familiar { .. } => Self::Cautious,
+            RelationshipStage::Friendly { .. } => Self::Cautious,
             RelationshipStage::Trusted { .. } => Self::Open,
+            RelationshipStage::Close { .. } => Self::Open,
             RelationshipStage::Deep { .. } => Self::Free,
+            RelationshipStage::Intimate { .. } => Self::Free,
         }
     }
 

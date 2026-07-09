@@ -17,6 +17,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use crate::resonance_core::ema;
+
 // ═══════════════════════════════════════════════════════════════════════════
 // §1 交互模式 — Interaction Pattern
 // ═══════════════════════════════════════════════════════════════════════════
@@ -60,7 +62,7 @@ impl InteractionPattern {
         self.last_ts = timestamp;
         // 更新情感效价EMA / Update valence EMA.
         let alpha = 0.15;
-        self.avg_valence += alpha * (valence - self.avg_valence);
+        self.avg_valence = ema(self.avg_valence, valence, alpha);
     }
 
     /// 涌现分数 — 是否已构成仪式 / Emergence score — whether it constitutes a ritual.

@@ -11,29 +11,9 @@ use crate::life_narrative::{
     NarrativeArc, NarrativeChapter, NarrativeSelf, NarrativeStats, TurningPoint,
 };
 
-// ════════════════════════════════════════════════════════════════════
-// NarrativeSelfError — 存储错误类型
-// ════════════════════════════════════════════════════════════════════
-
-/// 叙事自我存储错误
-#[derive(Debug)]
-pub enum NarrativeSelfError {
-    /// sled 数据库错误
-    SledError(String),
-    /// 序列化/反序列化错误
-    CodecError(String),
-}
-
-impl std::fmt::Display for NarrativeSelfError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::SledError(e) => write!(f, "narrative sled error: {}", e),
-            Self::CodecError(e) => write!(f, "narrative codec error: {}", e),
-        }
-    }
-}
-
-impl std::error::Error for NarrativeSelfError {}
+// 统一使用 store_core::StoreError / Unified StoreError from store_core
+// NarrativeSelfError 已移除，所有方法返回 crate::store_core::StoreError。
+// Old NarrativeSelfError removed; all methods return crate::store_core::StoreError.
 
 // ════════════════════════════════════════════════════════════════════
 // SerializableNarrativeSelf — 可序列化的叙事自我快照
@@ -132,16 +112,16 @@ pub struct NarrativeSelfStore {
 
 impl NarrativeSelfStore {
     /// 打开或创建叙事自我存储
-    pub fn open(db: &sled::Db) -> Result<Self, NarrativeSelfError> {
+    pub fn open(db: &sled::Db) -> Result<Self, crate::store_core::StoreError> {
         let tree = db
             .open_tree("narrative_self")
-            .map_err(|e| NarrativeSelfError::SledError(e.to_string()))?;
+            .map_err(|e| crate::store_core::StoreError::Sled(e.to_string()))?;
         let arc_tree = db
             .open_tree("narrative_arcs")
-            .map_err(|e| NarrativeSelfError::SledError(e.to_string()))?;
+            .map_err(|e| crate::store_core::StoreError::Sled(e.to_string()))?;
         let tp_tree = db
             .open_tree("narrative_turning_points")
-            .map_err(|e| NarrativeSelfError::SledError(e.to_string()))?;
+            .map_err(|e| crate::store_core::StoreError::Sled(e.to_string()))?;
         Ok(Self {
             tree,
             arc_tree,
@@ -150,61 +130,64 @@ impl NarrativeSelfStore {
     }
 
     /// 保存完整的叙事自我模型
-    pub fn save(&self, model: &NarrativeSelf) -> Result<(), NarrativeSelfError> {
+    pub fn save(&self, model: &NarrativeSelf) -> Result<(), crate::store_core::StoreError> {
         let snapshot = SerializableNarrativeSelf::from(model);
         let value = bincode::serialize(&snapshot)
-            .map_err(|e| NarrativeSelfError::CodecError(e.to_string()))?;
+            .map_err(|e| crate::store_core::StoreError::Codec(e.to_string()))?;
         self.tree
             .insert(b"self", value.as_slice())
-            .map_err(|e| NarrativeSelfError::SledError(e.to_string()))?;
+            .map_err(|e| crate::store_core::StoreError::Sled(e.to_string()))?;
 
         // 同步更新弧索引
         for arc in model.active_arcs.iter().chain(model.closed_arcs.iter()) {
             let key = arc.id.to_be_bytes();
             let val = bincode::serialize(arc)
-                .map_err(|e| NarrativeSelfError::CodecError(e.to_string()))?;
+                .map_err(|e| crate::store_core::StoreError::Codec(e.to_string()))?;
             self.arc_tree
                 .insert(key, val.as_slice())
-                .map_err(|e| NarrativeSelfError::SledError(e.to_string()))?;
+                .map_err(|e| crate::store_core::StoreError::Sled(e.to_string()))?;
         }
 
         // 同步更新转折点索引
         for tp in &model.turning_points {
             let key = tp.id.to_be_bytes();
             let val = bincode::serialize(tp)
-                .map_err(|e| NarrativeSelfError::CodecError(e.to_string()))?;
+                .map_err(|e| crate::store_core::StoreError::Codec(e.to_string()))?;
             self.tp_tree
                 .insert(key, val.as_slice())
-                .map_err(|e| NarrativeSelfError::SledError(e.to_string()))?;
+                .map_err(|e| crate::store_core::StoreError::Sled(e.to_string()))?;
         }
 
         Ok(())
     }
 
     /// 加载叙事自我模型
-    pub fn load(&self) -> Result<NarrativeSelf, NarrativeSelfError> {
+    pub fn load(&self) -> Result<NarrativeSelf, crate::store_core::StoreError> {
         match self.tree.get(b"self") {
             Ok(Some(value)) => {
                 let snapshot: SerializableNarrativeSelf = bincode::deserialize(&value)
-                    .map_err(|e| NarrativeSelfError::CodecError(e.to_string()))?;
+                    .map_err(|e| crate::store_core::StoreError::Codec(e.to_string()))?;
                 Ok(snapshot.into_model())
             }
             Ok(None) => Ok(NarrativeSelf::new()),
-            Err(e) => Err(NarrativeSelfError::SledError(e.to_string())),
+            Err(e) => Err(crate::store_core::StoreError::Sled(e.to_string())),
         }
     }
 
     /// 获取单个弧
-    pub fn get_arc(&self, arc_id: u64) -> Result<Option<NarrativeArc>, NarrativeSelfError> {
+    pub fn get_arc(
+        &self,
+        arc_id: u64,
+    ) -> Result<Option<NarrativeArc>, crate::store_core::StoreError> {
         let key = arc_id.to_be_bytes();
         match self.arc_tree.get(key) {
             Ok(Some(value)) => {
                 let arc: NarrativeArc = bincode::deserialize(&value)
-                    .map_err(|e| NarrativeSelfError::CodecError(e.to_string()))?;
+                    .map_err(|e| crate::store_core::StoreError::Codec(e.to_string()))?;
                 Ok(Some(arc))
             }
             Ok(None) => Ok(None),
-            Err(e) => Err(NarrativeSelfError::SledError(e.to_string())),
+            Err(e) => Err(crate::store_core::StoreError::Sled(e.to_string())),
         }
     }
 
@@ -212,24 +195,24 @@ impl NarrativeSelfStore {
     pub fn get_turning_point(
         &self,
         tp_id: u64,
-    ) -> Result<Option<TurningPoint>, NarrativeSelfError> {
+    ) -> Result<Option<TurningPoint>, crate::store_core::StoreError> {
         let key = tp_id.to_be_bytes();
         match self.tp_tree.get(key) {
             Ok(Some(value)) => {
                 let tp: TurningPoint = bincode::deserialize(&value)
-                    .map_err(|e| NarrativeSelfError::CodecError(e.to_string()))?;
+                    .map_err(|e| crate::store_core::StoreError::Codec(e.to_string()))?;
                 Ok(Some(tp))
             }
             Ok(None) => Ok(None),
-            Err(e) => Err(NarrativeSelfError::SledError(e.to_string())),
+            Err(e) => Err(crate::store_core::StoreError::Sled(e.to_string())),
         }
     }
 
     /// 获取所有弧 ID
-    pub fn arc_ids(&self) -> Result<Vec<u64>, NarrativeSelfError> {
+    pub fn arc_ids(&self) -> Result<Vec<u64>, crate::store_core::StoreError> {
         let mut ids = Vec::new();
         for item in self.arc_tree.iter() {
-            let (key, _) = item.map_err(|e| NarrativeSelfError::SledError(e.to_string()))?;
+            let (key, _) = item.map_err(|e| crate::store_core::StoreError::Sled(e.to_string()))?;
             let bytes: [u8; 8] = key.as_ref().try_into().unwrap_or([0u8; 8]);
             ids.push(u64::from_be_bytes(bytes));
         }
@@ -237,10 +220,10 @@ impl NarrativeSelfStore {
     }
 
     /// 获取所有转折点 ID
-    pub fn turning_point_ids(&self) -> Result<Vec<u64>, NarrativeSelfError> {
+    pub fn turning_point_ids(&self) -> Result<Vec<u64>, crate::store_core::StoreError> {
         let mut ids = Vec::new();
         for item in self.tp_tree.iter() {
-            let (key, _) = item.map_err(|e| NarrativeSelfError::SledError(e.to_string()))?;
+            let (key, _) = item.map_err(|e| crate::store_core::StoreError::Sled(e.to_string()))?;
             let bytes: [u8; 8] = key.as_ref().try_into().unwrap_or([0u8; 8]);
             ids.push(u64::from_be_bytes(bytes));
         }

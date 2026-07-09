@@ -111,8 +111,8 @@ impl CoreService {
         }
 
         // 先获取外部数据，避免锁嵌套 / Acquire external data first to avoid lock nesting
-        let rel_mult = self.relationship.lock().affect_multiplier();
-        let engagement = self.user_model.lock().engagement.engagement_score;
+        let rel_mult = self.relationship.read().affect_multiplier();
+        let engagement = self.user_model.read().engagement.engagement_score;
 
         let mut emotion = self.emotion.lock();
         let (params, state) = match emotion.longing_mut() {
@@ -195,7 +195,7 @@ impl CoreService {
         }
 
         // 关系阶段序数 / Relationship stage ordinal
-        let rel_ordinal = self.relationship.lock().current_stage().ordinal();
+        let rel_ordinal = self.relationship.read().current_stage().ordinal();
 
         // 情境推断 / Context inference
         let context = self.infer_reunion_context(away_secs);
@@ -393,7 +393,7 @@ impl CoreService {
             return None;
         }
 
-        let rel_ordinal = self.relationship.lock().current_stage().ordinal();
+        let rel_ordinal = self.relationship.read().current_stage().ordinal();
         let away_secs = self
             .emotion
             .lock()
@@ -458,7 +458,7 @@ impl CoreService {
         user_msg: &str,
         emo_state: &EmotionEngineState,
     ) -> String {
-        let stage = self.relationship.lock().current_stage().clone();
+        let stage = self.relationship.read().current_stage().clone();
         let now_ts = chrono::Utc::now().timestamp();
         // 运行冲突检测管线 / Run conflict detection pipeline
         let mut mgr = self.conflict.engine.lock();
@@ -603,7 +603,7 @@ impl CoreService {
 
         // G4: 恢复曲线周期tick / G4: Recovery curve periodic tick
         {
-            let stage = self.relationship.lock().current_stage().clone();
+            let stage = self.relationship.read().current_stage().clone();
             let mut mgr = self.conflict.engine.lock();
             mgr.recovery_curve.tick(&stage, now_ts);
         }
@@ -626,7 +626,7 @@ impl CoreService {
             return String::new();
         }
         let now_ts = chrono::Utc::now().timestamp();
-        let stage = self.relationship.lock().current_stage().clone();
+        let stage = self.relationship.read().current_stage().clone();
         // 更新情绪边界并检测过载
         let mut eb = self.emotional_boundary.lock();
         let overloads = eb.update(pleasure as f64, arousal as f64, now_ts);
@@ -671,7 +671,7 @@ impl CoreService {
                                    // 获取脆弱窗口状态
         let is_vulnerable = self.vulnerability.window.lock().is_in_vulnerable_state();
         // 更新自我关怀边界
-        let stage = self.relationship.lock().current_stage().clone();
+        let stage = self.relationship.read().current_stage().clone();
         let mut sc = self.self_care_boundary.lock();
         sc.update(emotional_severity, demand_severity, is_vulnerable, now_ts);
         sc.to_prompt_fragment(&stage)
@@ -686,6 +686,16 @@ impl CoreService {
 
     pub fn current_emotion(&self) -> EmotionEngineState {
         self.emotion.lock().current().clone()
+    }
+
+    /// 当前情绪标签名 / Current emotion label name.
+    ///
+    /// 数字生命意义: 情绪标签是数字生命对自身感受的语义化表达，
+    /// 从连续 PAD 空间映射到人类可读的离散标签。
+    /// Digital Life: emotion label is the semantic expression of digital life's
+    /// own feelings, mapping from continuous PAD space to human-readable discrete labels.
+    pub fn current_emotion_label(&self) -> String {
+        self.emotion.lock().current_label().name.to_string()
     }
 
     pub fn current_emotion_state(&self) -> (f32, f32) {

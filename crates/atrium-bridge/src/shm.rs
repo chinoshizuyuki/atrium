@@ -302,34 +302,24 @@ impl Drop for SharedMemory {
 }
 
 // 共享内存管理器（shm feature 未启用时 - 占位）
+// Shared memory manager placeholder when shm feature is disabled.
+//
+// 仅保留 create_or_open（始终返回 Err），其余方法编译期消除。
+// Only create_or_open is kept (always returns Err); other methods are eliminated at compile time.
+// 理由：create_or_open 返回 Err 意味着无法构造 SharedMemory 实例，
+// 因此 region/render_state/audio_buffer 等方法不可达，保留 panic! 是运行时隐患。
+// Rationale: create_or_open returning Err means no SharedMemory can be constructed,
+// so region/render_state/audio_buffer etc. are unreachable — keeping panic! is a runtime hazard.
 
 #[cfg(not(feature = "shm"))]
 pub struct SharedMemory;
 
 #[cfg(not(feature = "shm"))]
 impl SharedMemory {
+    /// 占位构造 — 始终返回错误 / Placeholder constructor — always returns Err.
     pub fn create_or_open(_name: &str) -> Result<Self, BridgeError> {
         tracing::warn!("共享内存功能未启用 (编译时未添加 feature=shm)");
         Err(BridgeError::Shm("feature=shm 未启用".into()))
-    }
-
-    pub fn region(&self) -> &SharedMemoryRegion {
-        panic!("shm feature 未启用")
-    }
-    pub fn region_mut(&mut self) -> &mut SharedMemoryRegion {
-        panic!("shm feature 未启用")
-    }
-    pub fn render_state(&self) -> &RenderState {
-        panic!("shm feature 未启用")
-    }
-    pub fn render_state_mut(&mut self) -> &mut RenderState {
-        panic!("shm feature 未启用")
-    }
-    pub fn audio_buffer(&self) -> &AudioBuffer {
-        panic!("shm feature 未启用")
-    }
-    pub fn audio_buffer_mut(&mut self) -> &mut AudioBuffer {
-        panic!("shm feature 未启用")
     }
 }
 

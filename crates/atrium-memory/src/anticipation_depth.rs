@@ -14,6 +14,7 @@
 //! 归属认知域：关系海马体（Relational）。
 //! Cognitive domain: Relational.
 
+use crate::resonance_core::PadSource;
 use serde::{Deserialize, Serialize};
 use std::f64::consts::PI;
 
@@ -118,6 +119,15 @@ impl AnticipationFlavor {
             AnticipationFlavor::Anxious => "焦虑",
             AnticipationFlavor::Wistful => "惆怅",
         }
+    }
+}
+
+// PadSource trait 实现 — 统一 PAD 情感源接口 / PadSource trait impl
+impl PadSource for AnticipationFlavor {
+    /// 当前 PAD 增量 — 委托至 pad_offset / Current PAD delta — delegates to pad_offset
+    #[inline]
+    fn pad_delta(&self) -> [f64; 3] {
+        self.pad_offset()
     }
 }
 

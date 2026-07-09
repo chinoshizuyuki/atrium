@@ -586,6 +586,8 @@ impl UserMentalModel {
             "随意"
         };
 
+        // Issue-6: 参与度描述包含具体数值，使 LLM 更精确感知用户状态
+        // Issue-6: Engagement description includes numeric value for precise LLM perception
         let engagement_desc = if self.engagement.engagement_score > 0.7 {
             "高"
         } else if self.engagement.engagement_score > 0.3 {
@@ -593,6 +595,12 @@ impl UserMentalModel {
         } else {
             "低"
         };
+        let engagement_detail = format!(
+            "{}（{:.0}%，会话均{:.1}条消息）",
+            engagement_desc,
+            self.engagement.engagement_score * 100.0,
+            self.engagement.messages_per_session
+        );
 
         // Top 3 topics by interest weight
         let top_topics = self.top_topics(3);
@@ -605,7 +613,7 @@ impl UserMentalModel {
 
         format!(
             "用户当前{}（{}），偏好{}{}的交流风格{}，参与度{}。",
-            mood_desc, valence_desc, style_desc, formality_desc, topic_part, engagement_desc
+            mood_desc, valence_desc, style_desc, formality_desc, topic_part, engagement_detail
         )
     }
 

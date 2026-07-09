@@ -29,6 +29,10 @@ services/*/__pycache__/
 services/*/*.pyc
 services/*/.venv/
 services/*/.pytest_cache/
+# QQ 适配器虚拟环境与缓存 / QQ adapter venv and cache
+services/gateway/__pycache__/
+services/gateway/.venv/
+services/gateway/.pytest_cache/
 
 # Node
 node_modules/

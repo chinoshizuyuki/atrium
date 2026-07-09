@@ -8,7 +8,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::resonance_core::{pad_magnitude, ResonanceEngine};
+use crate::resonance_core::{
+    exponential_decay_f32, pad_delta_to_array, pad_magnitude, PadSource, ResonanceEngine,
+};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 配置 — Configuration
@@ -106,7 +108,7 @@ impl CuriosityResonance {
             return;
         }
         let elapsed = (now - self.last_tick).max(0) as f32;
-        let decay = 0.5f32.powf(elapsed / self.config.half_life_secs);
+        let decay = exponential_decay_f32(elapsed, self.config.half_life_secs);
         self.current_pad.0 *= decay;
         self.current_pad.1 *= decay;
         self.current_pad.2 *= decay;
@@ -204,6 +206,19 @@ impl ResonanceEngine for CuriosityResonance {
 // ═══════════════════════════════════════════════════════════════════════════
 // 单元测试 — Unit Tests
 // ═══════════════════════════════════════════════════════════════════════════
+
+// PadSource trait 桥接 — 统一 PAD 情感源接口 / PadSource trait bridge
+impl PadSource for CuriosityResonance {
+    /// 当前好奇心共振 PAD 增量 / Current curiosity resonance PAD delta
+    #[inline]
+    fn pad_delta(&self) -> [f64; 3] {
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as f64;
+        pad_delta_to_array(self.current_pad_delta(now_secs))
+    }
+}
 
 #[cfg(test)]
 mod tests {

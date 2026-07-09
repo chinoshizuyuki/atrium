@@ -1197,6 +1197,7 @@ mod tests {
                 created_at: 0,
                 access_count: 5,
                 last_access: 0,
+                pinned: false,
             },
         );
         let mut rng = rand::thread_rng();

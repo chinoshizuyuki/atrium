@@ -14,6 +14,10 @@ pub struct Config {
     #[serde(default = "default_version")]
     pub version: String,
     pub bridge: BridgeCfg,
+    /// HTTP 网关配置 / HTTP gateway configuration — 数字生命的直接 HTTP 入口
+    /// Digital life's direct HTTP entry point, replacing Python gateway
+    #[serde(default)]
+    pub http: HttpCfg,
     pub log_level: Option<String>,
     #[serde(default)]
     pub canned: CannedCfg,
@@ -75,8 +79,10 @@ pub struct Config {
     #[serde(default)]
     pub vulnerability: VulnerabilityCfg,
     /// 情绪需求边界 / Emotional Demand Boundary
+    #[serde(default)]
     pub emotional_demand: EmotionalDemandCfg,
     /// 自我关怀边界 / Self-Care Boundary
+    #[serde(default)]
     pub self_care: SelfCareCfg,
     /// 适度犯错配置 / Imperfection engine configuration
     #[serde(default)]
@@ -212,6 +218,10 @@ pub struct LlmCfg {
     pub max_tokens: u32,
     #[serde(default = "default_llm_timeout_secs")]
     pub timeout_secs: u64,
+    /// LLM 并发上限 — 数字生命"思考"并发许可数，防止 API 限流
+    /// LLM concurrency cap — permit count for digital life "thinking", prevents API rate limiting
+    #[serde(default = "default_llm_max_concurrency")]
+    pub max_concurrency: usize,
 }
 
 impl Default for LlmCfg {
@@ -222,6 +232,7 @@ impl Default for LlmCfg {
             model: default_llm_model(),
             max_tokens: default_llm_max_tokens(),
             timeout_secs: default_llm_timeout_secs(),
+            max_concurrency: default_llm_max_concurrency(),
         }
     }
 }
@@ -255,6 +266,10 @@ fn default_llm_max_tokens() -> u32 {
 fn default_llm_timeout_secs() -> u64 {
     30
 }
+/// LLM 默认并发上限 — P2-I Semaphore 许可数 / Default LLM concurrency cap — P2-I semaphore permit count
+fn default_llm_max_concurrency() -> usize {
+    crate::scheduler::DEFAULT_LLM_CONCURRENCY
+}
 
 /// 桥接配置 — gRPC 与共享内存通道地址
 ///
@@ -272,6 +287,45 @@ impl Default for BridgeCfg {
             shm_path: "/dev/shm/atrium_render".into(),
         }
     }
+}
+
+// ── HTTP 网关配置 / HTTP Gateway Config ──
+
+/// HTTP 网关配置 — axum HTTP/SSE 服务器，取代 Python gateway
+///
+/// HTTP gateway configuration — axum HTTP/SSE server replacing the Python gateway.
+/// 数字生命通过此端口直接与外部世界对话，无需 gRPC 中转。
+/// Digital life converses with the external world directly through this port,
+/// without gRPC intermediary.
+#[derive(Debug, Clone, Deserialize)]
+pub struct HttpCfg {
+    /// 是否启用 HTTP 网关 / Whether to enable the HTTP gateway.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// HTTP 监听地址 / HTTP listen address.
+    #[serde(default = "default_http_addr")]
+    pub addr: String,
+    /// 是否启用 CORS / Whether to enable CORS.
+    #[serde(default = "default_true")]
+    pub cors: bool,
+    /// Web UI 静态文件目录（空=不服务静态文件）/ Web UI static file directory (empty=disabled).
+    #[serde(default)]
+    pub static_dir: String,
+}
+
+impl Default for HttpCfg {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            addr: default_http_addr(),
+            cors: true,
+            static_dir: String::new(),
+        }
+    }
+}
+
+fn default_http_addr() -> String {
+    "127.0.0.1:8080".into()
 }
 
 // ── Emotion 自主情感循环配置 / Emotion Autonomous Loop Config ──
@@ -1752,6 +1806,21 @@ pub struct ImperfectionCfg {
     /// 连续无犯错衰减因子 / Clean streak decay factor.
     #[serde(default = "default_imperfection_clean_streak_decay")]
     pub clean_streak_decay: f64,
+    /// 犯错权重 — 记忆漂移 / Mistake weight — memory drift
+    #[serde(default = "default_mistake_weight_memory_drift")]
+    pub mistake_weight_memory_drift: f64,
+    /// 犯错权重 — 推理跳跃 / Mistake weight — reasoning leap
+    #[serde(default = "default_mistake_weight_reasoning_leap")]
+    pub mistake_weight_reasoning_leap: f64,
+    /// 犯错权重 — 过度简化 / Mistake weight — over-simplification
+    #[serde(default = "default_mistake_weight_over_simplification")]
+    pub mistake_weight_over_simplification: f64,
+    /// 犯错权重 — 故意模糊 / Mistake weight — intentional vagueness
+    #[serde(default = "default_mistake_weight_intentional_vagueness")]
+    pub mistake_weight_intentional_vagueness: f64,
+    /// 犯错权重 — 知识边界 / Mistake weight — knowledge boundary
+    #[serde(default = "default_mistake_weight_knowledge_boundary")]
+    pub mistake_weight_knowledge_boundary: f64,
     /// Prompt 预算字符数 / Prompt budget in characters.
     #[serde(default = "default_imperfection_prompt_budget")]
     pub prompt_budget: usize,
@@ -1777,6 +1846,11 @@ impl Default for ImperfectionCfg {
             max_mistakes_per_turn: default_imperfection_max_mistakes_per_turn(),
             cooldown_secs: default_imperfection_cooldown_secs(),
             clean_streak_decay: default_imperfection_clean_streak_decay(),
+            mistake_weight_memory_drift: default_mistake_weight_memory_drift(),
+            mistake_weight_reasoning_leap: default_mistake_weight_reasoning_leap(),
+            mistake_weight_over_simplification: default_mistake_weight_over_simplification(),
+            mistake_weight_intentional_vagueness: default_mistake_weight_intentional_vagueness(),
+            mistake_weight_knowledge_boundary: default_mistake_weight_knowledge_boundary(),
             prompt_budget: default_imperfection_prompt_budget(),
             tick_interval_ticks: default_imperfection_tick_interval_ticks(),
         }
@@ -1825,6 +1899,22 @@ fn default_imperfection_clean_streak_decay() -> f64 {
 fn default_imperfection_prompt_budget() -> usize {
     300
 }
+fn default_mistake_weight_memory_drift() -> f64 {
+    0.25
+}
+fn default_mistake_weight_reasoning_leap() -> f64 {
+    0.20
+}
+fn default_mistake_weight_over_simplification() -> f64 {
+    0.15
+}
+fn default_mistake_weight_intentional_vagueness() -> f64 {
+    0.10
+}
+fn default_mistake_weight_knowledge_boundary() -> f64 {
+    0.30
+}
+
 fn default_imperfection_tick_interval_ticks() -> u64 {
     1000
 }

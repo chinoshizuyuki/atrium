@@ -1,6 +1,6 @@
 [package]
 name = "atrium-core"
-version = "0.10.0"
+version = "0.11.0"
 edition = "2021"
 
 [dependencies]
@@ -16,6 +16,8 @@ atrium-memory = { path = "../atrium-memory" }
 atrium-emotion = { path = "../atrium-emotion" }
 atrium-persona = { path = "../atrium-persona" }
 atrium-plugin = { path = "../atrium-plugin" }
+# TUI 集成 — 单进程即生命体: atrium-core 启动后直接显示 TUI / TUI integration — single-process digital life
+atrium-tui = { path = "../atrium-tui" }
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
@@ -30,8 +32,18 @@ tokio-stream = "0.1"
 futures-util = "0.3"
 tonic = "0.12"
 
+# HTTP 网关 / HTTP Gateway — 数字生命的直接 HTTP 入口
+# Digital life's direct HTTP entry point, replacing Python gateway
+axum.workspace = true
+tower-http.workspace = true
+
 rand = "0.8"
 sled = "0.34"
+
+[features]
+default = []
+embedding = ["atrium-memory/embedding"]
+
 [dev-dependencies]
 rand = "0.8"
 sled = "0.34"

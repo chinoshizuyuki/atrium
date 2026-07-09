@@ -292,10 +292,16 @@ pub enum LlmCallKind {
     Reflection,
     /// 知识提取 / Knowledge extraction (intelligence_extract)
     IntelligenceExtract,
+    /// 非流式对话 / Non-streaming conversation (process_message)
+    Chat,
     /// 流式对话 / Streaming conversation (process_message_stream)
     StreamChat,
     /// Room 群聊 / Room group chat
     RoomChat,
+    /// 时间解析兜底 / Time parsing fallback
+    TimeParse,
+    /// ReAct 推理 / ReAct reasoning (multi-step Thought-Action-Observation loop)
+    ReAct,
 }
 
 impl LlmCallKind {
@@ -311,8 +317,11 @@ impl LlmCallKind {
             Self::SelfDescription => "自我描述",
             Self::Reflection => "反思",
             Self::IntelligenceExtract => "知识提取",
+            Self::Chat => "对话",
             Self::StreamChat => "流式对话",
             Self::RoomChat => "群聊",
+            Self::TimeParse => "时间解析",
+            Self::ReAct => "ReAct推理",
         }
     }
 
@@ -328,8 +337,11 @@ impl LlmCallKind {
             Self::SelfDescription => "self_description",
             Self::Reflection => "reflection",
             Self::IntelligenceExtract => "intelligence_extract",
+            Self::Chat => "chat",
             Self::StreamChat => "stream_chat",
             Self::RoomChat => "room_chat",
+            Self::TimeParse => "time_parse",
+            Self::ReAct => "react",
         }
     }
 }
@@ -629,6 +641,9 @@ mod tests {
         assert_eq!(LlmCallKind::IntelligenceExtract.label_zh(), "知识提取");
         assert_eq!(LlmCallKind::StreamChat.label_en(), "stream_chat");
         assert_eq!(LlmCallKind::RoomChat.label_zh(), "群聊");
+        // 非流式对话变体 — unary 路径 LLM 生成 / Non-streaming chat variant — unary path LLM generation
+        assert_eq!(LlmCallKind::Chat.label_zh(), "对话");
+        assert_eq!(LlmCallKind::Chat.label_en(), "chat");
     }
 
     #[test]

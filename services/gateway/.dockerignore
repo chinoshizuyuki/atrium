@@ -1,0 +1,28 @@
+# Python 缓存 / Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# 虚拟环境 / Virtual environments
+.venv/
+venv/
+env/
+
+# 测试缓存 / Test cache
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE / 编辑器
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 操作系统 / OS
+.DS_Store
+Thumbs.db
+
+# 文档（构建时不需要）/ Docs (not needed at build time)
+*.md

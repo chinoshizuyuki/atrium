@@ -92,7 +92,7 @@ impl From<&crate::conflict_reconciliation::ConflictManager> for SerializableConf
         Self {
             disagreement_sensitivity: mgr.disagreement.sensitivity,
             demand_count: mgr.over_demand.demand_count,
-            demand_window: mgr.over_demand.demand_window.clone(),
+            demand_window: mgr.over_demand.demand_window.iter().copied().collect(),
             window_size: mgr.over_demand.window_size,
             high_freq_threshold: mgr.over_demand.high_freq_threshold,
             escalation_config: mgr.escalation.config.clone(),
@@ -134,7 +134,7 @@ impl SerializableConflictManager {
 
         // 恢复过度索取检测器状态 / Restore over-demand detector state
         mgr.over_demand.demand_count = self.demand_count;
-        mgr.over_demand.demand_window = self.demand_window;
+        mgr.over_demand.demand_window = self.demand_window.into();
         mgr.over_demand.window_size = self.window_size;
         mgr.over_demand.high_freq_threshold = self.high_freq_threshold;
 

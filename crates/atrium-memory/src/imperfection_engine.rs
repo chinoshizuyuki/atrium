@@ -243,13 +243,46 @@ pub struct ImperfectionStats {
 //  配置 / Configuration
 // ═══════════════════════════════════════════════════════════════════
 
-/// 适度犯错配置 / Imperfection configuration
+// 适度犯错配置 / Imperfection configuration
+//
+// 概率模型：P(mistake) = base_prob × cognitive_load × fatigue
+//                           × (1 - familiarity) × emotional_interference
+//                           × relationship_gate × maturity_gate
+//
+// 每个因子都是 [0.0, 1.0] 的调制系数，最终概率被 clamp 到 [0, max_prob]。
+
+// 犯错类型权重 — 控制每种不完美的发生倾向 / Mistake kind weights
 ///
-/// 概率模型：P(mistake) = base_prob × cognitive_load × fatigue
-///                           × (1 - familiarity) × emotional_interference
-///                           × relationship_gate × maturity_gate
-///
-/// 每个因子都是 [0.0, 1.0] 的调制系数，最终概率被 clamp 到 [0, max_prob]。
+/// 数字生命的不同不完美类型各有权重，决定哪种"犯错"更常见。
+/// 这些权重可通过 TOML 配置调整，让数字生命的性格可微调。
+/// Weights for each mistake kind — tunable via TOML config.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MistakeWeights {
+    /// 记忆漂移权重 / Memory drift weight
+    pub memory_drift: f64,
+    /// 推理跳跃权重 / Reasoning leap weight
+    pub reasoning_leap: f64,
+    /// 过度简化权重 / Over-simplification weight
+    pub over_simplification: f64,
+    /// 故意模糊权重 / Intentional vagueness weight
+    pub intentional_vagueness: f64,
+    /// 知识边界权重 / Knowledge boundary weight
+    pub knowledge_boundary: f64,
+}
+
+impl Default for MistakeWeights {
+    fn default() -> Self {
+        // 委托 base_weight()，消除数字重复 / Delegate to base_weight() to eliminate duplication
+        Self {
+            memory_drift: MistakeKind::MemoryDrift.base_weight(),
+            reasoning_leap: MistakeKind::ReasoningLeap.base_weight(),
+            over_simplification: MistakeKind::OverSimplification.base_weight(),
+            intentional_vagueness: MistakeKind::IntentionalVagueness.base_weight(),
+            knowledge_boundary: MistakeKind::KnowledgeBoundary.base_weight(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImperfectionConfig {
     /// 是否启用 / Whether enabled
@@ -279,6 +312,9 @@ pub struct ImperfectionConfig {
     pub cooldown_secs: f64,
     /// 统计衰减因子——每轮 clean_streak 增加时概率衰减 / Statistical decay
     pub clean_streak_decay: f64,
+    /// 犯错类型权重 — 可通过 TOML 配置微调 / Mistake kind weights — TOML tunable
+    #[serde(default)]
+    pub mistake_weights: MistakeWeights,
 }
 
 impl Default for ImperfectionConfig {
@@ -298,6 +334,7 @@ impl Default for ImperfectionConfig {
             max_mistakes_per_turn: 2,
             cooldown_secs: 30.0,
             clean_streak_decay: 0.95,
+            mistake_weights: MistakeWeights::default(),
         }
     }
 }
@@ -567,6 +604,22 @@ impl ImperfectionEngine {
         &self.config
     }
 
+    /// 获取犯错类型权重 — 从配置读取，非硬编码 / Get mistake weight from config
+    ///
+    /// 数字生命的不完美倾向可通过 TOML 配置微调，
+    /// 而非写死在枚举方法中。
+    /// Mistake tendency is TOML-tunable, not hardcoded in enum method.
+    pub fn mistake_weight(&self, kind: MistakeKind) -> f64 {
+        let w = &self.config.mistake_weights;
+        match kind {
+            MistakeKind::MemoryDrift => w.memory_drift,
+            MistakeKind::ReasoningLeap => w.reasoning_leap,
+            MistakeKind::OverSimplification => w.over_simplification,
+            MistakeKind::IntentionalVagueness => w.intentional_vagueness,
+            MistakeKind::KnowledgeBoundary => w.knowledge_boundary,
+        }
+    }
+
     /// 获取待纠错队列 / Get pending corrections
     pub fn pending_corrections(&self) -> &[PendingCorrection] {
         &self.pending_corrections
@@ -620,7 +673,7 @@ impl ImperfectionEngine {
         let cfg = &self.config;
 
         // 基础概率 × 维度权重 / Base × kind weight
-        let mut p = cfg.base_prob * kind.base_weight();
+        let mut p = cfg.base_prob * self.mistake_weight(kind);
 
         // 认知负荷调制：超过阈值后线性增长 / Cognitive load modulation
         if self.cognitive_load > cfg.cognitive_load_threshold {
@@ -838,15 +891,22 @@ impl ImperfectionEngine {
 
     /// 调度自纠 / Schedule a self-correction
     ///
-    /// 犯错后不立即纠正，而是延迟 2-15 秒——
+    /// 犯错后不立即纠正，而是延迟若干秒——
     /// 模拟人类"意识到自己说错了"的那个意识涌现瞬间。
-    /// 严重度越高，延迟越短（Evident → 2-5s, Subtle → 10-15s）
+    /// 严重度越高，延迟越短（Evident → 最早段, Subtle → 最晚段）。
+    /// 延迟范围从配置读取，按严重度三等分插值。
+    /// Delay range is read from config and trisected by severity.
     fn schedule_correction(&mut self, record: &MistakeRecord, now: Instant) {
-        // 严重度决定延迟范围 / Severity determines delay range
+        // 从配置读取全局延迟范围 / Read global delay range from config
+        let lo = self.config.correction_delay_min_secs;
+        let hi = self.config.correction_delay_max_secs;
+        let span = hi - lo;
+
+        // 严重度决定延迟子区间——越严重越快纠正 / Severity trisects the range
         let (min_s, max_s) = match record.severity {
-            MistakeSeverity::Evident => (2.0, 5.0),
-            MistakeSeverity::Moderate => (5.0, 10.0),
-            MistakeSeverity::Subtle => (10.0, 15.0),
+            MistakeSeverity::Evident => (lo, lo + span * (1.0 / 3.0)),
+            MistakeSeverity::Moderate => (lo + span * (1.0 / 3.0), lo + span * (2.0 / 3.0)),
+            MistakeSeverity::Subtle => (lo + span * (2.0 / 3.0), hi),
         };
 
         // 在范围内随机采样 / Random sample within range

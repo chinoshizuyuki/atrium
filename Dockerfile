@@ -32,7 +32,7 @@ VOLUME ["/data/atrium"]
 ENV ATRIUM_DATA_DIR=/data/atrium
 ENV VERSION=${VERSION}
 USER atrium
-EXPOSE 50051
+EXPOSE 8080 50051 9090
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD atrium-core /etc/atrium/atrium.toml --health || exit 1
 ENTRYPOINT ["atrium-core"]

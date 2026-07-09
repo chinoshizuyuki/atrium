@@ -318,10 +318,25 @@ impl LinguisticProfile {
         let particle_density = sigmoid(p * 0.25 + (1.0 - a.abs()) * 0.1 + 0.15);
 
         // 自我修复：焦虑/犹豫→高
-        let self_repair_tendency = sigmoid(-d * 0.2 - p * 0.1 + 0.05);
+        // 修复"嗯..."起头 bug: 原偏置 +0.05 使中性 PAD 下 self_repair ≈ 0.512 > 0.2 阈值
+        // 恒定注入"回复节奏慢一些...自我修正"风格指令 → LLM 最自然的回应就是"嗯..."起头
+        // 现下调偏置至 -1.4: 中性 PAD [0,0,0] 下 self_repair ≈ 0.198 < 0.2 阈值（不触发）
+        // Fix "嗯..." opening bug: original bias +0.05 made neutral PAD yield self_repair ≈ 0.512 > 0.2 threshold,
+        // constantly injecting "slow rhythm... self-repair" style hint → LLM's most natural response is "嗯..." opening.
+        // Now lower bias to -1.4: neutral PAD yields self_repair ≈ 0.198 < 0.2 threshold (not triggered).
+        let self_repair_tendency = sigmoid(-d * 0.2 - p * 0.1 - 1.4);
 
         // 沉默倾向：悲伤→高，兴奋→低
-        let silence_tendency = sigmoid(-p * 0.3 - a * 0.2 + 0.1);
+        // 修复"嗯..."起头 bug: 原偏置 +0.1 使中性 PAD 下 silence ≈ 0.525 > 0.4 阈值
+        // 恒定注入"低落+短句+省略号"风格指令 → LLM 最自然的回应就是"嗯..."起头
+        // 现下调偏置至 -0.7 并增强 p/a 系数: 中性 PAD [0,0,0] 下 silence ≈ 0.332 < 0.4 阈值（不触发），
+        // 但悲伤 PAD [-0.7,-0.3,-0.5] 下 silence ≈ 0.435 > 0.4（仍触发沉默指令，保留情感表达力）
+        // Fix "嗯..." opening bug: original bias +0.1 made neutral PAD yield silence ≈ 0.525 > 0.4 threshold,
+        // constantly injecting "low mood + short sentences + ellipsis" style hint → "嗯..." opening.
+        // Now lower bias to -0.7 and strengthen p/a coefficients: neutral PAD yields silence ≈ 0.332 < 0.4
+        // (not triggered), but sad PAD [-0.7,-0.3,-0.5] yields silence ≈ 0.435 > 0.4 (still triggered,
+        // preserving emotional expressiveness).
+        let silence_tendency = sigmoid(-p * 0.5 - a * 0.3 - 0.7);
 
         // 亲昵：喜悦→高，愤怒→低
         let endearment_tendency = sigmoid(p * 0.3 + a * 0.05 - 0.1);
@@ -352,10 +367,14 @@ impl LinguisticProfile {
     /// - 深度：语气词+0.2，亲昵+0.4，幽默+0.2
     pub fn apply_relationship_overlay(&mut self, relationship: &RelationshipStage) {
         let (particle_delta, endearment_delta, humor_delta, certainty_delta) = match relationship {
+            RelationshipStage::Stranger { .. } => (-0.3, -0.6, -0.4, 0.2),
             RelationshipStage::Acquaintance { .. } => (-0.2, -0.5, -0.3, 0.1),
             RelationshipStage::Familiar { .. } => (0.0, 0.0, 0.0, 0.0),
+            RelationshipStage::Friendly { .. } => (0.05, 0.1, 0.05, 0.0),
             RelationshipStage::Trusted { .. } => (0.1, 0.2, 0.1, 0.0),
+            RelationshipStage::Close { .. } => (0.15, 0.3, 0.15, -0.05),
             RelationshipStage::Deep { .. } => (0.2, 0.4, 0.2, -0.1),
+            RelationshipStage::Intimate { .. } => (0.25, 0.5, 0.25, -0.15),
         };
 
         self.particle_density = (self.particle_density + particle_delta).clamp(0.0, 1.0);
@@ -363,8 +382,12 @@ impl LinguisticProfile {
         self.humor_tendency = (self.humor_tendency + humor_delta).clamp(0.0, 1.0);
         self.certainty_marking = (self.certainty_marking + certainty_delta).clamp(0.0, 1.0);
 
-        // 初识阶段额外约束：不允许高亲昵和高语气词
-        if matches!(relationship, RelationshipStage::Acquaintance { .. }) {
+        // 早期阶段额外约束：不允许高亲昵和高语气词
+        // Early stage extra constraints: no high endearment or particle density
+        if matches!(
+            relationship,
+            RelationshipStage::Stranger { .. } | RelationshipStage::Acquaintance { .. }
+        ) {
             self.endearment_tendency = self.endearment_tendency.min(0.15);
             self.particle_density = self.particle_density.min(0.25);
             self.silence_tendency = self.silence_tendency.min(0.1);
@@ -471,10 +494,14 @@ fn sigmoid(x: f32) -> f32 {
 /// - 深度：偏自然、亲密、高唤醒允许
 fn relationship_pad_offset(relationship: &RelationshipStage) -> (f32, f32, f32, f32) {
     match relationship {
+        RelationshipStage::Stranger { .. } => (0.02, -0.2, 0.15, 0.0),
         RelationshipStage::Acquaintance { .. } => (0.05, -0.15, 0.1, 0.0),
         RelationshipStage::Familiar { .. } => (0.1, 0.0, 0.0, 0.33),
+        RelationshipStage::Friendly { .. } => (0.12, 0.02, -0.02, 0.5),
         RelationshipStage::Trusted { .. } => (0.15, 0.05, -0.05, 0.67),
+        RelationshipStage::Close { .. } => (0.17, 0.08, -0.08, 0.83),
         RelationshipStage::Deep { .. } => (0.2, 0.1, -0.1, 1.0),
+        RelationshipStage::Intimate { .. } => (0.22, 0.12, -0.12, 1.0),
     }
 }
 
@@ -974,6 +1001,46 @@ mod tests {
         let lp = LinguisticProfile::neutral();
         assert!(approx_eq(lp.sentence_length, 14.0, 1e-6));
         assert!(approx_eq(lp.syntactic_complexity, 0.4, 1e-6));
+    }
+
+    /// 回归测试: 中性 PAD 下不应触发沉默/自我修复风格指令
+    /// Regression test: neutral PAD must not trigger silence/self-repair style hints
+    ///
+    /// 修复"嗯..."起头 bug: 原偏置项使中性 PAD 下 silence_tendency ≈ 0.525 > 0.4 阈值，
+    /// 恒定注入"低落+短句+省略号"风格指令 → LLM 总是以"嗯..."起头。
+    /// 现验证中性 PAD 下 silence_tendency < 0.4 且 self_repair_tendency < 0.2。
+    ///
+    /// Fix "嗯..." opening bug: original bias made neutral PAD yield silence_tendency ≈ 0.525 > 0.4
+    /// threshold, constantly injecting "low mood + short sentences + ellipsis" style hint →
+    /// LLM always opened with "嗯...". Now verify neutral PAD yields silence_tendency < 0.4
+    /// and self_repair_tendency < 0.2.
+    #[test]
+    fn test_linguistic_profile_neutral_pad_no_silence_no_self_repair() {
+        // 构造中性 PAD [0,0,0] 的 StyleEmbedding
+        // Construct StyleEmbedding with neutral PAD [0,0,0]
+        let style = StyleEmbedding::from_emotion_context(
+            [0.0, 0.0, 0.0],
+            None,
+            &EmotionDirection::Neutral,
+            &familiar(),
+            0.0,
+            0.0,
+        );
+        let lp = style.to_linguistic_profile();
+        // 中性 PAD 下 silence_tendency 必须 < 0.4（不触发"低落+短句+省略号"指令）
+        // Under neutral PAD, silence_tendency must be < 0.4 (no "low mood + ellipsis" hint)
+        assert!(
+            lp.silence_tendency < 0.4,
+            "neutral PAD must not trigger silence hint (would cause 嗯... opening): {}",
+            lp.silence_tendency
+        );
+        // 中性 PAD 下 self_repair_tendency 必须 < 0.2（不触发"慢节奏+自我修正"指令）
+        // Under neutral PAD, self_repair_tendency must be < 0.2 (no "slow rhythm + self-repair" hint)
+        assert!(
+            lp.self_repair_tendency < 0.2,
+            "neutral PAD must not trigger self-repair hint (would cause 嗯... opening): {}",
+            lp.self_repair_tendency
+        );
     }
 
     // ── 关系阶段叠加测试 ──

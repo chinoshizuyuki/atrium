@@ -317,6 +317,7 @@ mod real_api {
             model: "deepseek-v4-flash".into(),
             max_tokens: 512,
             timeout_secs: 30,
+            max_concurrency: 4,
         }
     }
 

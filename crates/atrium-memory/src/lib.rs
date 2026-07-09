@@ -7,6 +7,19 @@
 //! MemoryManager（STM 满时自动溢出到 LTM）以及所有子模块的公共导出。
 //! Includes StmBuffer (short-term ring buffer), SledLtm (sled-backed long-term memory),
 //! MemoryManager (auto-spill from STM to LTM), and all public submodule re-exports.
+//!
+//! ## 命名约定 / Naming Convention
+//!
+//! | 后缀 / Suffix | 语义 / Semantics | 示例 / Example |
+//! |---------------|------------------|----------------|
+//! | `_engine` | 有状态计算引擎（tick 驱动 + 内部状态演化） / Stateful computation engine | `imperfection_engine`, `subtext_engine` |
+//! | `_modulator` | 轻状态调制器（纯函数式或微量状态） / Light-state modulator | `style_modulator`, `authentic_expression_modulator` |
+//! | `_store` | 持久化存储层（sled 读写） / Persistence layer | `fact_store`, `conflict_store` |
+//! | `_core` | 核心抽象（trait + 工具函数） / Core abstraction | `store_core`, `resonance_core` |
+//! | 无后缀 / None | 数据类型 / 配置 / 工具模块 / Data types / Config / Utility | `emotional_climate`, `maturity` |
+//!
+//! 命名是代码的"神经标签"——统一命名让每个模块的角色一目了然。
+//! Naming is the "neural label" of code — unified naming makes each module's role clear at a glance.
 
 use serde::{Deserialize, Serialize};
 
@@ -22,6 +35,9 @@ pub mod empathy;
 pub mod evidence;
 pub mod fact_extractor;
 pub mod fact_store;
+// 旧 sled 迁移工具 — 三阶段强制清理 / Legacy sled migration utility — three-stage forced cleanup
+pub mod migrate_util;
+pub use migrate_util::{finalize_sled_migration, try_open_legacy_sled};
 pub mod feedback;
 pub mod fts5_index;
 pub mod graph_store;
@@ -41,7 +57,8 @@ pub mod reflection;
 pub mod relationship;
 pub mod replay;
 pub mod rules;
-pub mod sanctuary;
+// 自主思考管线 — 独处时生成洞察 / Self-play pipeline — autonomous thinking when idle
+// Phase 1.4 预留：ThoughtFactory 是数字生命"独处时自主思考"的能力声明 / Phase 1.4 reserve: ThoughtFactory declares digital life's idle-thinking capability
 pub mod selfplay;
 pub mod store_core; // 统一存储错误与认知域存储接口 / Unified store error & DomainStore trait
 pub mod summarizer;
@@ -74,6 +91,15 @@ pub mod relationship_aware_boundary;
 pub mod self_care_boundary;
 
 pub mod emotional_irrationality;
+// P2-B 情景记忆 / P2-B Episodic Memory — 记录具体事件经历（时间/情境/情绪/重要度）
+// Records specific event experiences (time/context/emotion/importance)
+pub mod episodic_store;
+// P3-A 程序记忆 / P3-A Procedural Memory — 记住"怎么做某事"的技能积累
+// Remembers "how to do things", skill accumulation
+pub mod procedural_memory;
+// P3-B 主动遗忘 / P3-B Active Forgetting — 数字生命从"忘了"进化为"决定忘"
+// Digital life evolves from "forgot" to "decides to forget" — conscious, recoverable forgetting
+pub mod active_forget;
 pub mod irrationality_store;
 pub mod narrative_store;
 
@@ -115,6 +141,13 @@ pub mod ritual_evolution;
 // Gap#9: 脆弱与不完美 90→95%
 pub mod authentic_imperfection;
 pub mod imperfection_warmth;
+// G-08 成长反馈桥接 — 闭合 FeedbackLoop → VulnerabilityWisdom/ImperfectionWarmth 反馈回路
+// G-08 Growth feedback bridge — closes FeedbackLoop → VulnerabilityWisdom/ImperfectionWarmth feedback loop
+pub mod growth_feedback;
+pub use growth_feedback::{
+    AmbientFeedback, FeedbackKind, GrowthAccumulator, GrowthBridgeStore, GrowthExchangeResult,
+    GrowthFeedbackBridge,
+};
 pub mod vulnerability_ritual;
 
 // 通电工程 Phase 4 — 孤儿文件注册 / Orphan file registration
@@ -128,10 +161,13 @@ pub mod existential_depth; // 存在深度 / Existential depth
 pub mod inner_council; // 内在议会 / Inner council
 pub mod ritual_heartbeat; // 仪式心跳 / Ritual heartbeat
 
+pub mod orphan_persistence; // 孤儿模块持久化 / Orphan module persistence
+
 pub mod file_store;
 pub mod llm_client;
 pub mod monologue_gen;
 pub mod prompts;
+pub mod react_engine;
 pub mod reminder_store;
 pub mod time_parser;
 

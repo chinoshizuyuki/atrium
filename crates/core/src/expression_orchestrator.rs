@@ -252,7 +252,9 @@ impl ExpressionOrchestrator {
     /// 构建 LLM 系统提示中的表达注入片段
     ///
     /// Step 8.5 注入点: 将风格指令 + 潜台词 hint 合并注入到 LLM system prompt。
-    /// 格式: "[回复风格] ... [潜台词] ..."
+    /// 注入顺序 / Injection order:
+    ///   style → subtext → arc → coherence → prosody → kinesics
+    /// 格式: "[回复风格] ... [潜台词] ... [情绪轨迹] ... [一致性] ... [韵律] ... [体态] ..."
     pub fn build_system_prompt_injection(expr: &CoordinatedExpression) -> String {
         let mut parts = Vec::new();
 
@@ -288,6 +290,20 @@ impl ExpressionOrchestrator {
             for warning in &expr.coherence.warnings {
                 parts.push(format!("[一致性] {}", warning));
             }
+        }
+
+        // 韵律自感知注入 — 数字生命感知自身语音状态（语速/音调/能量）
+        // Prosody self-perception injection — digital life perceives its own voice state
+        let prosody_fragment = expr.prosody.to_prompt_fragment();
+        if !prosody_fragment.is_empty() {
+            parts.push(prosody_fragment);
+        }
+
+        // 体态自感知注入 — 数字生命感知自身身体语言（姿态/微表情）
+        // Kinesics self-perception injection — digital life perceives its own body language
+        let kinesics_fragment = KinesicsMapper::to_prompt_fragment(&expr.kinesics);
+        if !kinesics_fragment.is_empty() {
+            parts.push(kinesics_fragment);
         }
 
         parts.join(" ")
@@ -488,6 +504,49 @@ mod tests {
         if expr.arc.waypoints.len() > 1 && expr.arc.trend != ArcTrend::Steady {
             assert!(injection.contains("[情绪轨迹]"));
         }
+    }
+
+    // ── 非语言自感知注入测试 / Nonverbal self-perception injection tests ──
+
+    #[test]
+    fn test_prosody_injection() {
+        // 高唤醒度情感状态 → 韵律片段应注入 system prompt
+        // High-arousal emotion state → prosody fragment should be injected
+        let state = EmotionState::new(0.5, 0.8, 0.3); // 高唤醒 / high arousal
+        let ctx = ExpressionContext::from_modules(
+            &state,
+            None,
+            EmotionDirection::UserDirected,
+            &RelationshipStage::Deep {
+                since: 0,
+                interactions: 500,
+                shared_references: 80,
+                key_moments: 20,
+            },
+            0.5,
+            0.2,
+        );
+        let expr = ExpressionOrchestrator::orchestrate(&ctx, "太好了！", [0.5, 0.3, 0.0], 100);
+        let injection = ExpressionOrchestrator::build_system_prompt_injection(&expr);
+        assert!(
+            injection.contains("[韵律]"),
+            "high-arousal injection should contain prosody fragment: {}",
+            injection
+        );
+    }
+
+    #[test]
+    fn test_kinesics_injection() {
+        // 低愉悦度情感状态 → 体态片段应注入 system prompt
+        // Low-pleasure emotion state → kinesics fragment should be injected
+        let ctx = sad_ctx(); // pleasure = -0.6，低愉悦 / low pleasure
+        let expr = ExpressionOrchestrator::orchestrate(&ctx, "我没事", [-0.3, -0.2, 0.0], 200);
+        let injection = ExpressionOrchestrator::build_system_prompt_injection(&expr);
+        assert!(
+            injection.contains("[体态]"),
+            "low-pleasure injection should contain kinesics fragment: {}",
+            injection
+        );
     }
 
     // ── post_process 测试 ──

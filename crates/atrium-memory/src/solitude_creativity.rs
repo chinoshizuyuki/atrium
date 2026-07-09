@@ -15,6 +15,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::resonance_core::ema;
+
 // ═══════════════════════════════════════════════════════════════════════════
 // §1 创造性产出 — Creative Output
 // ═══════════════════════════════════════════════════════════════════════════
@@ -146,13 +148,13 @@ impl SolitudeCreativity {
 
         // 更新EMA / Update EMA.
         let alpha = 0.1;
-        self.avg_novelty += alpha * (output.novelty - self.avg_novelty);
-        self.avg_depth += alpha * (output.depth - self.avg_depth);
+        self.avg_novelty = ema(self.avg_novelty, output.novelty, alpha);
+        self.avg_depth = ema(self.avg_depth, output.depth, alpha);
 
         // 更新效率 / Update efficiency.
         if output.solitude_duration > 0 {
             let efficiency = 1.0 / output.solitude_duration as f64 * 3600.0; // ideas per hour.
-            self.creative_efficiency += alpha * (efficiency - self.creative_efficiency);
+            self.creative_efficiency = ema(self.creative_efficiency, efficiency, alpha);
         }
 
         // 更新最佳时长 / Update optimal duration.

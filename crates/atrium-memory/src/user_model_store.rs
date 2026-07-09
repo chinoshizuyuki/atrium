@@ -123,9 +123,14 @@ mod tests {
         let store = UserMentalModelStore::open(&db).unwrap();
 
         // 初始应为默认模型 / Initial should be default model
+        // 注意：两次 UserMentalModel::new() 调用可能跨毫秒，时间戳字段会不同
+        // Note: two UserMentalModel::new() calls may span different milliseconds
         let model = store.load("user1").unwrap();
         let default = UserMentalModel::new();
-        assert_eq!(model, default);
+        assert_eq!(model.mood.valence, default.mood.valence);
+        assert_eq!(model.mood.intensity, default.mood.intensity);
+        assert_eq!(model.style.formality, default.style.formality);
+        assert_eq!(model.topic_interests, default.topic_interests);
 
         // 修改并保存 / Modify and save
         let mut modified = UserMentalModel::new();

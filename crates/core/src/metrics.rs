@@ -150,6 +150,45 @@ pub fn init_tracing(log_level: &str, json_format: bool) {
     }
 }
 
+/// 初始化 tracing — 日志输出到文件（TUI 集成模式）
+/// Initialize tracing — logs to file (TUI integration mode).
+///
+/// TUI 模式下终端留给 ratatui，日志必须重定向到文件，否则会刷屏破坏 TUI 渲染。
+/// 日志文件路径: ~/.atrium/logs/core.log（自动滚动，每次启动追加）
+///
+/// In TUI mode the terminal is reserved for ratatui; logs must be redirected to a file,
+/// otherwise they would flood the screen and corrupt TUI rendering.
+/// Log file path: ~/.atrium/logs/core.log (append mode, auto-created)
+///
+/// @param log_level  默认日志级别 / Default log level
+pub fn init_tracing_to_file(log_level: &str) -> std::io::Result<()> {
+    use tracing_subscriber::{fmt, EnvFilter};
+
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(log_level));
+
+    // 日志目录: ~/.atrium/logs/ / Log directory: ~/.atrium/logs/
+    let log_dir = crate::service::default_data_dir()
+        .rsplit_once('/')
+        .map(|(parent, _)| format!("{}/logs", parent))
+        .unwrap_or_else(|| "./logs".to_string());
+    std::fs::create_dir_all(&log_dir)?;
+    let log_path = format!("{}/core.log", log_dir);
+
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)?;
+
+    tracing::info!("日志文件 / Log file: {}", log_path);
+
+    fmt()
+        .with_env_filter(filter)
+        .with_writer(std::sync::Mutex::new(file))
+        .init();
+
+    Ok(())
+}
+
 // ─── 单元测试 / Unit Tests ───
 
 #[cfg(test)]

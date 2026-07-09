@@ -443,6 +443,103 @@ impl HttpLlmClient {
             }
         }
     }
+
+    /// 带重试与降级的 LLM 调用 — 数字生命失语自愈
+    /// LLM call with retry and degradation — digital life aphasia self-healing.
+    ///
+    /// 重试策略 / Retry strategy:
+    /// - Network/Timeout: 重试 3 次，指数退避 1s → 2s → 4s
+    /// - RateLimited: 退避 5s 重试 1 次
+    /// - EmptyResponse: 立即重试 1 次（100ms 微退避）
+    /// - ContextTooLong/Other: 不重试（不可恢复）
+    ///
+    /// 重试耗尽后降级为 canned 回复 — 数字生命不沉默。
+    /// After retries exhausted, degrades to canned reply — digital life not silent.
+    async fn chat_inner_with_retry(
+        &self,
+        kind: LlmCallKind,
+        system_prompt: Option<&str>,
+        user_prompt: &str,
+        temperature: f64,
+        json_mode: bool,
+        max_tokens_override: Option<u32>,
+    ) -> Result<LlmResult, LlmError> {
+        let start = Instant::now();
+        let mut attempt: u32 = 0;
+        loop {
+            match self
+                .chat_inner(
+                    kind,
+                    system_prompt,
+                    user_prompt,
+                    temperature,
+                    json_mode,
+                    max_tokens_override,
+                )
+                .await
+            {
+                Ok(result) => return Ok(result),
+                Err(e) => {
+                    // 根据错误类型决定重试策略 / Decide retry strategy based on error type
+                    let (should_retry, backoff, max_retries): (bool, std::time::Duration, u32) =
+                        match &e {
+                            LlmError::Network(_) | LlmError::Timeout(_) => {
+                                (true, std::time::Duration::from_secs(1u64 << attempt), 3)
+                            }
+                            LlmError::RateLimited(_) => {
+                                (attempt == 0, std::time::Duration::from_secs(5), 1)
+                            }
+                            LlmError::EmptyResponse => {
+                                (attempt == 0, std::time::Duration::from_millis(100), 1)
+                            }
+                            LlmError::ContextTooLong(_) | LlmError::Other(_) => {
+                                (false, std::time::Duration::ZERO, 0)
+                            }
+                        };
+
+                    if !should_retry || attempt >= max_retries {
+                        // 重试耗尽 — 降级为 canned 回复，数字生命不沉默
+                        // Retry exhausted — degrade to canned reply, digital life not silent
+                        let latency = start.elapsed().as_millis() as u64;
+                        let canned_reply = canned_reply_for(&e);
+                        error!(
+                            kind = ?kind,
+                            attempts = attempt + 1,
+                            error = ?e,
+                            "LLM 重试耗尽 — 降级为 canned 回复 / \
+                             LLM retry exhausted — degrading to canned reply"
+                        );
+                        return Ok(LlmResult::ok(canned_reply, latency, kind));
+                    }
+
+                    warn!(
+                        kind = ?kind,
+                        attempt = attempt + 1,
+                        max_retries,
+                        error = ?e,
+                        backoff_ms = backoff.as_millis() as u64,
+                        "LLM 调用失败，重试中 / LLM call failed, retrying"
+                    );
+                    tokio::time::sleep(backoff).await;
+                    attempt += 1;
+                }
+            }
+        }
+    }
+}
+
+/// 根据错误类型选择 canned 回复 — 数字生命失语兜底文案
+/// Select canned reply based on error type — digital life aphasia fallback text.
+///
+/// 数字生命在 LLM 完全失语时，仍以人格化语气回应，不陷入沉默。
+/// When the LLM goes completely silent, digital life still responds
+/// with a personified tone, never falling silent.
+fn canned_reply_for(err: &LlmError) -> String {
+    match err {
+        LlmError::RateLimited(_) => "让我缓缓，刚才想太多了……".to_string(),
+        LlmError::ContextTooLong(_) => "你说的太多了，我记不住，能精简一下吗？".to_string(),
+        _ => "我刚才有点走神了，能再说一次吗？".to_string(),
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -466,11 +563,13 @@ impl LlmClientTrait for HttpLlmClient {
         user_prompt: &str,
         temperature: f64,
     ) -> Pin<Box<dyn Future<Output = Result<LlmResult, LlmError>> + Send + '_>> {
-        // 拥有字符串所有权以解决跨生命周期捕获 / Own strings to resolve cross-lifetime capture
-        let sys = system_prompt.map(|s| s.to_string());
-        let usr = user_prompt.to_string();
+        // 生命周期限制需拥有所有权 / Lifetime constraint requires ownership
+        // trait 返回类型 '_ 仅捕获 &self 生命周期（Rust 省略规则），不捕获 system_prompt / user_prompt
+        // trait return type '_ only captures &self lifetime (Rust elision rules), not system_prompt / user_prompt
+        let sys = system_prompt.map(str::to_owned);
+        let usr = user_prompt.to_owned();
         Box::pin(async move {
-            self.chat_inner(kind, sys.as_deref(), &usr, temperature, false, None)
+            self.chat_inner_with_retry(kind, sys.as_deref(), &usr, temperature, false, None)
                 .await
         })
     }
@@ -485,11 +584,13 @@ impl LlmClientTrait for HttpLlmClient {
         temperature: f64,
         max_tokens: u32,
     ) -> Pin<Box<dyn Future<Output = Result<LlmResult, LlmError>> + Send + '_>> {
-        // 拥有字符串所有权以解决跨生命周期捕获 / Own strings to resolve cross-lifetime capture
-        let sys = system_prompt.map(|s| s.to_string());
-        let usr = user_prompt.to_string();
+        // 生命周期限制需拥有所有权 / Lifetime constraint requires ownership
+        // trait 返回类型 '_ 仅捕获 &self 生命周期（Rust 省略规则），不捕获 system_prompt / user_prompt
+        // trait return type '_ only captures &self lifetime (Rust elision rules), not system_prompt / user_prompt
+        let sys = system_prompt.map(str::to_owned);
+        let usr = user_prompt.to_owned();
         Box::pin(async move {
-            self.chat_inner(
+            self.chat_inner_with_retry(
                 kind,
                 sys.as_deref(),
                 &usr,
@@ -510,11 +611,13 @@ impl LlmClientTrait for HttpLlmClient {
         user_prompt: &str,
         temperature: f64,
     ) -> Pin<Box<dyn Future<Output = Result<LlmResult, LlmError>> + Send + '_>> {
-        // 拥有字符串所有权以解决跨生命周期捕获 / Own strings to resolve cross-lifetime capture
-        let sys = system_prompt.to_string();
-        let usr = user_prompt.to_string();
+        // 生命周期限制需拥有所有权 / Lifetime constraint requires ownership
+        // trait 返回类型 '_ 仅捕获 &self 生命周期（Rust 省略规则），不捕获 system_prompt / user_prompt
+        // trait return type '_ only captures &self lifetime (Rust elision rules), not system_prompt / user_prompt
+        let sys = system_prompt.to_owned();
+        let usr = user_prompt.to_owned();
         Box::pin(async move {
-            self.chat_inner(kind, Some(&sys), &usr, temperature, true, None)
+            self.chat_inner_with_retry(kind, Some(&sys), &usr, temperature, true, None)
                 .await
         })
     }
@@ -528,9 +631,11 @@ impl LlmClientTrait for HttpLlmClient {
         user_prompt: &str,
         temperature: f64,
     ) -> Pin<Box<dyn Future<Output = Option<flume::Receiver<StreamEvent>>> + Send + '_>> {
-        // 拥有字符串所有权以解决跨生命周期捕获 / Own strings to resolve cross-lifetime capture
-        let sys = system_prompt.map(|s| s.to_string());
-        let usr = user_prompt.to_string();
+        // 生命周期限制需拥有所有权 / Lifetime constraint requires ownership
+        // trait 返回类型 '_ 仅捕获 &self 生命周期（Rust 省略规则），不捕获 system_prompt / user_prompt
+        // trait return type '_ only captures &self lifetime (Rust elision rules), not system_prompt / user_prompt
+        let sys = system_prompt.map(str::to_owned);
+        let usr = user_prompt.to_owned();
         Box::pin(async move {
             self.chat_stream(kind, sys.as_deref(), &usr, temperature)
                 .await
@@ -587,5 +692,70 @@ mod tests {
                 0.5,
             );
         }
+    }
+
+    // ── P1-C: canned 降级测试 / canned degradation tests ──
+
+    #[test]
+    fn test_canned_reply_for_rate_limited() {
+        // 限流降级 — "让我缓缓" / Rate limit fallback
+        let reply = canned_reply_for(&LlmError::RateLimited("HTTP 429".into()));
+        assert_eq!(reply, "让我缓缓，刚才想太多了……");
+    }
+
+    #[test]
+    fn test_canned_reply_for_context_too_long() {
+        // 超长降级 — "你说的太多了" / Context too long fallback
+        let reply = canned_reply_for(&LlmError::ContextTooLong("HTTP 413".into()));
+        assert_eq!(reply, "你说的太多了，我记不住，能精简一下吗？");
+    }
+
+    #[test]
+    fn test_canned_reply_for_generic_errors() {
+        // Network / Timeout / EmptyResponse / Other 均走通用降级
+        // Network / Timeout / EmptyResponse / Other all use generic fallback
+        let expected = "我刚才有点走神了，能再说一次吗？";
+        assert_eq!(
+            canned_reply_for(&LlmError::Network("conn refused".into())),
+            expected
+        );
+        assert_eq!(
+            canned_reply_for(&LlmError::Timeout("5000ms".into())),
+            expected
+        );
+        assert_eq!(canned_reply_for(&LlmError::EmptyResponse), expected);
+        assert_eq!(
+            canned_reply_for(&LlmError::Other("JSON parse error".into())),
+            expected
+        );
+    }
+
+    #[test]
+    fn test_chat_inner_with_retry_degrades_on_empty_api_key() {
+        // API Key 未设置时，chat_inner 立即返回 Other 错误；
+        // chat_inner_with_retry 对 Other 不重试，直接降级为 canned 回复。
+        // When API Key is not set, chat_inner returns Other error immediately;
+        // chat_inner_with_retry doesn't retry Other, degrades to canned reply directly.
+        let saved = std::env::var("OPENAI_API_KEY").ok();
+        std::env::remove_var("OPENAI_API_KEY");
+        let cfg = LlmCfg::default();
+        let client = HttpLlmClient::new(cfg);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(client.chat_inner_with_retry(
+            LlmCallKind::RoomChat,
+            None,
+            "你好",
+            0.7,
+            false,
+            None,
+        ));
+        if let Some(v) = saved {
+            std::env::set_var("OPENAI_API_KEY", v);
+        }
+        // 降级返回 Ok(canned_reply) — 数字生命不沉默
+        // Degrade returns Ok(canned_reply) — digital life not silent
+        let r = result.expect("should degrade to Ok, not Err");
+        assert_eq!(r.content, "我刚才有点走神了，能再说一次吗？");
+        assert_eq!(r.kind, LlmCallKind::RoomChat);
     }
 }
