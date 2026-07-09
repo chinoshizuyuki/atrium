@@ -366,22 +366,27 @@ async fn test_phase15_proactive_context_with_phase15_modules() {
 async fn test_phase15_relationship_stage_initial() {
     let svc = make_service();
 
-    // 初始阶段应为 Acquaintance
+    // 初始阶段应为 Stranger（陌生人）— 新用户从未交互过
+    // Initial stage should be Stranger — a brand new user with zero interactions
     let stage = svc.relationship_stage();
     println!("初始关系阶段: {}", stage);
     assert!(
-        stage.contains("初识") || stage.to_lowercase().contains("acquaintance"),
-        "初始阶段应为初识, got {}",
+        stage.contains("陌生人") || stage.to_lowercase().contains("stranger"),
+        "初始阶段应为陌生人, got {}",
         stage
     );
 
-    // 初始乘数应为 0.9（初识 Acquaintance 阶段）
-    // Initial multiplier should be 0.9 (Acquaintance stage)
+    // 初始乘数应为 0.7（陌生人 Stranger 阶段）
+    // Initial multiplier should be 0.7 (Stranger stage)
     let mult = svc.relationship_affect_multiplier();
     println!("初始情感乘数: {:.3}", mult);
-    assert!((mult - 0.9).abs() < 0.01, "初识乘数应为 0.9, got {}", mult);
+    assert!(
+        (mult - 0.7).abs() < 0.01,
+        "陌生人乘数应为 0.7, got {}",
+        mult
+    );
 
-    println!("⑤ 关系阶段初始状态: OK (初识 + 乘数 0.9)");
+    println!("⑤ 关系阶段初始状态: OK (陌生人 + 乘数 0.7)");
 }
 
 #[tokio::test]
