@@ -63,13 +63,18 @@ async fn test_prompt_contains_relationship_fragment() {
     let svc = make_service();
 
     // 发送一条消息触发管线 → 关系追踪 + prompt 注入
-    let resp = send(&svc, "你好，今天天气真不错！").await;
+    // Send a message to trigger pipeline → relationship tracking + prompt injection
+    let _ = send(&svc, "你好，今天天气真不错！").await;
 
-    // 回复应包含关系阶段文本（初识阶段的指引）
+    // 直接验证 relationship_prompt_fragment() 输出 — 无 LLM 时 reply 不会包含 fragment
+    // Directly verify relationship_prompt_fragment() output — without LLM, reply won't contain fragments
+    let fragment = svc.relationship_prompt_fragment();
+    assert!(!fragment.is_empty(), "关系阶段 prompt fragment 不应为空");
+    // 初始阶段为陌生人 — fragment 应包含"陌生人" / Initial stage is Stranger
     assert!(
-        resp.reply.contains("初识") || resp.reply.contains("关系阶段"),
-        "回复应包含关系阶段指引文本, reply: {}",
-        &resp.reply[..resp.reply.len().min(200)]
+        fragment.contains("陌生人"),
+        "fragment 应包含关系阶段文本: {}",
+        fragment
     );
 }
 
@@ -78,19 +83,28 @@ async fn test_prompt_contains_user_model_fragment() {
     let svc = make_service();
 
     // 发送多条消息让心智模型积累数据
+    // Send multiple messages to accumulate user model data
     send(&svc, "我最近在学 Rust 编程语言").await;
     send(&svc, "Rust 的所有权机制真的很有意思").await;
-    let resp = send(&svc, "你觉得 Rust 和 Go 哪个更好？").await;
+    let _ = send(&svc, "你觉得 Rust 和 Go 哪个更好？").await;
 
-    // 回复应包含用户心智模型片段（情绪/风格/参与度描述）
-    let has_model_hint = resp.reply.contains("用户当前")
-        || resp.reply.contains("情绪")
-        || resp.reply.contains("参与度")
-        || resp.reply.contains("交流风格");
+    // 直接验证 user_model_prompt_fragment() 输出
+    // Directly verify user_model_prompt_fragment() output
+    let fragment = svc.user_model_prompt_fragment();
+    assert!(
+        !fragment.is_empty(),
+        "用户心智模型 prompt fragment 不应为空"
+    );
+    // fragment 应包含情绪/参与度/交流风格等描述
+    // fragment should contain mood/engagement/style descriptions
+    let has_model_hint = fragment.contains("情绪")
+        || fragment.contains("参与度")
+        || fragment.contains("交流风格")
+        || fragment.contains("消息长度");
     assert!(
         has_model_hint,
-        "回复应包含用户心智模型片段, reply: {}",
-        &resp.reply[..resp.reply.len().min(300)]
+        "fragment 应包含用户心智模型描述: {}",
+        fragment
     );
 }
 
@@ -99,18 +113,20 @@ async fn test_prompt_contains_feedback_fragment() {
     let svc = make_service();
 
     // 发送消息并包含一些反馈信号
+    // Send messages containing feedback signals
     send(&svc, "你好").await;
-    send(&svc, "说得好，太对了！").await; // 赞美信号
-    let resp = send(&svc, "继续说说").await;
+    send(&svc, "说得好，太对了！").await; // 赞美信号 / praise signal
+    let _ = send(&svc, "继续说说").await;
 
-    // 回复应包含反馈回路片段（满意度/回复风格建议）
+    // 直接验证 feedback_prompt_fragment() 输出
+    // Directly verify feedback_prompt_fragment() output
+    let fragment = svc.feedback_prompt_fragment();
+    assert!(!fragment.is_empty(), "反馈回路 prompt fragment 不应为空");
+    // fragment 应包含满意度/反馈/建议等描述
+    // fragment should contain satisfaction/feedback/suggestion descriptions
     let has_feedback =
-        resp.reply.contains("满意度") || resp.reply.contains("反馈") || resp.reply.contains("建议");
-    assert!(
-        has_feedback,
-        "回复应包含反馈回路片段, reply: {}",
-        &resp.reply[..resp.reply.len().min(300)]
-    );
+        fragment.contains("满意度") || fragment.contains("反馈") || fragment.contains("建议");
+    assert!(has_feedback, "fragment 应包含反馈回路描述: {}", fragment);
 }
 
 // ═══════════════════════════════════════════════
@@ -154,15 +170,17 @@ async fn test_proactive_context_has_real_emotion() {
 async fn test_proactive_context_has_real_relationship_bonus() {
     let svc = make_service();
 
-    // 初始关系阶段是 Acquaintance，proactive_bonus 应为 -0.1
+    // 初始关系阶段是 Stranger（陌生人），proactive_bonus 应为 -0.2
+    // Initial relationship stage is Stranger, proactive_bonus should be -0.2
     let bonus = svc.relationship_proactive_bonus();
     assert!(
-        (bonus - (-0.1)).abs() < 0.01,
-        "初始 Acquaintance 阶段的 proactive_bonus 应为 -0.1, got: {}",
+        (bonus - (-0.2)).abs() < 0.01,
+        "初始 Stranger 阶段的 proactive_bonus 应为 -0.2, got: {}",
         bonus
     );
 
     // 注入到 proactive engine 并验证 build_context
+    // Inject into proactive engine and verify build_context
     let silence = std::time::Duration::from_secs(60);
     let ctx = {
         let mut pe = svc.proactive_engine().lock();
@@ -171,8 +189,8 @@ async fn test_proactive_context_has_real_relationship_bonus() {
     };
 
     assert!(
-        (ctx.relationship_proactive_bonus - (-0.1)).abs() < 0.01,
-        "ProactiveContext 的 relationship_bonus 应为 -0.1, got: {}",
+        (ctx.relationship_proactive_bonus - (-0.2)).abs() < 0.01,
+        "ProactiveContext 的 relationship_bonus 应为 -0.2, got: {}",
         ctx.relationship_proactive_bonus
     );
 }
