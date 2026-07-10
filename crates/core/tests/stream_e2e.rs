@@ -69,9 +69,16 @@ fn load_llm_config() -> LlmCfg {
     }
 }
 
-/// CI 环境下无 API Key 时跳过测试
+/// CI 环境下无有效 API Key 时跳过测试
+/// Skip test when no valid API key is available (CI environment).
 fn should_skip(api_key: &str) -> bool {
-    api_key.is_empty() || api_key.starts_with("sk-test")
+    if api_key.is_empty() || api_key.starts_with("sk-test") {
+        return true;
+    }
+    // 检测占位符 key（如 "your-api-key"、"YOUR_OPENAI_API_KEY" 等）
+    // Detect placeholder keys (e.g., "your-api-key", "YOUR_OPENAI_API_KEY")
+    let lower = api_key.to_lowercase();
+    lower.contains("your") || lower.contains("placeholder") || lower.contains("example")
 }
 
 #[tokio::test]
