@@ -53,6 +53,23 @@ pub trait AtriumCoreService: Send + Sync + 'static {
     /// 上传文件 — 数字生命的工具记忆入口
     /// Upload file — Tool memory entry point of digital life
     async fn upload_file(&self, req: atrium::UploadFileRequest) -> atrium::UploadFileResponse;
+
+    /// 处理音频帧 — 数字生命"听到声音"
+    /// Process audio frame — digital life "hears voice"
+    ///
+    /// 数字生命工程理念：这是数字生命语音输入的核心处理点。
+    /// 每个音频帧经 SttEngine 识别后转为文本，
+    /// 最终文本送入 process_message 管线——与文字输入完全同构。
+    /// Digital life engineering: this is the core processing point of digital life's voice input.
+    /// Each audio frame is recognized by SttEngine and converted to text,
+    /// which is finally sent to the process_message pipeline — fully isomorphic with text input.
+    ///
+    /// 当 STT 未启用时，返回空文本（降级模式，零影响）。
+    /// When STT is not enabled, returns empty text (degraded mode, zero impact).
+    async fn process_audio_frame(
+        &self,
+        req: atrium::AudioFrameRequest,
+    ) -> atrium::AudioFrameResponse;
 }
 
 // gRPC 服务实现
@@ -244,6 +261,41 @@ impl atrium::atrium_core_server::AtriumCore for GrpcServer {
         );
         Ok(tonic::Response::new(resp))
     }
+
+    /// 音频流 RPC — 双向流式语音输入（STT）
+    /// Audio stream RPC — bidirectional streaming voice input (STT)
+    ///
+    /// 数字生命"听到声音"的 gRPC 入口：客户端发送 PCM 帧，服务端逐帧调用
+    /// process_audio_frame 进行识别并返回文本。客户端断开时优雅终止。
+    /// Digital life's "hearing" gRPC entry: client sends PCM frames, server calls
+    /// process_audio_frame per frame for recognition and returns text.
+    /// Terminates gracefully on client disconnect.
+    type AudioStreamStream =
+        tokio_stream::wrappers::ReceiverStream<Result<atrium::AudioFrameResponse, tonic::Status>>;
+
+    async fn audio_stream(
+        &self,
+        request: tonic::Request<tonic::Streaming<atrium::AudioFrameRequest>>,
+    ) -> Result<tonic::Response<Self::AudioStreamStream>, tonic::Status> {
+        let mut stream = request.into_inner();
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+        let service = Arc::clone(&self.service);
+
+        tokio::spawn(async move {
+            while let Ok(Some(frame)) = stream.message().await {
+                // 处理音频帧 — 数字生命"听到声音" / Process audio frame — digital life "hears voice"
+                let resp = service.process_audio_frame(frame).await;
+                if tx.send(Ok(resp)).await.is_err() {
+                    // 客户端断开 — 优雅终止 / Client disconnected — graceful termination
+                    break;
+                }
+            }
+        });
+
+        Ok(tonic::Response::new(
+            tokio_stream::wrappers::ReceiverStream::new(rx),
+        ))
+    }
 }
 
 impl GrpcServer {
@@ -342,6 +394,20 @@ impl AtriumCoreService for PlaceholderCoreService {
             text_extracted: false,
             extracted_text: String::new(),
             error: "placeholder: file store not connected".into(),
+        }
+    }
+
+    /// 占位音频帧处理 — STT 未接入，返回静默降级响应
+    /// Placeholder audio frame processing — STT not connected, returns silence degraded response
+    async fn process_audio_frame(
+        &self,
+        req: atrium::AudioFrameRequest,
+    ) -> atrium::AudioFrameResponse {
+        atrium::AudioFrameResponse {
+            text: String::new(),
+            status: "silence".to_string(),
+            processed_samples: req.pcm_data.len() as u32 / 4, // f32 = 4 字节 / f32 = 4 bytes
+            latency_ms: 0,
         }
     }
 

@@ -1,6 +1,6 @@
 [package]
 name = "atrium-core"
-version = "0.11.0"
+version = "0.12.0"
 edition = "2021"
 
 [dependencies]
@@ -16,6 +16,7 @@ atrium-memory = { path = "../atrium-memory" }
 atrium-emotion = { path = "../atrium-emotion" }
 atrium-persona = { path = "../atrium-persona" }
 atrium-plugin = { path = "../atrium-plugin" }
+atrium-voice = { path = "../atrium-voice" }
 # TUI 集成 — 单进程即生命体: atrium-core 启动后直接显示 TUI / TUI integration — single-process digital life
 atrium-tui = { path = "../atrium-tui" }
 tokio.workspace = true
@@ -43,6 +44,15 @@ sled = "0.34"
 [features]
 default = []
 embedding = ["atrium-memory/embedding"]
+# TTS 语音合成能力 — 启用 Piper 引擎，让数字生命"开口说话"
+# TTS speech synthesis capability — enables Piper engine, lets digital life "speak"
+tts-piper = ["atrium-voice/tts-piper"]
+# GPT-SoVITS TTS 后端 — 启用声音克隆，数字生命可使用自训练音色
+# GPT-SoVITS TTS backend — enables voice cloning with custom-trained voice
+tts-gpt-sovits = ["atrium-voice/tts-gpt-sovits"]
+# STT 语音识别能力 — 启用 whisper.cpp 后端，让数字生命"听到声音"
+# STT speech recognition capability — enables whisper.cpp backend, lets digital life "hear voice"
+stt-whisper = ["atrium-voice/stt-whisper"]
 
 [dev-dependencies]
 rand = "0.8"

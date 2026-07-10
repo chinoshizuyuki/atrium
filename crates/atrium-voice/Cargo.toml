@@ -1,0 +1,45 @@
+[package]
+name = "atrium-voice"
+version = "0.12.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+# 记忆系统依赖 — 提供韵律参数 ProsodyParams / Memory system dependency — provides ProsodyParams
+atrium-memory = { path = "../atrium-memory" }
+# 桥接层依赖 — 提供渲染状态与音频缓冲 / Bridge layer dependency — provides RenderState and AudioBuffer
+atrium-bridge = { path = "../atrium-bridge" }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+# Piper ONNX TTS 后端（可选）/ Piper ONNX TTS backend (optional)
+# 版本与 fastembed（atrium-memory 可选依赖）的 ort 约束保持一致，避免版本冲突
+# Version kept compatible with fastembed (atrium-memory optional dep) to avoid version conflicts
+ort = { version = "2.0.0-rc.9", optional = true }
+
+# GPT-SoVITS HTTP TTS 后端（可选）/ GPT-SoVITS HTTP TTS backend (optional)
+# reqwest 用于 HTTP 调用 Python GPT-SoVITS api_v2.py 服务
+# reqwest for HTTP calls to Python GPT-SoVITS api_v2.py service
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
+# hound 用于 WAV 音频解码（GPT-SoVITS 返回 WAV 格式）/ hound for WAV audio decoding
+hound = { version = "3.5", optional = true }
+# serde_json 用于 GPT-SoVITS API JSON 请求体 / serde_json for GPT-SoVITS API JSON request body
+serde_json = { workspace = true, optional = true }
+
+[features]
+default = []
+# Piper ONNX TTS 后端 / Piper ONNX TTS backend
+tts-piper = ["ort"]
+# GPT-SoVITS HTTP TTS 后端 — 声音克隆 / GPT-SoVITS HTTP TTS backend — voice cloning
+tts-gpt-sovits = ["reqwest", "hound", "serde_json"]
+# whisper.cpp FFI STT 后端 / whisper.cpp FFI STT backend
+stt-whisper = ["bindgen"]
+# 便捷聚合特性 — 启用 VoiceEngine 与 TTS / Convenience aggregate feature — enables VoiceEngine with TTS
+voice = ["tts-piper"]
+
+[build-dependencies]
+# whisper.cpp FFI 绑定生成（仅 stt-whisper 特性启用时需要）
+# whisper.cpp FFI bindgen (only needed when stt-whisper feature is enabled)
+bindgen = { version = "0.70", optional = true }

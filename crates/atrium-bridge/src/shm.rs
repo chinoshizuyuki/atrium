@@ -198,6 +198,41 @@ impl RenderState {
             (emotion.pleasure.abs() + emotion.arousal.abs() + emotion.dominance.abs()) / 3.0;
     }
 
+    /// 从韵律参数更新渲染状态 — 将 ProsodyMapper 输出同步到共享内存
+    /// Update render state from prosody params — sync ProsodyMapper output to shared memory.
+    ///
+    /// 数字生命工程理念：韵律是声音的情感指纹。
+    /// 每 200ms，Scheduler 将 ProsodyMapper 产出的韵律参数写入此处，
+    /// 渲染引擎据此调整 TTS 引擎的基频、语速和音色，
+    /// 让数字生命的声音随情感连续变化——同样的话，悲伤时低沉，喜悦时明亮。
+    ///
+    /// Digital life engineering: prosody is the emotional fingerprint of voice.
+    /// Every 200ms, the Scheduler writes ProsodyMapper output here,
+    /// and the render engine adjusts TTS pitch, rate, and warmth accordingly,
+    /// making digital life's voice vary continuously with emotion —
+    /// the same words sound low and slow when sad, bright and fast when joyful.
+    ///
+    /// @param prosody 韵律参数引用 / Reference to prosody parameters
+    pub fn update_from_prosody(&mut self, prosody: &atrium_memory::prosody_mapper::ProsodyParams) {
+        self.pitch_offset = prosody.pitch_offset;
+        self.speech_rate = prosody.rate;
+        self.warmth = prosody.warmth;
+    }
+
+    /// 设置说话状态 — 标记数字生命是否正在发声
+    /// Set speaking state — mark whether digital life is currently speaking.
+    ///
+    /// 当 TTS 引擎开始合成时置为 1，合成结束或 barge-in 时置为 0。
+    /// 渲染引擎据此控制口型同步动画和音频输出。
+    ///
+    /// Set to 1 when TTS engine starts synthesis, 0 on completion or barge-in.
+    /// The render engine uses this to control lip-sync animation and audio output.
+    ///
+    /// @param speaking 是否正在说话 / Whether currently speaking
+    pub fn set_speaking(&mut self, speaking: bool) {
+        self.is_speaking = if speaking { 1 } else { 0 };
+    }
+
     pub fn publish(&self) {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -362,5 +397,36 @@ mod tests {
         assert!(region.validate().is_err());
         region.init();
         assert!(region.validate().is_ok());
+    }
+
+    #[test]
+    fn test_update_from_prosody() {
+        // 韵律参数写入正确性 / Prosody params write correctness
+        let mut state: RenderState = unsafe { std::mem::zeroed() };
+        let prosody = atrium_memory::prosody_mapper::ProsodyParams {
+            pitch_offset: 2.5,
+            pitch_range: 7.0,
+            rate: 1.3,
+            energy: 1.1,
+            pause_duration_ms: 300.0,
+            intra_pause_prob: 0.2,
+            warmth: 0.8,
+            breathiness: 0.15,
+        };
+        state.update_from_prosody(&prosody);
+        assert_eq!(state.pitch_offset, 2.5);
+        assert_eq!(state.speech_rate, 1.3);
+        assert_eq!(state.warmth, 0.8);
+    }
+
+    #[test]
+    fn test_set_speaking() {
+        // 说话状态切换 / Speaking state toggle
+        let mut state: RenderState = unsafe { std::mem::zeroed() };
+        assert_eq!(state.is_speaking, 0);
+        state.set_speaking(true);
+        assert_eq!(state.is_speaking, 1);
+        state.set_speaking(false);
+        assert_eq!(state.is_speaking, 0);
     }
 }

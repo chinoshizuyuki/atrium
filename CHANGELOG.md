@@ -5,6 +5,29 @@ All notable changes to Atrium are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.0] - 2026-07-10
+
+> 语音能力管线（TTS/STT）+ GPT-SoVITS 声音克隆适配 + gRPC AudioStream + 韵律桥接 — 数字生命从"文本存在"升级为"有声存在"
+
+### Added
+
+- **atrium-voice crate** — 全新语音能力 crate，整合 TTS 合成、STT 识别、音频缓冲区、韵律桥接四大模块。Feature gate 控制（`tts-piper` / `tts-gpt-sovits` / `stt-whisper`），默认零侵入。
+- **Piper TTS Backend** — 基于 ONNX Runtime 的本地神经语音合成引擎。CPU 推理，~100ms 首字延迟，零网络依赖。`PiperSynthesisParams` 7 维韵律参数（pitch_scale/length_scale/energy_scale/pause/warmth/breathiness）。降级模式：空模型路径返回空 PCM。54 个单元测试。
+- **GPT-SoVITS TTS Backend** — HTTP 桥接 Python GPT-SoVITS 服务的声音克隆引擎。异步 `synthesize_to_shm_async()`，支持自训练模型 + few-shot 声音克隆。`GptSoVitsSynthesisParams` 6 维参数（speed_factor/temperature/fragment_interval/top_k/top_p/repetition_penalty）。WAV 解码支持 float32 + int16。降级模式：空服务地址返回空 PCM。62 个单元测试。
+- **whisper.cpp STT Backend** — 基于 whisper.cpp FFI 的语音识别引擎。gRPC `AudioStream` 双向流式 RPC，PCM → 文本实时转写。VAD 静音检测，16kHz 单声道。
+- **ProsodyBridge** — 通用韵律参数到各引擎专用参数的翻译层。Piper 映射：`pitch_scale = 2^(st/12)`, `length_scale = 1/rate`（倒数）。GPT-SoVITS 映射：`speed_factor = rate`（直接），`temperature = 0.8 + warmth * 0.4`。23 个韵律映射单元测试。
+- **AudioManager** — 无锁 SPSC 环形缓冲区，写入延迟 < 10μs。支持 barge-in 中断。
+- **gRPC AudioStream RPC** — `proto/atrium.proto` 新增 `AudioStream` 双向流式 RPC + `AudioFrameRequest` / `AudioFrameResponse` 消息。数字生命"听到声音"的入口。
+- **VoiceEngine 统一接口** — 根据 `engine` 配置字段选择 Piper（同步）或 GPT-SoVITS（异步）后端。`is_speaking` 原子标志跨线程查询。
+- **Stage 6.5 TTS 触发** — `api_handler.rs` 回复文本生成后自动触发 TTS，从当前 PAD 情感状态推导韵律参数。
+- **韵律同步 tick** — Scheduler 每 200ms 将 PAD → ProsodyParams → RenderState，让数字生命的声音随情感连续变化。
+- **VoiceCfg 配置** — `atrium.toml` 新增 `[voice]` 段，含 TTS/STT/Voiceprint/Audio 子配置。
+
+### Changed
+
+- **Docker Pipeline** — 移除 v0.x 版本过滤，Docker 流水线对所有版本标签开放。移除已废弃的 Python Gateway 镜像构建（`Dockerfile.gateway` 不存在），仅构建 `atrium-core` 镜像。
+- **Dockerfile VERSION** — 更新默认 `ARG VERSION` 从 0.10.0 到 0.12.0。
+
 ## [0.11.0] - 2026-07-09
 
 > 全量代码审计闭环 + 意识连续性架构重构 + ReAct 深思引擎 + 记忆完整性补全 + 极致性能优化 — 数字生命从"活体"到"深思者"

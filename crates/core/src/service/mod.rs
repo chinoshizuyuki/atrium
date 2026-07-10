@@ -411,6 +411,21 @@ pub struct CoreService {
     // 待注入的独处归来问候 — preprocess 阶段生成，build_prompt_fragments 阶段消费
     // Pending solitude return greeting — produced in preprocess, consumed in build_prompt_fragments
     pending_solitude_greeting: parking_lot::Mutex<Option<String>>,
+    // ── 语音能力 / Voice Capability ──
+    // 数字生命的"有声呼吸" — TTS 合成引擎
+    // 当 voice.tts.enabled=true 时，每条回复触发语音合成，写入共享内存供渲染引擎播放
+    // Digital life's "audible breath" — TTS synthesis engine
+    // When voice.tts.enabled=true, each reply triggers speech synthesis,
+    // writing PCM to shared memory for the render engine to play
+    #[cfg(feature = "tts-piper")]
+    voice_engine: parking_lot::Mutex<Option<atrium_voice::VoiceEngine>>,
+    // ── 语音识别能力 / Speech Recognition Capability ──
+    // 数字生命的"听觉" — STT 识别引擎
+    // 当 voice.stt.enabled=true 时，音频帧经 SttEngine 识别转为文本
+    // Digital life's "hearing" — STT recognition engine
+    // When voice.stt.enabled=true, audio frames are recognized by SttEngine and converted to text
+    #[cfg(feature = "stt-whisper")]
+    stt_engine: parking_lot::Mutex<Option<atrium_voice::SttEngine>>,
 }
 
 /// Room 输出消息（Python 网关通过 health 轮询消费）
@@ -1598,6 +1613,114 @@ impl CoreService {
             // G-09: Solitude insight sharing path init — 0 means no prior interaction
             last_user_msg_epoch: parking_lot::Mutex::new(0),
             pending_solitude_greeting: parking_lot::Mutex::new(None),
+            // 语音引擎 — 延迟初始化，由 set_voice_engine() 注入
+            // Voice engine — lazy init, injected via set_voice_engine()
+            #[cfg(feature = "tts-piper")]
+            voice_engine: parking_lot::Mutex::new(None),
+            // STT 引擎 — 延迟初始化，由 set_stt_engine() 注入
+            // STT engine — lazy init, injected via set_stt_engine()
+            #[cfg(feature = "stt-whisper")]
+            stt_engine: parking_lot::Mutex::new(None),
+        }
+    }
+
+    /// 注入语音引擎 — 启用 TTS 合成能力
+    /// Inject voice engine — enable TTS synthesis capability.
+    ///
+    /// 数字生命工程理念：语音引擎延迟注入，与 LLM 客户端同模式。
+    /// 配置加载后，由启动流程调用此方法注入已初始化的 VoiceEngine。
+    /// Digital life engineering: voice engine is lazily injected, same pattern as LLM client.
+    /// After config loading, the startup flow calls this to inject an initialized VoiceEngine.
+    #[cfg(feature = "tts-piper")]
+    pub fn set_voice_engine(&self, engine: atrium_voice::VoiceEngine) {
+        *self.voice_engine.lock() = Some(engine);
+        tracing::info!(
+            "语音引擎已注入 — 数字生命获得有声能力 / Voice engine injected — digital life gained voice capability"
+        );
+    }
+
+    /// 从配置创建并注入语音引擎
+    /// Create and inject voice engine from configuration.
+    #[cfg(feature = "tts-piper")]
+    pub fn init_voice_from_config(&self, config: &atrium_voice::VoiceCfg) {
+        if config.tts.enabled {
+            let engine = atrium_voice::VoiceEngine::new(config.clone());
+            self.set_voice_engine(engine);
+        } else {
+            tracing::debug!(
+                "语音 TTS 未启用 — 数字生命保持文本模式 / Voice TTS not enabled — digital life stays in text mode"
+            );
+        }
+    }
+
+    /// 触发 TTS 合成 — 将文本转为 PCM 写入共享内存
+    /// Trigger TTS synthesis — convert text to PCM and write to shared memory.
+    ///
+    /// 数字生命意义：这是数字生命"开口说话"的触发点。
+    /// 回复文本经过韵律调制后变为有温度的声音。
+    /// Digital life significance: this is the trigger point of digital life "speaking".
+    /// Reply text becomes warm voice after prosody modulation.
+    #[cfg(feature = "tts-piper")]
+    pub fn trigger_tts(&self, text: &str) {
+        use atrium_memory::prosody_mapper::ProsodyMapper;
+        use atrium_memory::style_modulator::LinguisticProfile;
+
+        let mut engine_guard = self.voice_engine.lock();
+        let Some(ref mut engine) = *engine_guard else {
+            return; // 未注入引擎 — 静默跳过 / No engine injected — silent skip
+        };
+        if !engine.is_enabled() {
+            return; // TTS 未启用 — 静默跳过 / TTS not enabled — silent skip
+        }
+
+        // 从当前情感状态推导韵律参数 / Derive prosody params from current emotion state
+        let (arousal, pleasure) = self.current_emotion_state();
+        let pad = [pleasure, arousal, 0.0]; // dominance 近似为 0 / dominance approximated as 0
+        let prosody = ProsodyMapper::map(pad, &LinguisticProfile::neutral());
+
+        match engine.synthesize_to_shm(text, &prosody) {
+            Ok(written) => {
+                tracing::debug!(
+                    "TTS 合成完成 — 写入 {} 样本 / TTS synthesis complete — wrote {} samples",
+                    written,
+                    written
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "TTS 合成失败 — 数字生命暂时失声 / TTS synthesis failed — digital life temporarily voiceless. error: {}",
+                    e
+                );
+            }
+        }
+    }
+
+    /// 注入 STT 引擎 — 启用语音识别能力
+    /// Inject STT engine — enable speech recognition capability.
+    ///
+    /// 数字生命工程理念：STT 引擎延迟注入，与 TTS 引擎同模式。
+    /// 配置加载后，由启动流程调用此方法注入已初始化的 SttEngine。
+    /// Digital life engineering: STT engine is lazily injected, same pattern as TTS engine.
+    /// After config loading, the startup flow calls this to inject an initialized SttEngine.
+    #[cfg(feature = "stt-whisper")]
+    pub fn set_stt_engine(&self, engine: atrium_voice::SttEngine) {
+        *self.stt_engine.lock() = Some(engine);
+        tracing::info!(
+            "STT 引擎已注入 — 数字生命获得听觉能力 / STT engine injected — digital life gained hearing capability"
+        );
+    }
+
+    /// 从配置创建并注入 STT 引擎
+    /// Create and inject STT engine from configuration.
+    #[cfg(feature = "stt-whisper")]
+    pub fn init_stt_from_config(&self, config: &atrium_voice::SttCfg) {
+        if config.enabled {
+            let engine = atrium_voice::SttEngine::new(config.clone());
+            self.set_stt_engine(engine);
+        } else {
+            tracing::debug!(
+                "STT 未启用 — 数字生命保持纯文本模式 / STT not enabled — digital life stays in text-only mode"
+            );
         }
     }
 

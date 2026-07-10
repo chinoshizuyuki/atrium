@@ -53,6 +53,16 @@ const VULNERABILITY_RESONANCE_INTERVAL: u64 = 200;
 /// 情感气候高频层 — 200ms（情感气候 + 情感耦合，紧跟 EmotionEngine 的 PAD 更新）
 /// Emotional climate high-freq tier — 200ms (climate + coupling, tracking EmotionEngine's PAD updates)
 const CLIMATE_TICK_INTERVAL: u64 = 20;
+/// 韵律同步间隔 — 200ms（与情感气候同频，紧跟 PAD 更新）
+/// Prosody sync interval — 200ms (same frequency as emotional climate, tracking PAD updates)
+/// 数字生命工程理念：韵律是声音的情感指纹，每 200ms 跟随 PAD 变化，
+/// 让数字生命的声音随情感连续变化——不等待句子边界。
+/// Digital life engineering: prosody is the emotional fingerprint of voice,
+/// updating every 200ms following PAD changes, making digital life's voice
+/// vary continuously with emotion — not waiting for sentence boundaries.
+// 仅在 shm feature 启用时被调度循环引用；无 shm 时由单测引用 / Referenced by tick loop only with shm; by unit tests otherwise
+#[cfg_attr(not(feature = "shm"), allow(dead_code))]
+const PROSODY_SYNC_INTERVAL: u64 = 20;
 /// 情感巩固 + 仪式心跳中频层 — 1s / Emotional consolidation + ritual heartbeat mid-freq tier — 1s
 const RITUAL_TICK_INTERVAL: u64 = 100;
 /// 深层 tick 低频层 — 存在性深度 + 内心议会（认知层：人格漂移/独处/冲突成长/仪式缺席）≈2s
@@ -303,6 +313,31 @@ impl Scheduler {
                     });
                 shm.render_state_mut().publish();
                 shm.region_mut().thought_stream.clear();
+            }
+        }
+
+        // 2.1 韵律同步 — 每 200ms 将 PAD → ProsodyParams → RenderState
+        // Prosody sync — every 200ms, map PAD → ProsodyParams → RenderState
+        // 数字生命工程理念：韵律参数实时跟随情感状态，
+        // 让渲染引擎能即时调整 TTS 的基频、语速和音色。
+        // Digital life engineering: prosody params track emotion state in real-time,
+        // enabling the render engine to instantly adjust TTS pitch, rate, and warmth.
+        #[cfg(feature = "shm")]
+        if count % PROSODY_SYNC_INTERVAL == 0 && count > 0 {
+            if let Some(ref mut bridge) = self.bridge {
+                if let Some(shm) = bridge.shared_memory_mut() {
+                    // 获取当前 PAD 状态 / Get current PAD state
+                    let emo = self.core_service.current_emotion();
+                    let pad = [emo.pleasure, emo.arousal, emo.dominance];
+                    // 使用中性 LinguisticProfile 映射韵律参数
+                    // Map prosody params using neutral LinguisticProfile
+                    use atrium_memory::prosody_mapper::ProsodyMapper;
+                    use atrium_memory::style_modulator::LinguisticProfile;
+                    let prosody = ProsodyMapper::map(pad, &LinguisticProfile::neutral());
+                    shm.render_state_mut().update_from_prosody(&prosody);
+                    // 发布韵律更新 — 递增版本号以通知渲染引擎 / Publish prosody update — bump version to notify render engine
+                    shm.render_state_mut().publish();
+                }
             }
         }
 
@@ -1443,5 +1478,21 @@ mod tests {
         assert_eq!(200 % CLIMATE_TICK_INTERVAL, 0);
         assert_eq!(200 % RITUAL_TICK_INTERVAL, 0);
         assert_eq!(200 % DEEP_TICK_INTERVAL, 0);
+    }
+
+    /// 验证：韵律同步间隔为 200ms（20 tick × 10ms），与情感 tick 同频
+    /// Verify: prosody sync interval is 200ms (20 ticks × 10ms), matching emotion tick frequency
+    #[test]
+    fn test_prosody_sync_interval_is_200ms() {
+        // 韵律同步间隔 = 20 ticks × 10ms = 200ms
+        // Prosody sync interval = 20 ticks × 10ms = 200ms
+        assert_eq!(
+            PROSODY_SYNC_INTERVAL, 20,
+            "prosody sync should be every 200ms (20 × 10ms)"
+        );
+        assert_eq!(
+            PROSODY_SYNC_INTERVAL, EMOTION_TICK_INTERVAL,
+            "prosody sync should match emotion interval"
+        );
     }
 }

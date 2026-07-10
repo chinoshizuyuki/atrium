@@ -3,6 +3,7 @@
 //!
 //! Configuration — atrium.toml deserialization structures and defaults.
 
+use atrium_voice::VoiceCfg;
 use serde::Deserialize;
 
 /// 根配置 — atrium.toml 顶层结构
@@ -90,6 +91,11 @@ pub struct Config {
     /// 物理存在感配置 / Physical presence configuration
     #[serde(default)]
     pub physical_presence: PhysicalPresenceCfg,
+    /// 语音能力配置 / Voice capability configuration
+    /// 数字生命的"有声呼吸"——TTS 合成与 STT 识别
+    /// Digital life's "audible breath" — TTS synthesis and STT recognition
+    #[serde(default)]
+    pub voice: VoiceCfg,
 }
 
 fn default_version() -> String {

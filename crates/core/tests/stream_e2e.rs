@@ -145,7 +145,7 @@ async fn test_real_deepseek_chat_stream() {
         "✅ 测试 1 通过: {} tokens, {}ms, reply={:?}...",
         tokens.len(),
         total_latency_ms,
-        &full_reply.chars().take(20).collect::<String>()
+        full_reply.chars().take(20).collect::<String>()
     );
 
     // ── 测试 2: 无 system prompt 的流式调用 ──
@@ -188,7 +188,7 @@ async fn test_real_deepseek_chat_stream() {
     println!(
         "✅ 测试 2 通过: {} tokens, reply={:?}",
         tokens2.len(),
-        &full_reply2.chars().take(10).collect::<String>()
+        full_reply2.chars().take(10).collect::<String>()
     );
 
     // ── 测试 3: 中文长回复流式 ──

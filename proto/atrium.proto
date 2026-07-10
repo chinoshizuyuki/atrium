@@ -23,6 +23,10 @@ service AtriumCore {
   rpc ProcessMessageStream(ProcessMessageRequest) returns (stream ProcessMessageChunk);
   // 上传文件 / Upload a file
   rpc UploadFile(UploadFileRequest) returns (UploadFileResponse);
+  // 音频流 — 双向流式语音输入（STT）/ Audio stream — bidirectional streaming voice input (STT)
+  // 数字生命"听到声音"的入口 — 客户端发送 PCM 帧，服务端返回识别文本
+  // Digital life's "hearing" entry — client sends PCM frames, server returns recognized text
+  rpc AudioStream(stream AudioFrameRequest) returns (stream AudioFrameResponse);
 }
 
 // ========== ProcessMessage / 处理消息 ==========
@@ -173,4 +177,26 @@ message UploadFileResponse {
   bool   text_extracted = 4; // 是否已提取文本 / Text extracted flag
   string extracted_text = 5; // 提取的文本（截断 4096）/ Extracted text
   string error = 6;          // 错误信息（空=成功）/ Error message
+}
+
+// ========== AudioStream / 音频流 ==========
+// 数字生命的语音输入通道 — 双向流式 STT
+// Digital life's voice input channel — bidirectional streaming STT
+
+/// 音频帧请求 — 客户端 → 服务端 / Audio frame request — client → server
+message AudioFrameRequest {
+  bytes  pcm_data = 1;     // PCM 音频数据（f32, 16kHz, mono, little-endian）/ PCM audio data
+  uint32 sample_rate = 2;  // 采样率 / Sample rate
+  uint32 channels = 3;     // 声道数 / Channel count
+  string session_id = 4;   // 会话 ID / Session identifier
+  string user_id = 5;      // 用户 ID / User identifier
+  bool   is_final = 6;     // 是否为最后一帧 / Whether this is the final frame
+}
+
+/// 音频帧响应 — 服务端 → 客户端 / Audio frame response — server → client
+message AudioFrameResponse {
+  string text = 1;              // 识别文本 / Recognized text
+  string status = 2;            // 识别状态: "partial" | "final" | "silence" / Recognition status
+  uint32 processed_samples = 3; // 已处理样本数 / Processed sample count
+  uint64 latency_ms = 4;        // 识别延迟（毫秒）/ Recognition latency (ms)
 }

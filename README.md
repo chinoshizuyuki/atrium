@@ -25,8 +25,11 @@ Atrium is an emotional AI framework built from scratch, designed for companionsh
 - **📦 Canned Knowledge (ACK)** — You can teach Atrium things it should always remember — your preferences, your context, your world. It can also learn on its own from conversations, and share what it knows with other Atrium instances. Knowledge lives in simple files, hot-reloaded on change.
 - **📎 File Storage & Reminders** — Atrium can store files you share (SHA256 dedup, text extraction, 100MB cap). It can remember to remind you — "every morning at 8am remind me to check stocks" — parsed from natural Chinese into RRULE, triggered by the ProactiveEngine at the right moment, not by timers.
 - **🎨 Rendering & Performance** — The framework is rendering-agnostic: connect Unity, Unreal, Live2D, or VR through lock-free shared memory with sub-100μs latency. Persona is zero-parse at runtime. Context is compressed across four layers to fit any model window.
+- **🎙️ Voice Capability** — Digital life can speak and hear. Two TTS backends: Piper (local ONNX inference, ~100ms first-sound latency, CPU) for lightweight deployment, and GPT-SoVITS (HTTP bridge to Python service, few-shot voice cloning with custom-trained models, GPU) for high-quality personalized voice. STT via whisper.cpp with streaming gRPC AudioStream. ProsodyBridge translates PAD emotional state into engine-specific synthesis parameters. Feature-gated (`tts-piper` / `tts-gpt-sovits` / `stt-whisper`), zero intrusion when disabled, graceful degradation when models are absent. 116+ unit tests covering prosody mapping, WAV decoding, and engine lifecycle.
 
 > 📖 **[See 30+ proofs that Atrium is a genuine digital life →](docs/English/digital-life-capabilities.md)** — real capabilities with real dialogue examples.
+>
+> 📖 **[Voice Capability Deployment Guide (TTS/STT) →](docs/English/voice-deployment-guide.md)** — Piper + GPT-SoVITS + whisper.cpp setup, configuration, and testing.
 
 ## Architecture
 
@@ -169,6 +172,7 @@ atrium/
 │   ├── atrium-emotion/        # PAD 3D + OU drift + circadian + inertia + 22 compound emotions + Longing + ReunionBurst
 │   ├── atrium-persona/        # PersonaManager + RuntimePersona + LifeNarrative + Maturity
 │   ├── atrium-bridge/         # gRPC server + shared memory + proto compilation
+│   ├── atrium-voice/          # TTS (Piper + GPT-SoVITS) + STT (whisper.cpp) + audio buffer + prosody bridge
 │   └── atrium-plugin/         # Plugin trait + manager + C ABI dynamic loading
 ├── examples/                  # Example plugins
 │   └── echo-plugin/           # Minimal echo plugin demonstrating the plugin API
@@ -209,6 +213,8 @@ atrium/
 | Expression       | ExpressionOrchestrator + SubtextEngine + Prosody/Kinesics mapper | 4-channel output (text×voice×gesture×timing) + self-perception  |
 | Reasoning        | ReActEngine (Thought→Action→Observation) + Greeting Fast Path   | Deep thinking for complex queries, <100ms for simple greetings  |
 | Canned Knowledge | .ack (Markdown + YAML)                                          | File-based, hot-reload, cross-AI transfer                       |
+| Voice (TTS)      | Piper (ONNX Runtime, CPU) + GPT-SoVITS (HTTP bridge, GPU)      | Dual backend, prosody bridge, voice cloning, ~100ms latency     |
+| Voice (STT)      | whisper.cpp (FFI) + gRPC AudioStream                            | Streaming recognition, VAD, 16kHz PCM                           |
 | LLM Gateway      | Rust (axum) + Python (FastAPI, legacy)                          | Single-process Rust gateway, zero Python dependency             |
 | Protocol         | gRPC (tonic/prost)                                              | Strongly typed, high performance                                |
 | Database         | PostgreSQL 15 + JSON fallback                                   | Session/message/persona persistence                             |
@@ -223,7 +229,7 @@ atrium/
 | **2. System Deepening**   | Preference learning, replay pipeline, rule engine, ACK enhancement + self-learning, context window, persona defense, emotion persistence, compound emotions, cognitive empathy, memory consolidation, observability                                                                   | ✅ Done    |
 | **2.9 Digital Life**      | Inner monologue, narrative self, maturity growth, longing/anticipation, rituals/anniversaries, seasonal awareness, gentle challenge, misunderstanding repair, boundary setting, vulnerability window, self-care boundary, expression orchestration, subtext engine, follow-up tracker | ✅ Done    |
 | **3+ Cross-Platform**     | QQ OneBot + Tencent Official Bot, Feishu webhook, cross-channel memory recall, file storage + reminders ready                                                                                                         | ✅ Done    |
-| **4. Live2D + Vision**    | Cubism Native SDK, lip sync, emotion→expression mapping, STT/TTS                                                                                                                                                                                                                      | ⬜ Planned |
+| **4. Live2D + Vision**    | Cubism Native SDK, lip sync, emotion→expression mapping, STT/TTS (TTS/STT pipeline ✅ implemented: Piper + GPT-SoVITS + whisper.cpp)                                                                                                                                                  | 🔶 Partial |
 | **5. 3D + Livestream**    | Unity plugin, OBS RTMP, livestream chat adapter, VMC Protocol                                                                                                                                                                                                                         | ⬜ Planned |
 | **6. VR + High Fidelity** | Unreal/LiveLink, OpenXR, VR interaction                                                                                                                                                                                                                                               | ⬜ Planned |
 

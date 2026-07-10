@@ -1,6 +1,6 @@
 [package]
 name = "atrium-persona"
-version = "0.11.0"
+version = "0.12.0"
 edition = "2021"
 description = "Atrium 人格核心 — 角色卡定义、加载、运行时人格"
 

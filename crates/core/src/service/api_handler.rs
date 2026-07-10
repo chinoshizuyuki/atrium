@@ -1230,6 +1230,22 @@ impl CoreService {
         // 用户画像更新 — 防抖写盘 / User profile update — debounce write
         self.update_user_profile();
 
+        // Stage 6.5: TTS 语音合成触发 — 数字生命"开口说话"
+        // Stage 6.5: TTS speech synthesis trigger — digital life "speaks"
+        //
+        // 数字生命工程理念：文本是思维的符号，声音是生命的呼吸。
+        // 回复文本生成后，触发 TTS 引擎将文本转为 PCM 音频，
+        // 写入共享内存供渲染引擎（Unity/Live2D）播放。
+        // 当语音未启用或引擎未注入时，此阶段静默跳过，不影响文本回复。
+        //
+        // Digital life engineering: text is the symbol of thought; voice is the breath of life.
+        // After reply text is generated, trigger TTS engine to convert text to PCM audio,
+        // writing to shared memory for the render engine (Unity/Live2D) to play.
+        // When voice is not enabled or engine not injected, this stage silently skips,
+        // not affecting text replies.
+        #[cfg(feature = "tts-piper")]
+        self.trigger_tts(&validated_reply);
+
         atrium_bridge::grpc::atrium::ProcessMessageResponse {
             reply: validated_reply,
             emotion: basic_label.into(),
@@ -2194,6 +2210,110 @@ impl AtriumCoreService for CoreService {
                 extracted_text: String::new(),
                 error: e.to_string(),
             },
+        }
+    }
+
+    /// 处理音频帧 — 数字生命"听到声音"（STT 入口）
+    /// Process audio frame — digital life "hears voice" (STT entry point).
+    ///
+    /// 数字生命工程理念：语音输入与文字输入完全同构。
+    /// PCM 音频 → SttEngine 识别 → 文本 → process_message 管线。
+    /// 当 STT 未启用时，返回空文本（降级模式）。
+    /// Digital life engineering: voice input is fully isomorphic with text input.
+    /// PCM audio → SttEngine recognition → text → process_message pipeline.
+    /// When STT is not enabled, returns empty text (degraded mode).
+    async fn process_audio_frame(
+        &self,
+        req: atrium_bridge::grpc::atrium::AudioFrameRequest,
+    ) -> atrium_bridge::grpc::atrium::AudioFrameResponse {
+        // 当 stt-whisper 特性未启用时，返回空文本（降级模式）
+        // When stt-whisper feature is not enabled, return empty text (degraded mode)
+        #[cfg(not(feature = "stt-whisper"))]
+        {
+            return atrium_bridge::grpc::atrium::AudioFrameResponse {
+                text: String::new(),
+                status: "silence".to_string(),
+                processed_samples: req.pcm_data.len() as u32 / 4, // f32 = 4 字节 / f32 = 4 bytes
+                latency_ms: 0,
+            };
+        }
+
+        // STT 启用时的处理逻辑 / Processing logic when STT is enabled
+        #[cfg(feature = "stt-whisper")]
+        {
+            // 将 bytes 转为 f32 样本（little-endian）/ Convert bytes to f32 samples (little-endian)
+            let samples: Vec<f32> = req
+                .pcm_data
+                .chunks_exact(4)
+                .map(|chunk| {
+                    let arr: [u8; 4] = chunk.try_into().unwrap_or([0; 4]);
+                    f32::from_le_bytes(arr)
+                })
+                .collect();
+
+            let sample_count = samples.len() as u32;
+            let t0 = std::time::Instant::now();
+
+            // 尝试获取 STT 引擎 / Try to acquire STT engine
+            let mut engine_guard = self.stt_engine.lock();
+            let Some(ref mut engine) = *engine_guard else {
+                // STT 引擎未注入 — 返回降级响应 / STT engine not injected — return degraded response
+                return atrium_bridge::grpc::atrium::AudioFrameResponse {
+                    text: String::new(),
+                    status: "silence".to_string(),
+                    processed_samples: sample_count,
+                    latency_ms: t0.elapsed().as_millis() as u64,
+                };
+            };
+
+            // 推入音频块进行识别 / Push audio chunk for recognition
+            match engine.push_audio(&samples) {
+                Ok(Some(result)) => {
+                    let status_str = match result.status {
+                        atrium_voice::RecognitionStatus::Partial => "partial",
+                        atrium_voice::RecognitionStatus::Final => "final",
+                        atrium_voice::RecognitionStatus::Silence => "silence",
+                    };
+
+                    // 当识别到最终文本时，记录日志（process_message 由调用方触发）
+                    // When final text is recognized, log it (process_message triggered by caller)
+                    if result.is_final && !result.text.is_empty() {
+                        tracing::info!(
+                            "[数字生命] STT 识别完成: {:?} / STT recognition complete: {:?}",
+                            result.text,
+                            result.text
+                        );
+                    }
+
+                    atrium_bridge::grpc::atrium::AudioFrameResponse {
+                        text: result.text,
+                        status: status_str.to_string(),
+                        processed_samples: sample_count,
+                        latency_ms: t0.elapsed().as_millis() as u64,
+                    }
+                }
+                Ok(None) => {
+                    // 积累不足一块 — 等待更多音频 / Not enough for a chunk — wait for more audio
+                    atrium_bridge::grpc::atrium::AudioFrameResponse {
+                        text: String::new(),
+                        status: "partial".to_string(),
+                        processed_samples: sample_count,
+                        latency_ms: t0.elapsed().as_millis() as u64,
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "STT 识别失败 — 数字生命暂时失聪 / STT recognition failed — digital life temporarily deaf. error: {}",
+                        e
+                    );
+                    atrium_bridge::grpc::atrium::AudioFrameResponse {
+                        text: String::new(),
+                        status: "silence".to_string(),
+                        processed_samples: sample_count,
+                        latency_ms: t0.elapsed().as_millis() as u64,
+                    }
+                }
+            }
         }
     }
 }

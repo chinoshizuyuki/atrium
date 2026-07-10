@@ -1,6 +1,6 @@
 [package]
 name = "atrium-bridge"
-version = "0.11.0"
+version = "0.12.0"
 edition = "2021"
 description = "Atrium 桥接层 — gRPC 服务器 + 共享内存实时通道"
 
@@ -25,6 +25,9 @@ async-trait = "0.1"
 flume = "0.11"
 tokio-stream = "0.1"
 futures-util = "0.3"
+
+# 内部 crate 依赖 / Internal crate dependencies
+atrium-memory = { path = "../atrium-memory" }
 
 # 共享内存（可选）
 shared_memory = { version = "0.12", optional = true }

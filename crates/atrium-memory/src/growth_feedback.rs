@@ -432,7 +432,7 @@ mod tests {
         // 默认势头 0.5 → 中段插值 / Default momentum 0.5 → mid interpolation
         assert!(approx_eq(acc.momentum(), 0.5));
         let coeff = acc.growth_rate_coefficient();
-        assert!(coeff >= 0.8 && coeff <= 1.2);
+        assert!((0.8..=1.2).contains(&coeff));
         assert!(approx_eq(coeff, 1.0));
     }
 

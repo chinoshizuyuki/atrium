@@ -35,7 +35,7 @@ static_dir = "frontend"              # Web UI 静态文件目录 / Web UI static
 # 设置 OPENAI_API_KEY 环境变量或直接填写 api_key
 # Set OPENAI_API_KEY env var or fill api_key directly
 # 兼容 DeepSeek/OpenAI/任何 OpenAI 兼容 API
-api_key = "sk-a6ef8b2fd0c8496eb9ef8f475d6c8eb6"  # DeepSeek API Key
+api_key = "your-api-key"  # API Key
 base_url = "https://api.deepseek.com/"
 model = "deepseek-v4-flash"
 max_tokens = 1024

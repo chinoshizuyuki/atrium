@@ -25,8 +25,11 @@ Atrium 是一个从零构建的情感 AI 框架，专为陪伴与交互场景设
 - **📦 罐装知识（ACK）** —— 你可以教 Atrium 一些它应该永远记住的东西——你的偏好、你的背景、你的世界。它也可以从对话中自主学习，并与其他 Atrium 实例共享知识。知识以简单文件形式存在，修改后热加载。
 - **📎 文件存储与提醒** —— Atrium 可以存储你分享的文件（SHA256 去重、文本提取、100MB 上限）。它能记住你让它提醒的事——"每天早上8点提醒我看股票"——从中文自然语言解析为 RRULE，由 ProactiveEngine 在对的时机触发，而非机械闹钟。
 - **🎨 渲染与性能** —— 框架与渲染无关：通过 <100μs 延迟的无锁共享内存连接 Unity、Unreal、Live2D 或 VR。人格运行时零解析开销。上下文经过四层压缩，适配任意模型窗口。
+- **🎙️ 语音能力** —— 数字生命能说也能听。两种 TTS 后端：Piper（本地 ONNX 推理，~100ms 首字延迟，CPU）适用于轻量部署，GPT-SoVITS（HTTP 桥接 Python 服务，few-shot 声音克隆，支持自训练模型，GPU）适用于高质量个性化音色。STT 基于 whisper.cpp，支持流式 gRPC AudioStream。ProsodyBridge 将 PAD 情感状态翻译为各引擎专用合成参数。通过 Feature gate 控制（`tts-piper` / `tts-gpt-sovits` / `stt-whisper`），默认零侵入，模型缺失时优雅降级。116+ 单元测试覆盖韵律映射、WAV 解码与引擎生命周期。
 
 > 📖 **[查看 30+ 项数字生命证明 →](../docs/Chinese/digital-life-capabilities.md)** —— 真实能力，真实对话举例。
+>
+> 📖 **[语音能力部署指南（TTS/STT）→](../docs/Chinese/voice-deployment-guide.md)** —— Piper + GPT-SoVITS + whisper.cpp 部署、配置与测试。
 
 ## 架构
 
@@ -149,6 +152,7 @@ atrium/
 │   ├── atrium-emotion/        # PAD 3D + OU 漂移 + 昼夜节律 + 惯性 + 22 种复合情绪 + 想念 + 重逢爆发
 │   ├── atrium-persona/        # PersonaManager + RuntimePersona + LifeNarrative + Maturity
 │   ├── atrium-bridge/         # gRPC 服务端 + 共享内存 + proto 编译
+│   ├── atrium-voice/          # TTS（Piper + GPT-SoVITS）+ STT（whisper.cpp）+ 音频缓冲区 + 韵律桥接
 │   └── atrium-plugin/         # 插件 trait + 管理器 + C ABI 动态加载
 ├── examples/                  # 示例插件
 │   └── echo-plugin/           # 最小 echo 插件，演示完整插件 API
@@ -188,6 +192,8 @@ atrium/
 | 表达系统   | ExpressionOrchestrator + SubtextEngine + 韵律/体态映射器 | 四通道输出 (文字×声音×表情×时机) + 自感知 |
 | 推理引擎   | ReActEngine (思考→行动→观察) + 问候快速路径                          | 复杂查询深度推理，简单问候 <100ms |
 | 罐装知识   | .ack 文件 (Markdown + YAML)                                   | 文件型，热加载，跨 AI 传输                |
+| 语音 (TTS) | Piper (ONNX Runtime, CPU) + GPT-SoVITS (HTTP 桥接, GPU)      | 双后端，韵律桥接，声音克隆，~100ms 延迟   |
+| 语音 (STT) | whisper.cpp (FFI) + gRPC AudioStream                            | 流式识别，VAD 静音检测，16kHz PCM        |
 | LLM 网关 | Rust (axum) + Python (FastAPI, 旧版兼容)                       | Rust 单进程原生网关，零 Python 依赖      |
 | 通信协议   | gRPC (tonic/prost)                                          | 强类型，高性能                        |
 | 数据库    | PostgreSQL 15 + JSON 回退                                     | 会话/消息/人格持久化                    |
@@ -202,7 +208,7 @@ atrium/
 | **2. 系统深化**        | 偏好学习、回放管线、规则引擎、ACK 增强+自学习、上下文窗口、人格防御、情感持久化、复合情绪、认知共情、记忆巩固、可观测性                                          | ✅ 完成  |
 | **2.9 数字生命**       | 内在独白、叙事自我、成长管理、想念/期待、仪式/纪念日、季节感知、温和挑战、误解修复、边界设定、脆弱窗口、自我关怀、表达编排、潜台词引擎、追问追踪                               | ✅ 完成  |
 | **3+ 多平台**         | QQ OneBot + 腾讯官方 Bot、飞书 webhook、跨渠道记忆召回、文件存储+提醒                         | ✅ 完成  |
-| **4. Live2D + 视觉** | Cubism Native SDK、唇音同步、情绪→表情映射、STT/TTS                                                                  | ⬜ 计划中 |
+| **4. Live2D + 视觉** | Cubism Native SDK、唇音同步、情绪→表情映射、STT/TTS（TTS/STT 管线 ✅ 已实现：Piper + GPT-SoVITS + whisper.cpp）                                                              | 🔶 部分完成 |
 | **5. 3D + 直播**     | Unity 插件、OBS RTMP、直播聊天适配器、VMC 协议                                                                        | ⬜ 计划中 |
 | **6. VR + 高画质**    | Unreal/LiveLink、OpenXR、VR 交互                                                                            | ⬜ 计划中 |
 

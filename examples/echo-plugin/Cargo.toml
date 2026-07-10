@@ -1,6 +1,6 @@
 [package]
 name = "atrium-echo-plugin"
-version = "0.11.0"
+version = "0.12.0"
 edition = "2021"
 description = "Atrium 示例插件 — Echo 插件（动态库）"
 

@@ -1,5 +1,5 @@
 # Atrium Docker — Build and push multi-platform images to GHCR
-# Only runs on non-zero major version tags (v1.0.0+, not v0.x.x).
+# Runs on version tags (v*) and manual dispatch.
 
 name: Docker
 
@@ -22,7 +22,6 @@ env:
 
 jobs:
   build:
-    if: ${{ !startsWith(github.ref_name, 'v0.') }}
     strategy:
       fail-fast: false
       matrix:
@@ -63,17 +62,6 @@ jobs:
           tags: |
             ${{ env.REGISTRY }}/${{ steps.meta.outputs.owner }}/atrium-core:${{ steps.meta.outputs.version }}-${{ matrix.suffix }}
 
-      # ─── Python Gateway Image (single platform, native) ──
-      - name: Build & Push atrium-gateway (${{ matrix.suffix }})
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./services/gateway/Dockerfile.gateway
-          platforms: ${{ matrix.platform }}
-          push: true
-          tags: |
-            ${{ env.REGISTRY }}/${{ steps.meta.outputs.owner }}/atrium-gateway:${{ steps.meta.outputs.version }}-${{ matrix.suffix }}
-
   merge:
     needs: build
     runs-on: ubuntu-latest
@@ -98,11 +86,3 @@ jobs:
             -t ${{ env.REGISTRY }}/${{ steps.meta.outputs.owner }}/atrium-core:latest \
             ${{ env.REGISTRY }}/${{ steps.meta.outputs.owner }}/atrium-core:${{ steps.meta.outputs.version }}-amd64 \
             ${{ env.REGISTRY }}/${{ steps.meta.outputs.owner }}/atrium-core:${{ steps.meta.outputs.version }}-arm64
-
-      - name: Merge atrium-gateway multi-platform manifest
-        run: |
-          docker buildx imagetools create \
-            -t ${{ env.REGISTRY }}/${{ steps.meta.outputs.owner }}/atrium-gateway:${{ steps.meta.outputs.version }} \
-            -t ${{ env.REGISTRY }}/${{ steps.meta.outputs.owner }}/atrium-gateway:latest \
-            ${{ env.REGISTRY }}/${{ steps.meta.outputs.owner }}/atrium-gateway:${{ steps.meta.outputs.version }}-amd64 \
-            ${{ env.REGISTRY }}/${{ steps.meta.outputs.owner }}/atrium-gateway:${{ steps.meta.outputs.version }}-arm64

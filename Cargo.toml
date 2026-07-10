@@ -8,6 +8,7 @@ members = [
     "crates/atrium-bridge",
     "crates/atrium-plugin",
     "crates/atrium-tui",
+    "crates/atrium-voice",
     "examples/echo-plugin",
 ]
 

@@ -18,7 +18,7 @@ RUN cargo build --release -p atrium-core && \
     strip target/release/atrium-core
 
 FROM debian:bookworm-slim
-ARG VERSION=0.10.0
+ARG VERSION=0.12.0
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates libsqlite3-0 tzdata \
     && rm -rf /var/lib/apt/lists/*
