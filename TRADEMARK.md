@@ -2,7 +2,7 @@
 
 ## "Atrium" Trademark
 
-The name "Atrium" and the Atrium logo are trademarks of ChinoShizuyuki (符继东).
+The name "Atrium" and the Atrium logo are trademarks of ChinoKoyuki (符继东).
 
 The MIT open-source license governing the Atrium source code does **not** grant any trademark rights. Using the code under MIT does not give you permission to use the "Atrium" name or branding.
 
@@ -29,8 +29,8 @@ If you fork the Atrium codebase and build your own product or service, you **mus
 
 To request permission for commercial use of the "Atrium" trademark, contact:
 
-- GitHub: [@ChinoShizuyuki](https://github.com/chinoshizuyuki)
-- Email: chinoshizuyuki@gmail.com
+- GitHub: [@ChinoKoyuki](https://github.com/chinokoyuki)
+- Email: chinokoyuki@gmail.com
 
 ## Legal Basis
 

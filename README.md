@@ -85,7 +85,7 @@ Unity / Unreal / Live2D / VR
 ### Docker (recommended)
 
 ```bash
-git clone https://github.com/chinoshizuyuki/atrium.git
+git clone https://github.com/chinokoyuki/atrium.git
 cd atrium
 
 # Fill in your LLM API key in atrium.toml (or use environment variables)
@@ -259,8 +259,8 @@ ATRIUM_GATEWAY_URL=http://localhost:8080 python scripts/e2e_smoke_test.py
 
 Code: MIT License — see [LICENSE](LICENSE) for details.
 
-Trademark: "Atrium" and its logo are trademarks of ChinoShizuyuki. The MIT License does not grant trademark rights — see [TRADEMARK.md](TRADEMARK.md) for the full policy.
+Trademark: "Atrium" and its logo are trademarks of ChinoKoyuki. The MIT License does not grant trademark rights — see [TRADEMARK.md](TRADEMARK.md) for the full policy.
 
 ***
 
-Built by [ChinoShizuyuki](https://github.com/chinoshizuyuki).
+Built by [ChinoKoyuki](https://github.com/chinokoyuki).

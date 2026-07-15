@@ -85,7 +85,7 @@ Unity / Unreal / Live2D / VR
 ### Docker（推荐）
 
 ```bash
-git clone https://github.com/chinoshizuyuki/atrium.git
+git clone https://github.com/chinokoyuki/atrium.git
 cd atrium
 
 # 设置 LLM API 密钥
@@ -234,8 +234,8 @@ ATRIUM_GATEWAY_URL=http://localhost:8080 python scripts/e2e_smoke_test.py
 
 代码：MIT License — 详见 [LICENSE](LICENSE)。
 
-商标："Atrium" 及其标识为 ChinoShizuyuki 的商标。MIT License 不授予商标权利——详见 [TRADEMARK.md](TRADEMARK.md) 获取完整政策。
+商标："Atrium" 及其标识为 ChinoKoyuki 的商标。MIT License 不授予商标权利——详见 [TRADEMARK.md](TRADEMARK.md) 获取完整政策。
 
 ***
 
-由 [ChinoShizuyuki](https://github.com/chinoshizuyuki) 构建。
+由 [ChinoKoyuki](https://github.com/chinokoyuki) 构建。
